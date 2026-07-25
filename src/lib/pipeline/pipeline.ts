@@ -9,8 +9,7 @@
  */
 
 import { pxToFtTransform } from "../lasso-extract";
-import { extractText } from "./ocr";
-import { understandPlan } from "./semantic";
+import { runOCR, runSemantic } from "@/lib/ai/provider";
 import { detectGeometry } from "./opencv";
 import { mergePlan } from "./merge";
 import { validatePlan } from "./validate";
@@ -49,9 +48,9 @@ export async function runPipeline(
   // plans. It still runs (once) if vision fails and the fallback needs tokens.
   const ocrBox: { value: OcrResult | null } = { value: null };
   const getOcr = async () =>
-    (ocrBox.value ??= await extractText(input.bytes, input.mimeType));
+    (ocrBox.value ??= await runOCR(input.bytes, input.mimeType));
   const semantic = await timed("gemini", () =>
-    understandPlan(getOcr, input.bytes, input.mimeType),
+    runSemantic(getOcr, input.bytes, input.mimeType),
   );
   const geometry = await timed("opencv", () => detectGeometry(input.bytes, input.fileName));
   const merged = await timed("merge", async () =>

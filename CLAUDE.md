@@ -57,6 +57,14 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 - `src/app/login/` — the sign-in page + `actions.ts` (`signIn`/`signOut` Server Actions). No signup route exists anywhere in the app by design.
 - Bootstrapping the first account: create a user in the Supabase dashboard, then `update profiles set role = 'master' where id = '<uuid>';` — see the comment in `schema.sql`.
 
+### AI provider layer
+
+`src/lib/ai/provider.ts` (revamp Workstream 4) is the intended single entry point for the *new* pipeline's AI calls: `generateImage`, `editImage`, `generateVideo`, `runOCR`, `runSemantic`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the new `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline.ts` calls `runOCR`/`runSemantic` (not `ocr.ts`/`semantic.ts` directly) so the live upload flow is instrumented. `editImage`/`generateVideo` delegate to the existing `render/gemini-image.ts`/`render/veo-client.ts` clients rather than duplicating them. `render/flux-client.ts` (fal.ai/FLUX) is still live as the old 3D-studio render path's fallback (`api/render/route.ts`) — removal is deferred to Workstream 8, when that path is replaced, not before.
+
+### Profile page
+
+`/profile` (`src/app/profile/page.tsx`) shows account info (from `getCurrentUser()`) and a project list/count via `src/components/profile-projects.tsx`, which reads the same local-first `useVasto` store `/projects` uses — not the `projects` table, which isn't wired into any live page yet (see below). No cost figures are shown to a client; that stays admin-only.
+
 ### Project lifecycle state machine
 
 `projects.status` (11-value enum, `supabase/schema.sql`) plus `projects.manifest` (JSONB) are the backend foundation for the revamped flow — the frontend is meant to read this one field instead of maintaining separate boolean flags. `src/lib/projects/state.ts` has the transition graph (`transitionProject`) and manifest helpers (`getProjectManifest`/`updateProjectManifest`). Named `ProjectState` to avoid colliding with the unrelated, pre-existing `ProjectStatus` in `src/lib/types.ts` (the old local-first store's status, a different concept).

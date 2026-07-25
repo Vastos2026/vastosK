@@ -11,6 +11,7 @@ export interface CurrentUser {
   displayName: string | null;
   role: UserRole;
   status: UserStatus;
+  trialEndsAt: string | null;
 }
 
 /**
@@ -29,7 +30,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("display_name, role, status")
+    .select("display_name, role, status, trial_ends_at")
     .eq("id", userId)
     .single();
   if (!profile) return null;
@@ -40,6 +41,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     displayName: profile.display_name,
     role: profile.role,
     status: profile.status,
+    trialEndsAt: profile.trial_ends_at,
   };
 }
 

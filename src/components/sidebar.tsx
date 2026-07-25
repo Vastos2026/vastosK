@@ -53,9 +53,19 @@ export function Sidebar() {
       </nav>
 
       <div className="flex flex-col items-center gap-1">
-        <button className="grid size-11 place-items-center rounded-xl text-muted hover:bg-surface-2 hover:text-foreground cursor-pointer">
+        <Link
+          href="/profile"
+          aria-label="Profile"
+          title="Profile"
+          className={cn(
+            "grid size-11 place-items-center rounded-xl transition-colors",
+            isActive("/profile")
+              ? "bg-surface-3 text-accent"
+              : "text-muted hover:bg-surface-2 hover:text-foreground",
+          )}
+        >
           <Icon name="Settings" className="size-[20px]" />
-        </button>
+        </Link>
         <form action={signOut}>
           <button
             type="submit"

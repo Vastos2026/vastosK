@@ -1,17 +1,59 @@
 "use client";
 
-import { useActionState } from "react";
+import { Suspense, useActionState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { signIn, type LoginState } from "./actions";
 
 const initialState: LoginState = {};
 
-export default function LoginPage() {
+function LoginForm() {
   const searchParams = useSearchParams();
   const next = searchParams.get("next") ?? "/";
   const [state, action, pending] = useActionState(signIn, initialState);
 
+  return (
+    <form action={action} className="flex w-full max-w-sm flex-col gap-4">
+      <input type="hidden" name="next" value={next} />
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="email" className="text-xs font-medium text-muted">
+          Username
+        </label>
+        <input
+          id="email"
+          name="email"
+          type="text"
+          autoComplete="username"
+          required
+          className="input"
+          placeholder="you@company.com"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="password" className="text-xs font-medium text-muted">
+          Password
+        </label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          className="input"
+          placeholder="••••••••"
+        />
+      </div>
+
+      {state.error && <p className="text-sm text-danger">{state.error}</p>}
+
+      <Button type="submit" size="lg" loading={pending} className="mt-2 w-full">
+        Sign in
+      </Button>
+    </form>
+  );
+}
+
+export default function LoginPage() {
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-10 px-6">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -24,43 +66,9 @@ export default function LoginPage() {
         </p>
       </div>
 
-      <form action={action} className="flex w-full max-w-sm flex-col gap-4">
-        <input type="hidden" name="next" value={next} />
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="email" className="text-xs font-medium text-muted">
-            Username
-          </label>
-          <input
-            id="email"
-            name="email"
-            type="text"
-            autoComplete="username"
-            required
-            className="input"
-            placeholder="you@company.com"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="password" className="text-xs font-medium text-muted">
-            Password
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            className="input"
-            placeholder="••••••••"
-          />
-        </div>
-
-        {state.error && <p className="text-sm text-danger">{state.error}</p>}
-
-        <Button type="submit" size="lg" loading={pending} className="mt-2 w-full">
-          Sign in
-        </Button>
-      </form>
+      <Suspense fallback={null}>
+        <LoginForm />
+      </Suspense>
 
       <p className="max-w-xs text-center text-xs text-faint">
         Accounts are created by your Vastos team. Contact your admin if you don&apos;t have one.

@@ -507,6 +507,41 @@ create trigger render_jobs_updated_at before update on render_jobs
 alter table render_jobs enable row level security;
 
 -- ============================================================================
+-- ai_usage_logs — one row per AI provider call, written by src/lib/ai/provider.ts.
+-- Cost/analytics data an admin aggregates (Workstream 9's spend cards); distinct
+-- from `generations` (Workstream 11), which holds product-facing output artifacts
+-- a user browses/restores. Server-only writes (service role); a user can read
+-- their own rows (a Profile page usage summary can query this directly instead
+-- of a separate aggregate table).
+-- ============================================================================
+create table if not exists ai_usage_logs (
+  id                     uuid primary key default gen_random_uuid(),
+  user_id                uuid references auth.users (id) on delete set null,
+  project_id             uuid references projects (id) on delete set null,
+  feature                text not null,   -- 'ocr' | 'semantic' | 'image' | 'edit' | 'video'
+  provider               text not null default 'google',
+  model                  text,
+  success                boolean not null,
+  duration_ms            integer,
+  estimated_cost         numeric,
+  error_category         text,            -- ValidationError | AiProviderError | StorageError | TimeoutError | InternalError
+  pipeline_version       text,
+  system_prompt_version  text,
+  planning_prompt_version text,
+  prompt_builder_version text,
+  design_spec_version    text,
+  post_processing_version text,
+  created_at             timestamptz not null default now()
+);
+create index if not exists ai_usage_logs_user_idx on ai_usage_logs (user_id, created_at desc);
+create index if not exists ai_usage_logs_project_idx on ai_usage_logs (project_id, created_at desc);
+
+alter table ai_usage_logs enable row level security;
+drop policy if exists "own ai_usage_logs" on ai_usage_logs;
+create policy "own ai_usage_logs" on ai_usage_logs
+  for select using (user_id = auth.uid());
+
+-- ============================================================================
 -- Realtime — push live progress to the browser (pipeline + render status).
 -- ============================================================================
 do $$ begin
