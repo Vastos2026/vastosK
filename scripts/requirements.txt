@@ -1,0 +1,4 @@
+opencv-python
+numpy
+# Only needed for DETECTOR=labeled (detect_rooms_labeled.py's OCR-assisted room growth)
+easyocr

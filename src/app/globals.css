@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+/*
+  Vasto Studios — dark studio design system
+  Deep charcoal surfaces + warm amber/gold accent (premium interior-design feel).
+*/
+
+@theme {
+  /* Surfaces */
+  --color-bg: #0a0a0d;
+  --color-surface: #131318;
+  --color-surface-2: #1a1a21;
+  --color-surface-3: #22222b;
+  --color-border: #2a2a34;
+  --color-border-strong: #3a3a46;
+
+  /* Text */
+  --color-foreground: #ededf2;
+  --color-muted: #9b9bab;
+  --color-faint: #6c6c7c;
+
+  /* Brand accent — warm gold */
+  --color-accent: #e6a45c;
+  --color-accent-hover: #f0b876;
+  --color-accent-soft: #2a2014;
+  --color-accent-foreground: #1a1208;
+
+  /* Status */
+  --color-success: #5cc98a;
+  --color-warning: #e6c15c;
+  --color-danger: #e26d6d;
+  --color-info: #6da8e2;
+
+  /* Fonts */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Radius scale */
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Subtle studio backdrop: soft amber glow top-left, cool depth bottom-right */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(60rem 40rem at 0% -10%, rgba(230, 164, 92, 0.06), transparent 70%),
+      radial-gradient(50rem 40rem at 100% 110%, rgba(109, 168, 226, 0.05), transparent 70%);
+  }
+
+  ::selection {
+    background-color: rgba(230, 164, 92, 0.28);
+    color: #fff;
+  }
+}
+
+/* Shared form control */
+@layer components {
+  .input {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+    background-color: var(--color-bg);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    color: var(--color-foreground);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .input::placeholder {
+    color: var(--color-faint);
+  }
+  .input:focus {
+    border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
+}
+
+/* Thin, themed scrollbars */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-border-strong);
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Faint dotted grid used as canvas / empty-state backdrop */
+  .bg-grid {
+    background-image: radial-gradient(var(--color-border) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Animations */
+@keyframes vasto-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes vasto-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes vasto-shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes vasto-fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: vasto-fade-up 0.4s ease both;
+}
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.05),
+    transparent
+  );
+  animation: vasto-shimmer 1.6s infinite;
+}
