@@ -18,7 +18,7 @@ export function ProjectCard({ project }: { project: Project }) {
   const renderCount = project.renders.length;
 
   return (
-    <div className="group relative animate-fade-up overflow-hidden rounded-2xl border border-border bg-surface transition-colors hover:border-border-strong">
+    <div className="group hover-lift relative animate-fade-up overflow-hidden rounded-2xl border border-border bg-surface">
       <Link href={projectHref(project)} className="block">
         <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-grid bg-bg">
           {project.floorPlan ? (

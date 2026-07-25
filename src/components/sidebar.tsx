@@ -21,58 +21,71 @@ export function Sidebar() {
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
-    <aside className="flex w-16 shrink-0 flex-col items-center gap-1 border-r border-border bg-surface/60 py-4">
+    <aside className="glass my-3 ml-3 flex w-16 shrink-0 flex-col items-center gap-1 rounded-3xl py-4 shadow-2xl shadow-black/40">
       <Link
         href="/"
-        className="group mb-3 grid size-10 place-items-center rounded-xl bg-gradient-to-br from-accent to-accent-hover text-accent-foreground shadow-lg"
-        aria-label="Vasto Studios home"
+        className="group relative mb-3 grid size-10 place-items-center rounded-2xl border border-white/10 bg-white/[0.04] text-foreground transition-all duration-200 hover:scale-105 hover:border-white/25 hover:bg-white/[0.08] cursor-pointer"
+        aria-label="Vastos home"
+        title="Vastos home"
       >
-        <span className="font-mono text-lg font-bold leading-none">V</span>
+        <span
+          aria-hidden
+          className="absolute inset-0 rounded-2xl opacity-0 blur-md transition-opacity duration-300 group-hover:opacity-100"
+          style={{ background: "radial-gradient(circle, rgba(31,140,100,0.5), transparent 70%)" }}
+        />
+        <span className="relative font-mono text-lg font-bold leading-none">V</span>
       </Link>
 
-      <nav className="flex flex-1 flex-col items-center gap-1">
+      <nav className="flex flex-1 flex-col items-center gap-1.5">
         {NAV.map((item) => (
           <Link
             key={item.href}
             href={item.href}
             className={cn(
-              "group relative grid size-11 place-items-center rounded-xl transition-colors",
+              "group relative grid size-11 place-items-center rounded-2xl transition-all duration-200 cursor-pointer hover:scale-105",
               isActive(item.href)
-                ? "bg-surface-3 text-accent"
-                : "text-muted hover:bg-surface-2 hover:text-foreground",
+                ? "bg-white/[0.08] text-foreground"
+                : "text-muted hover:bg-white/[0.05] hover:text-foreground",
             )}
           >
             <Icon name={item.icon} className="size-[20px]" />
-            <span className="pointer-events-none absolute left-full ml-3 hidden whitespace-nowrap rounded-md border border-border bg-surface-3 px-2 py-1 text-xs text-foreground shadow-lg group-hover:block z-50">
+            <span className="pointer-events-none absolute left-full ml-3 hidden whitespace-nowrap rounded-lg border border-white/10 bg-surface-3/95 px-2.5 py-1.5 text-xs text-foreground shadow-xl backdrop-blur-sm group-hover:block z-50">
               {item.label}
             </span>
             {isActive(item.href) && (
-              <span className="absolute -left-[1px] top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+              <span
+                aria-hidden
+                className="absolute -left-[7px] top-1/2 h-5 w-1 -translate-y-1/2 rounded-full"
+                style={{
+                  background: "#1f8c64",
+                  boxShadow: "0 0 8px 1px rgba(31,140,100,0.7)",
+                }}
+              />
             )}
           </Link>
         ))}
       </nav>
 
-      <div className="flex flex-col items-center gap-1">
+      <div className="flex flex-col items-center gap-2">
         <Link
           href="/profile"
           aria-label="Profile"
           title="Profile"
           className={cn(
-            "grid size-11 place-items-center rounded-xl transition-colors",
+            "grid size-11 place-items-center rounded-2xl transition-all duration-200 cursor-pointer hover:scale-105",
             isActive("/profile")
-              ? "bg-surface-3 text-accent"
-              : "text-muted hover:bg-surface-2 hover:text-foreground",
+              ? "bg-white/[0.08] text-foreground"
+              : "text-muted hover:bg-white/[0.05] hover:text-foreground",
           )}
         >
-          <Icon name="Settings" className="size-[20px]" />
+          <Icon name="UserRound" className="size-[20px]" />
         </Link>
         <form action={signOut}>
           <button
             type="submit"
             aria-label="Sign out"
             title="Sign out"
-            className="grid size-9 place-items-center rounded-full bg-surface-3 text-muted ring-1 ring-border hover:text-foreground cursor-pointer"
+            className="grid size-9 place-items-center rounded-full border border-white/10 bg-white/[0.03] text-muted transition-all duration-200 hover:scale-105 hover:border-danger/40 hover:text-danger cursor-pointer"
           >
             <Icon name="LogOut" className="size-4" />
           </button>

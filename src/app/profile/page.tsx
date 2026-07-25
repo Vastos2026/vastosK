@@ -28,16 +28,23 @@ export default async function ProfilePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-border px-8 py-4">
+      <header className="border-b border-white/5 px-8 py-5">
         <h1 className="text-xl font-semibold tracking-tight">Profile</h1>
         <p className="text-sm text-muted">Your account and past projects.</p>
       </header>
 
       <div className="scrollbar-thin flex-1 overflow-y-auto px-8 py-6">
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-border bg-surface p-6">
+        <div className="glass flex flex-col gap-5 rounded-2xl p-6 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-4">
-            <div className="grid size-14 shrink-0 place-items-center rounded-full bg-gradient-to-br from-accent to-accent-hover text-lg font-semibold text-accent-foreground">
-              {initials(user.displayName, user.email)}
+            <div className="relative shrink-0">
+              <span
+                aria-hidden
+                className="absolute -inset-1 rounded-full opacity-70 blur-md"
+                style={{ background: "radial-gradient(circle, rgba(31,140,100,0.35), transparent 70%)" }}
+              />
+              <div className="relative grid size-14 place-items-center rounded-full bg-foreground text-lg font-semibold text-bg">
+                {initials(user.displayName, user.email)}
+              </div>
             </div>
             <div>
               <p className="text-lg font-medium text-foreground">{user.displayName || "Your account"}</p>
@@ -48,7 +55,7 @@ export default async function ProfilePage() {
                 </p>
               )}
               {trial && (
-                <p className="mt-1.5 inline-flex items-center rounded-full border border-border-strong bg-surface-2 px-2.5 py-0.5 text-xs text-muted">
+                <p className="mt-1.5 inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-xs text-muted">
                   {trial}
                 </p>
               )}

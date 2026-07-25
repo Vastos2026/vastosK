@@ -38,8 +38,10 @@
   --color-danger: #e26d6d;
   --color-info: #6da8e2;
 
-  /* Fonts */
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Fonts — Google Sans itself isn't publicly licensed as a webfont; Inter is
+     the closest freely-licensed geometric sans and what most "Google-style"
+     products actually ship. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 
   /* Radius scale */
@@ -63,19 +65,24 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Near-black backdrop with a very mild dark-green glow, bottom of the page —
-     the one deliberate spot of colour on an otherwise black & white screen. */
+  /* Near-black backdrop with a very mild dark-green glow — top-left and
+     bottom-right, both inside the normal viewport so they're actually
+     visible (the previous 120%-from-top placement rendered off-screen on
+     every fixed-height page). The one deliberate spot of colour on an
+     otherwise black & white screen. */
   body::before {
     content: "";
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background: radial-gradient(60rem 34rem at 50% 120%, rgba(31, 77, 58, 0.16), transparent 70%);
+    background:
+      radial-gradient(46rem 30rem at 8% 0%, rgba(31, 106, 77, 0.16), transparent 65%),
+      radial-gradient(50rem 34rem at 100% 100%, rgba(31, 106, 77, 0.12), transparent 70%);
   }
 
   ::selection {
-    background-color: rgba(230, 164, 92, 0.28);
+    background-color: rgba(31, 106, 77, 0.35);
     color: #fff;
   }
 }
@@ -129,6 +136,25 @@
 
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* Glassmorphism — translucent, blurred surfaces for chrome that should
+     feel like it's floating above the page (sidebar, headers, modals,
+     cards) rather than a flat opaque panel. */
+  .glass {
+    background-color: rgba(255, 255, 255, 0.035);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Subtle lift + glow on hover for interactive cards/panels. */
+  .hover-lift {
+    transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+  }
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.18);
   }
 }
 

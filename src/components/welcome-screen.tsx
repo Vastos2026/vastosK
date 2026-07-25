@@ -34,12 +34,17 @@ export function WelcomeScreen({ displayName }: { displayName: string | null }) {
             <button
               key={c.label}
               onClick={() => setPickedType(c.type)}
-              className="group flex w-40 flex-col items-center gap-3 rounded-2xl border border-border-strong bg-surface/80 px-5 py-6 backdrop-blur-sm transition-colors hover:border-accent/50 hover:bg-surface-2 cursor-pointer sm:w-44"
+              className="glass group relative flex w-40 flex-col items-center gap-3 overflow-hidden rounded-2xl px-5 py-6 transition-all duration-200 hover:-translate-y-1 hover:border-white/25 cursor-pointer sm:w-44"
             >
-              <span className="grid size-11 place-items-center rounded-xl bg-accent/10 text-accent transition-colors group-hover:bg-accent/20">
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                style={{ background: "radial-gradient(120px 90px at 50% 0%, rgba(31,140,100,0.18), transparent 70%)" }}
+              />
+              <span className="relative grid size-11 place-items-center rounded-xl bg-white/[0.06] text-foreground transition-transform duration-200 group-hover:scale-110">
                 <Icon name={c.icon} className="size-5" />
               </span>
-              <span className="text-sm font-medium text-foreground">{c.label}</span>
+              <span className="relative text-sm font-medium text-foreground">{c.label}</span>
             </button>
           ))}
         </div>
@@ -50,6 +55,7 @@ export function WelcomeScreen({ displayName }: { displayName: string | null }) {
         open={pickedType !== null}
         onClose={() => setPickedType(null)}
         initialType={pickedType ?? "apartment"}
+        lockType
       />
     </div>
   );

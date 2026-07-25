@@ -19,12 +19,12 @@ export function ProfileProjects() {
 
   return (
     <div className="mt-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2">
-        <div className="rounded-2xl border border-border bg-surface p-5">
+      <div className="glass flex divide-x divide-white/[0.06] overflow-hidden rounded-2xl">
+        <div className="flex-1 px-5 py-4">
           <p className="text-2xl font-semibold text-foreground">{hydrated ? projects.length : "–"}</p>
           <p className="text-sm text-muted">Projects</p>
         </div>
-        <div className="rounded-2xl border border-border bg-surface p-5">
+        <div className="flex-1 px-5 py-4">
           <p className="text-2xl font-semibold text-foreground">{hydrated ? rendered : "–"}</p>
           <p className="text-sm text-muted">With renders</p>
         </div>
