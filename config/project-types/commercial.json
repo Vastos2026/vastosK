@@ -1,0 +1,28 @@
+{
+  "category": "Commercial",
+  "label": "Commercial Office",
+  "planningPersona": "Commercial",
+  "subcategories": ["Corporate Office", "Coworking Space", "Retail Store", "Showroom", "Restaurant / Cafe"],
+  "roomTypes": [
+    "Reception",
+    "Open Workspace",
+    "Cabin",
+    "Meeting Room",
+    "Conference Room",
+    "Pantry",
+    "Lounge",
+    "Washroom",
+    "Storage"
+  ],
+  "walkthroughOrder": [
+    "Reception",
+    "Open Workspace",
+    "Meeting Room",
+    "Conference Room",
+    "Cabin",
+    "Lounge",
+    "Pantry",
+    "Washroom",
+    "Storage"
+  ]
+}

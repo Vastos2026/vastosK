@@ -65,6 +65,10 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 `src/lib/ai/prompting/` (revamp Workstream 5) implements the Universal JSON Architecture: `build-universal-input.ts` (validates frontend selections into a `UniversalInput`), `design-planning.ts` (`runDesignPlanning` — one Gemini call, via `provider.generateStructured`, into a `DesignSpecification` with per-room guidance), `prompt-builder.ts` (`buildRoomPrompt` — deterministic, no AI call, the only place natural-language prompt text is produced). Template wording (`system`/`planning`/`builder`) lives in the `prompt_templates` table, versioned and `published`-gated; `templates.ts` falls back to hardcoded defaults when unconfigured. Not called from any live route yet — the frontend screens that would collect a project's rooms/style/luxury/colour don't exist until Workstream 8.
 
+### Config-driven project types, detection toggle, room openings
+
+`config/project-types/*.json` (Workstream 6) — one file per category, loaded by `src/lib/project-types/config.ts`. `DETECTION_MODE=gemini` (Workstream 7) skips the Python/OpenCV subprocess via `opencv.ts`'s `emptyGeometry()`, relying on `merge.ts`'s existing under-segmentation fallback to build the plan from Gemini vision alone — useful if Python is broken locally, or for a future Python-free deploy. `feature_flags` table + `src/lib/feature-flags.ts` is a separate, generic on/off-toggle mechanism (no rollout logic), not yet read anywhere. `src/lib/pipeline/assign-openings.ts` (Workstream 7a) deterministically assigns each detected door/window to the room(s) it borders (`Room.openings`), run post-merge in both the sync and async (Inngest) pipelines; `ai/prompting/prompt-builder.ts` turns that into a natural-language clause when present.
+
 ### Profile page
 
 `/profile` (`src/app/profile/page.tsx`) shows account info (from `getCurrentUser()`) and a project list/count via `src/components/profile-projects.tsx`, which reads the same local-first `useVasto` store `/projects` uses — not the `projects` table, which isn't wired into any live page yet (see below). No cost figures are shown to a client; that stays admin-only.

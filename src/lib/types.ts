@@ -28,6 +28,12 @@ export interface Room {
    * the room (not page state) so a reload can't silently drop it mid-design.
    */
   brief?: string;
+  /**
+   * Doors/windows on this room's walls, assigned deterministically post-merge
+   * (see pipeline/assign-openings.ts) — never asserts a room has NO openings,
+   * only states what was positively detected. Undefined until that stage runs.
+   */
+  openings?: import("./pipeline/assign-openings").RoomOpening[];
 }
 
 export interface Door {

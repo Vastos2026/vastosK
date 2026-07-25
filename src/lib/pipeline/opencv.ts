@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 import type { DetectedGeometry } from "@/lib/types";
 
 const PYTHON_BIN = process.env.PYTHON_BIN || "python";
@@ -111,4 +112,41 @@ export async function detectGeometry(bytes: Buffer, fileName: string): Promise<O
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * No-op geometry: skips the Python subprocess entirely (no walls/doors/
+ * windows/room boxes), keeping only the image's real pixel dimensions (read
+ * via `sharp`, already a dependency — no OpenCV/Python involved). Used when
+ * `DETECTION_MODE=gemini` (see pipeline.ts): with zero detected room boxes,
+ * the Merge Engine's existing under-segmentation fallback (merge.ts,
+ * `buildFromSemanticOnly`) kicks in automatically and builds the plan purely
+ * from Gemini's vision reconstruction — this doesn't need its own merge
+ * logic, it rides the same fallback already used when OpenCV finds too few
+ * rooms. This is what makes a Python-free deploy possible (the plan's
+ * "Gemini-only unlocks plain Vercel" hosting note) and lets a dev with a
+ * broken local Python still exercise the pipeline.
+ */
+export async function emptyGeometry(bytes: Buffer): Promise<OpenCvResult> {
+  let imageWidth = 1024;
+  let imageHeight = 1024;
+  try {
+    const meta = await sharp(bytes).metadata();
+    if (meta.width && meta.height) {
+      imageWidth = meta.width;
+      imageHeight = meta.height;
+    }
+  } catch {
+    /* fall back to the placeholder dimensions above */
+  }
+  return {
+    imageWidth,
+    imageHeight,
+    walls: [],
+    doors: [],
+    windows: [],
+    rooms: [],
+    scale: 0,
+    confidence: 0,
+  };
 }

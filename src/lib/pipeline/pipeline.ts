@@ -10,8 +10,9 @@
 
 import { pxToFtTransform } from "../lasso-extract";
 import { runOCR, runSemantic } from "@/lib/ai/provider";
-import { detectGeometry } from "./opencv";
+import { detectGeometry, emptyGeometry } from "./opencv";
 import { mergePlan } from "./merge";
+import { assignOpenings } from "./assign-openings";
 import { validatePlan } from "./validate";
 import type { OcrResult, PipelineResult, PipelineStage, StorageRef } from "./types";
 
@@ -52,7 +53,17 @@ export async function runPipeline(
   const semantic = await timed("gemini", () =>
     runSemantic(getOcr, input.bytes, input.mimeType),
   );
-  const geometry = await timed("opencv", () => detectGeometry(input.bytes, input.fileName));
+  // DETECTION_MODE=gemini skips the Python/OpenCV subprocess entirely — the
+  // Merge Engine already falls back to a pure Gemini-vision reconstruction
+  // when geometry finds too few rooms (merge.ts's under-segmentation path),
+  // so zero detected rooms here rides that same, already-tested fallback
+  // rather than needing separate merge logic. Default stays "opencv" (both
+  // run, merge picks the better one) so existing behavior is unchanged.
+  const geometry = await timed("opencv", () =>
+    process.env.DETECTION_MODE === "gemini"
+      ? emptyGeometry(input.bytes)
+      : detectGeometry(input.bytes, input.fileName),
+  );
   const merged = await timed("merge", async () =>
     mergePlan({
       geometry,
@@ -64,6 +75,12 @@ export async function runPipeline(
   );
 
   const plan = merged.plan;
+
+  // Deterministic post-merge stage: assign each door/window to the room(s)
+  // it belongs to (see assign-openings.ts) — geometry only, no AI call.
+  const openingsByRoom = assignOpenings(plan);
+  for (const room of plan.rooms) room.openings = openingsByRoom[room.id] ?? [];
+
   if (plan.meta) {
     plan.meta.ocrTokens = ocrBox.value?.tokens.length ?? 0;
     // Remember WHERE the source image lives and HOW plan feet map back onto it,

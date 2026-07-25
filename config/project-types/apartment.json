@@ -1,0 +1,28 @@
+{
+  "category": "Apartment",
+  "label": "Apartment",
+  "planningPersona": "Apartment",
+  "subcategories": ["1BHK", "2BHK", "3BHK", "4BHK+", "Studio"],
+  "roomTypes": [
+    "Living Room",
+    "Dining Room",
+    "Master Bedroom",
+    "Bedroom",
+    "Kitchen",
+    "Bathroom",
+    "Study",
+    "Utility",
+    "Balcony"
+  ],
+  "walkthroughOrder": [
+    "Living Room",
+    "Dining Room",
+    "Kitchen",
+    "Master Bedroom",
+    "Bedroom",
+    "Study",
+    "Bathroom",
+    "Balcony",
+    "Utility"
+  ]
+}

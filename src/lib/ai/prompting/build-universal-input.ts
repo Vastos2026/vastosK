@@ -1,5 +1,5 @@
 import { ProviderError } from "@/lib/ai/errors";
-import type { LuxuryLevel, UniversalInput } from "./types";
+import type { LuxuryLevel, UniversalInput, UniversalInputOpening } from "./types";
 
 /**
  * Universal Input Schema builder — turns the frontend's room/style selections
@@ -19,6 +19,7 @@ export interface RoomSelection {
   widthFt: number;
   heightFt: number;
   additionalNotes?: string;
+  openings?: UniversalInputOpening[];
 }
 
 export interface DesignSelection {
@@ -65,6 +66,7 @@ export function buildUniversalInput(
           name: r.name.trim(),
           size: `${formatFt(r.widthFt)} x ${formatFt(r.heightFt)} ft`,
           ...(notes ? { additional_notes: notes } : {}),
+          ...(r.openings?.length ? { openings: r.openings } : {}),
         };
       }),
     },

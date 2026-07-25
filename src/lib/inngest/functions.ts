@@ -10,10 +10,10 @@
  */
 
 import { completeJob, failJob, flushJob, getJob, setStage } from "@/lib/pipeline/job-store";
-import { detectGeometry, type OpenCvResult } from "@/lib/pipeline/opencv";
-import { extractText } from "@/lib/pipeline/ocr";
+import { detectGeometry, emptyGeometry, type OpenCvResult } from "@/lib/pipeline/opencv";
+import { runOCR, runSemantic } from "@/lib/ai/provider";
 import { mergePlan, type MergeOutput } from "@/lib/pipeline/merge";
-import { understandPlan } from "@/lib/pipeline/semantic";
+import { assignOpenings } from "@/lib/pipeline/assign-openings";
 import { validatePlan } from "@/lib/pipeline/validate";
 import { getObject } from "@/lib/pipeline/storage";
 import type { OcrResult, PipelineResult, SemanticPlan } from "@/lib/pipeline/types";
@@ -34,19 +34,23 @@ export const parsePlanJob = inngest.createFunction(
       // OCR Extraction
       setStage(jobId, "ocr");
       const ocr = (await step.run("ocr-extraction", async () =>
-        extractText(await getObject(storageKey), mimeType),
+        runOCR(await getObject(storageKey), mimeType),
       )) as OcrResult;
 
       // Gemini — reconstruct the layout from the plan image's printed dimensions
       setStage(jobId, "gemini");
       const semantic = (await step.run("gemini-flash", async () =>
-        understandPlan(ocr, await getObject(storageKey), mimeType),
+        runSemantic(ocr, await getObject(storageKey), mimeType),
       )) as SemanticPlan;
 
-      // OpenCV Analysis
+      // OpenCV Analysis — DETECTION_MODE=gemini skips the Python subprocess
+      // entirely (see pipeline.ts for why this is safe: the Merge Engine's
+      // existing under-segmentation fallback handles zero detected rooms).
       setStage(jobId, "opencv");
       const geometry = (await step.run("opencv-analysis", async () =>
-        detectGeometry(await getObject(storageKey), fileName),
+        process.env.DETECTION_MODE === "gemini"
+          ? emptyGeometry(await getObject(storageKey))
+          : detectGeometry(await getObject(storageKey), fileName),
       )) as OpenCvResult;
 
       // Merge Engine
@@ -57,6 +61,8 @@ export const parsePlanJob = inngest.createFunction(
 
       const plan = merged.plan;
       if (plan.meta) plan.meta.ocrTokens = ocr.tokens.length;
+      const openingsByRoom = assignOpenings(plan);
+      for (const room of plan.rooms) room.openings = openingsByRoom[room.id] ?? [];
 
       const validation = validatePlan(plan, semantic, geometry.buildingBox);
       // Reconstruction-quality-first confidence, nudged by the detector (mirrors

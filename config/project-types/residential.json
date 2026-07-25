@@ -1,0 +1,32 @@
+{
+  "category": "Residential",
+  "label": "Individual Home",
+  "planningPersona": "Residential",
+  "subcategories": ["Independent House", "Villa", "Farmhouse", "Duplex"],
+  "roomTypes": [
+    "Living Room",
+    "Dining Room",
+    "Master Bedroom",
+    "Bedroom",
+    "Kitchen",
+    "Bathroom",
+    "Study",
+    "Pooja Room",
+    "Utility",
+    "Balcony",
+    "Garage"
+  ],
+  "walkthroughOrder": [
+    "Living Room",
+    "Dining Room",
+    "Kitchen",
+    "Master Bedroom",
+    "Bedroom",
+    "Study",
+    "Pooja Room",
+    "Bathroom",
+    "Balcony",
+    "Utility",
+    "Garage"
+  ]
+}

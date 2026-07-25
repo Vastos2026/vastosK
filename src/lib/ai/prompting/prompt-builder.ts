@@ -1,6 +1,6 @@
 import "server-only";
 import { getBuilderTemplate } from "./templates";
-import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./types";
+import type { DesignSpecification, UniversalInput, UniversalInputOpening, UniversalInputRoom } from "./types";
 
 /**
  * The Prompt Builder — deterministic, no AI call. Assembles the final
@@ -35,9 +35,21 @@ export async function buildRoomPrompt(
 
   if (guidance) lines.push("", `This room specifically: ${guidance}`);
   if (room.additional_notes?.trim()) lines.push(`Additional requirement: ${room.additional_notes.trim()}`);
+  if (room.openings?.length) lines.push(`Real openings, respect them exactly: ${describeOpenings(room.openings)}.`);
 
   lines.push("", `${builder.cameraPrefix} ${spec.cameraGuidelines}`);
   lines.push(`${builder.negativePrefix} ${spec.negativeConstraints}`);
 
   return lines.join("\n");
+}
+
+/** Translates structured openings into natural language — only place this happens. */
+function describeOpenings(openings: UniversalInputOpening[]): string {
+  return openings
+    .map((o) => {
+      const where = `a ${o.type} on the ${o.side} wall`;
+      if (!o.connectsTo || o.connectsTo === "exterior") return `${where} (exterior)`;
+      return `${where} connecting to the ${o.connectsTo}`;
+    })
+    .join("; ");
 }

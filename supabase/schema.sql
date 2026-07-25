@@ -596,6 +596,26 @@ select 'builder', null, 1,
 where not exists (select 1 from prompt_templates where type = 'builder');
 
 -- ============================================================================
+-- feature_flags — lightweight on/off toggles (Workstream 7), for anything
+-- that should be flippable without a redeploy. Deliberately minimal per the
+-- plan's CTO review: no rollout percentages, no user targeting, no admin UI
+-- yet — flip a row directly in the SQL editor (or a basic list in the console
+-- later). Server-only reads; src/lib/feature-flags.ts falls back to a
+-- caller-supplied default when unconfigured or the key doesn't exist yet.
+-- ============================================================================
+create table if not exists feature_flags (
+  key         text primary key,
+  enabled     boolean not null default false,
+  updated_at  timestamptz not null default now()
+);
+
+drop trigger if exists feature_flags_updated_at on feature_flags;
+create trigger feature_flags_updated_at before update on feature_flags
+  for each row execute function set_updated_at();
+
+alter table feature_flags enable row level security;
+
+-- ============================================================================
 -- Realtime — push live progress to the browser (pipeline + render status).
 -- ============================================================================
 do $$ begin

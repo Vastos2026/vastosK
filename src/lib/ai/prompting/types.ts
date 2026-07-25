@@ -9,12 +9,26 @@
  * provider call.
  */
 
+export interface UniversalInputOpening {
+  type: "door" | "window";
+  side: "north" | "south" | "east" | "west";
+  /** another room's name, "exterior", or null */
+  connectsTo: string | null;
+}
+
 export interface UniversalInputRoom {
   name: string;
   /** formatted for the schema boundary, e.g. "18 x 16 ft" — internally rooms use numeric width/height */
   size: string;
   /** free-text, per room — e.g. "Need lots of natural light.", "Include a pooja room." */
   additional_notes?: string;
+  /**
+   * Deterministically assigned post-merge (pipeline/assign-openings.ts) —
+   * best-effort, so an empty/absent array means "none detected", never
+   * "this room has no doors or windows". Never surfaced to the AI provider
+   * before the Prompt Builder translates it to natural language.
+   */
+  openings?: UniversalInputOpening[];
 }
 
 export type LuxuryLevel = "Standard" | "Premium" | "Ultra Luxury";
