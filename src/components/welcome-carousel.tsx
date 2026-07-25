@@ -9,12 +9,14 @@
  * today, not just a mock.
  */
 
+// Black & white, with the mild dark-green glow as the only colour — matches
+// the rest of the theme (globals.css), never a saturated accent.
 const PALETTES = [
-  "from-accent/25 to-accent/5",
-  "from-info/20 to-transparent",
-  "from-accent-soft to-surface-2",
-  "from-success/15 to-transparent",
+  "from-white/10 to-transparent",
+  "from-[#1f4d3a]/25 to-transparent",
   "from-surface-3 to-surface",
+  "from-white/5 to-surface-2",
+  "from-[#1f4d3a]/15 to-surface",
 ];
 
 function Column({ seed, duration, reverse }: { seed: number; duration: number; reverse?: boolean }) {

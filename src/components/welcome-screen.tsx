@@ -21,7 +21,7 @@ export function WelcomeScreen({ displayName }: { displayName: string | null }) {
       <WelcomeCarousel />
 
       <div className="relative z-10 flex flex-col items-center text-center">
-        <p className="text-sm font-medium text-accent">
+        <p className="text-sm font-medium text-muted">
           {displayName ? `Hello, ${displayName}` : "Hello"}
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">

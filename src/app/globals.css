@@ -1,29 +1,36 @@
 @import "tailwindcss";
 
 /*
-  Vasto Studios — dark studio design system
-  Deep charcoal surfaces + warm amber/gold accent (premium interior-design feel).
+  Vastos — black & white design system (Google Flow reference).
+  True-black surfaces, white/grey text and UI, no colour accent — the only
+  colour anywhere is a very mild dark-green gradient, used sparingly as a
+  decorative touch where a surface would otherwise feel too plain (page
+  backdrop, carousel cards), never as a solid UI colour (buttons/links/focus
+  stay monochrome).
 */
 
 @theme {
   /* Surfaces */
-  --color-bg: #0a0a0d;
-  --color-surface: #131318;
-  --color-surface-2: #1a1a21;
-  --color-surface-3: #22222b;
-  --color-border: #2a2a34;
-  --color-border-strong: #3a3a46;
+  --color-bg: #000000;
+  --color-surface: #0d0d0d;
+  --color-surface-2: #151515;
+  --color-surface-3: #1c1c1c;
+  --color-border: #262626;
+  --color-border-strong: #363636;
 
   /* Text */
-  --color-foreground: #ededf2;
-  --color-muted: #9b9bab;
-  --color-faint: #6c6c7c;
+  --color-foreground: #f5f5f5;
+  --color-muted: #9a9a9a;
+  --color-faint: #666666;
 
-  /* Brand accent — warm gold */
-  --color-accent: #e6a45c;
-  --color-accent-hover: #f0b876;
-  --color-accent-soft: #2a2014;
-  --color-accent-foreground: #1a1208;
+  /* Brand accent — monochrome (white), not a colour */
+  --color-accent: #f2f2f2;
+  --color-accent-hover: #ffffff;
+  --color-accent-soft: #1a1a1a;
+  --color-accent-foreground: #0a0a0a;
+
+  /* Mild decorative gradient — the ONE spot of colour, used sparingly */
+  --color-glow: #1f4d3a;
 
   /* Status */
   --color-success: #5cc98a;
@@ -56,16 +63,15 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Subtle studio backdrop: soft amber glow top-left, cool depth bottom-right */
+  /* Near-black backdrop with a very mild dark-green glow, bottom of the page —
+     the one deliberate spot of colour on an otherwise black & white screen. */
   body::before {
     content: "";
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background:
-      radial-gradient(60rem 40rem at 0% -10%, rgba(230, 164, 92, 0.06), transparent 70%),
-      radial-gradient(50rem 40rem at 100% 110%, rgba(109, 168, 226, 0.05), transparent 70%);
+    background: radial-gradient(60rem 34rem at 50% 120%, rgba(31, 77, 58, 0.16), transparent 70%);
   }
 
   ::selection {
