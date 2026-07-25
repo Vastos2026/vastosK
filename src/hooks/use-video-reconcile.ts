@@ -24,9 +24,9 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useVasto } from "./store";
-import { fetchVideoJob } from "./render-client";
-import { uid } from "./utils";
+import { useVasto } from "@/lib/store";
+import { fetchVideoJob } from "@/lib/render-client";
+import { uid } from "@/lib/utils";
 
 const MIN_AGE_MS = 60_000;
 const SWEEP_EVERY_MS = 45_000;

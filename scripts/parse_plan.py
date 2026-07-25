@@ -964,7 +964,13 @@ def detect_walls(wmask, W, H):
     raw = []
     if lines is not None:
         for line in lines:
-            x1, y1, x2, y2 = line[0]
+            # cv2.HoughLinesP's output shape is (N, 1, 4) on some OpenCV builds
+            # and (N, 4) on others (observed: opencv-python 5.x) — np.ravel
+            # flattens either into one 4-element array regardless, instead of
+            # assuming line[0] is itself the 4-tuple (which crashes with
+            # "cannot unpack non-iterable numpy.int32 object" on the (N, 4) shape,
+            # since line[0] there is just the first scalar, not a row).
+            x1, y1, x2, y2 = np.ravel(line)[:4]
             dx, dy = abs(int(x2) - int(x1)), abs(int(y2) - int(y1))
             angle = np.degrees(np.arctan2(dy, dx))
             if 8 <= angle <= 82:

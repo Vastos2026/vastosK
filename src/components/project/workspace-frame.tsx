@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useVasto, useHydrated } from "@/lib/store";
-import { useVideoReconcile } from "@/lib/use-video-reconcile";
+import { useVideoReconcile } from "@/hooks/use-video-reconcile";
 import { PHASES } from "@/lib/nav";
 import { PROPERTY_TYPES } from "@/lib/data";
 import { StatusBadge } from "@/components/ui/badge";
