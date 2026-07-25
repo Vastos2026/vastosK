@@ -2,7 +2,8 @@
   "category": "Commercial",
   "label": "Commercial Office",
   "planningPersona": "Commercial",
-  "subcategories": ["Corporate Office", "Coworking Space", "Retail Store", "Showroom", "Restaurant / Cafe"],
+  "notes": "Office/workspace only, matching the welcome screen's 'Commercial office' card. Retail, F&B, healthcare, hospitality and every other business type are Custom (see custom.json) — they get their own free-typed subcategory and planner persona instead of being squeezed into an office room list.",
+  "subcategories": ["Corporate Office", "Coworking Space", "Startup Office", "Business Cabin Suite"],
   "roomTypes": [
     "Reception",
     "Open Workspace",

@@ -10,7 +10,11 @@ const CATEGORIES: { type: PropertyType; label: string; icon: string }[] = [
   { type: "villa", label: "Individual home", icon: "Home" },
   { type: "apartment", label: "Apartment", icon: "Building2" },
   { type: "office", label: "Commercial office", icon: "Briefcase" },
-  { type: "commercial", label: "Custom", icon: "Store" },
+  // "Custom" covers every business type that isn't an office — clinic,
+  // restaurant, retail, temple, etc. (see config/project-types/custom.json)
+  // — Sparkles reads as "something else", not the Store icon's retail-only
+  // implication.
+  { type: "commercial", label: "Custom", icon: "Sparkles" },
 ];
 
 export function WelcomeScreen({ displayName }: { displayName: string | null }) {

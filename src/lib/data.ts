@@ -9,7 +9,9 @@ export const PROPERTY_TYPES: {
   { id: "apartment", label: "Apartment", description: "Flats & multi-unit homes", icon: "Building2" },
   { id: "villa", label: "Villa", description: "Independent houses & bungalows", icon: "Home" },
   { id: "office", label: "Office", description: "Workspaces & cabins", icon: "Briefcase" },
-  { id: "commercial", label: "Commercial", description: "Retail, showrooms & F&B", icon: "Store" },
+  // Maps to the welcome screen's "Custom" category (config/project-types/custom.json)
+  // — clinics, restaurants, retail, temples, anything that isn't an office.
+  { id: "commercial", label: "Custom", description: "Clinics, restaurants, retail & more", icon: "Sparkles" },
 ];
 
 /** Design styles with an Indian-interior focus (per the product spec). */

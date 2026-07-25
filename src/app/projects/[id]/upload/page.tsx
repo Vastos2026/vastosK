@@ -57,7 +57,6 @@ export default function UploadPage() {
   const [parse, setParse] = useState<ParseResult | null>(null);
   const [confidence, setConfidence] = useState(0);
   const [calibrated, setCalibrated] = useState(false);
-  const [longestFt, setLongestFt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [selRoom, setSelRoom] = useState<string | null>(null);
   const [selItem, setSelItem] = useState<string | null>(null);
@@ -104,10 +103,9 @@ export default function UploadPage() {
     setStatus(id, "parsing");
     setStage("detecting");
     try {
-      const known = Number(longestFt);
       const result = await parsePlanViaApi(
         selected.file,
-        { longestSideFt: known > 0 ? known : undefined, projectId: id },
+        { projectId: id },
         (p) => setProgress(p),
       );
       setGeometry(result.geometry);
@@ -131,7 +129,7 @@ export default function UploadPage() {
       setProgress(null);
       setStage("selected");
     }
-  }, [selected, id, longestFt, setFloorPlan, setItems, setStatus]);
+  }, [selected, id, setFloorPlan, setItems, setStatus]);
 
   const reset = useCallback(() => {
     setSelected(null);
@@ -140,7 +138,6 @@ export default function UploadPage() {
     setProgress(null);
     setError(null);
     setCalibrated(false);
-    setLongestFt("");
     setStage("idle");
   }, []);
 
@@ -519,45 +516,25 @@ export default function UploadPage() {
               </div>
             )}
 
-            {!selected.isImage ? (
+            {!selected.isImage && (
               <p className="mt-2 text-xs text-warning">
                 PDFs can&apos;t be analyzed by OpenCV. Export the plan as a PNG or
                 JPG for real wall/room detection.
               </p>
-            ) : (
-              <div className="mt-4 rounded-xl border border-border bg-surface-2 p-3">
-                <label className="block">
-                  <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted">
-                    <Icon name="Ruler" className="size-3.5 text-accent" />
-                    Longest plan dimension (ft) — for accurate scale
-                  </span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    value={longestFt}
-                    onChange={(e) => setLongestFt(e.target.value)}
-                    placeholder="e.g. 40 — leave blank to estimate"
-                    className="input"
-                  />
-                </label>
-                <p className="mt-1.5 text-[11px] text-faint">
-                  Enter a real measurement so room dimensions are exact. Blank uses
-                  an estimate you can correct in 2D Review.
-                </p>
-              </div>
             )}
 
             <div className="mt-4 flex items-center justify-between gap-3">
               <Button variant="ghost" icon="ArrowLeft" onClick={reset}>
                 Choose another
               </Button>
-              <Button icon="Box" onClick={runDetection}>
-                Import 2D Design
+              <Button icon="Sparkles" onClick={runDetection}>
+                Analyze floor plan
               </Button>
             </div>
           </div>
           <p className="mt-3 text-center text-xs text-faint">
-            Python OpenCV detects walls, doors, windows and room boundaries.
+            Detects walls, doors, windows and room boundaries automatically — dimensions
+            are estimated and can be corrected in 2D Review.
           </p>
         </div>
       </div>

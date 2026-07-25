@@ -584,8 +584,8 @@ select 'planning', c.category, 1, c.persona::jsonb, true
 from (values
   ('Residential', '{"persona":"Think like an experienced interior designer creating a family home: prioritise comfort, warmth and everyday liveability alongside the chosen style."}'),
   ('Apartment',   '{"persona":"Think like an interior designer working within an apartment''s real space constraints: prioritise efficient layouts and multi-purpose furniture while still honouring the chosen style."}'),
-  ('Commercial',  '{"persona":"Think like a commercial interior designer optimising the space for its business purpose (ambience, circulation, customer or client experience) alongside the chosen style."}'),
-  ('Custom',      '{"persona":"Think like a specialist interior designer for this exact category, prioritising the functional and safety needs of that category alongside the chosen style."}')
+  ('Commercial',  '{"persona":"Think like a commercial interior designer working on an office or workspace: prioritise productivity, circulation and a professional client-facing impression alongside the chosen style."}'),
+  ('Custom',      '{"persona":"Think like a specialist interior designer for this exact named business type (e.g. a clinic, restaurant, retail store, temple, or any other category the user named): prioritise the functional, safety and customer-experience needs specific to that business alongside the chosen style."}')
 ) as c(category, persona)
 where not exists (select 1 from prompt_templates where type = 'planning' and category = c.category);
 

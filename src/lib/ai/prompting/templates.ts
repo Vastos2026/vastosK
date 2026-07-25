@@ -41,11 +41,12 @@ const DEFAULT_PLANNING_PERSONA: Record<string, string> = {
     "Think like an interior designer working within an apartment's real space constraints: prioritise " +
     "efficient layouts and multi-purpose furniture while still honouring the chosen style.",
   Commercial:
-    "Think like a commercial interior designer optimising the space for its business purpose (ambience, " +
-    "circulation, customer or client experience) alongside the chosen style.",
+    "Think like a commercial interior designer working on an office or workspace: prioritise productivity, " +
+    "circulation and a professional client-facing impression alongside the chosen style.",
   Custom:
-    "Think like a specialist interior designer for this exact category, prioritising the functional and " +
-    "safety needs of that category alongside the chosen style.",
+    "Think like a specialist interior designer for this exact named business type (e.g. a clinic, restaurant, " +
+    "retail store, temple, or any other category the user named): prioritise the functional, safety and " +
+    "customer-experience needs specific to that business alongside the chosen style.",
 };
 
 const DEFAULT_BUILDER: BuilderTemplateBody = {

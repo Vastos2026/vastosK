@@ -5,5 +5,5 @@
   "subcategories": [],
   "roomTypes": [],
   "walkthroughOrder": [],
-  "notes": "Custom is open-ended (e.g. Dental Clinic, Restaurant, Lighthouse) — the user names their own subcategory and rooms as free text instead of picking from a fixed list. Empty roomTypes/walkthroughOrder mean 'no predefined list, no preferred order' rather than 'none allowed'; the frontend falls back to free-text room entry and walkthrough order defaults to the room list's own order."
+  "notes": "Custom is the catch-all for every business type that is NOT an office (see commercial.json): Dental Clinic, Hospital, Restaurant, Pub, Retail Store, Showroom, Temple, Lighthouse, and anything else. The user names their own subcategory and rooms as free text instead of picking from a fixed list. Empty roomTypes/walkthroughOrder mean 'no predefined list, no preferred order' rather than 'none allowed'; the frontend falls back to free-text room entry and walkthrough order defaults to the room list's own order."
 }
