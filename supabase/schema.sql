@@ -356,14 +356,35 @@ create policy "own render_versions" on render_versions
 --
 -- Identity + password hashing + sessions are handled entirely by Supabase Auth
 -- (auth.users) — this table only carries the app-specific fields the revamp
--- plan calls for: role (user/admin/master), status, trial tracking, and which
--- admin manages a client. Clients never self-register: accounts are created
--- via the Admin API (auth.admin.createUser), which fires the trigger below to
--- create the matching profile row automatically.
+-- plan calls for: role (user/master), status, trial tracking. Only two roles
+-- on purpose — `user` (clients) and `master` (Vastos team, full access, no
+-- subdivision between team members). Clients never self-register: accounts
+-- are created via the Admin API (auth.admin.createUser), which fires the
+-- trigger below to create the matching profile row automatically.
 -- ============================================================================
 do $$ begin
-  create type user_role as enum ('user', 'admin', 'master');
+  create type user_role as enum ('user', 'master');
 exception when duplicate_object then null; end $$;
+
+-- Migration for a database created before roles were simplified from
+-- user/admin/master down to user/master: recreate the enum without 'admin'
+-- (reassigning any existing 'admin' rows to 'user' first). No-op on a fresh
+-- database, where the `create type` above already defines the 2-value shape.
+do $$
+begin
+  if exists (
+    select 1 from pg_type t join pg_enum e on e.enumtypid = t.oid
+    where t.typname = 'user_role' and e.enumlabel = 'admin'
+  ) then
+    alter table profiles alter column role drop default;
+    alter table profiles alter column role type text;
+    update profiles set role = 'user' where role = 'admin';
+    drop type user_role;
+    create type user_role as enum ('user', 'master');
+    alter table profiles alter column role type user_role using role::user_role;
+    alter table profiles alter column role set default 'user';
+  end if;
+end $$;
 
 do $$ begin
   create type user_status as enum ('active', 'trial_ended', 'suspended', 'pending_approval');
@@ -375,29 +396,31 @@ create table if not exists profiles (
   role             user_role not null default 'user',
   status           user_status not null default 'active',
   trial_ends_at    timestamptz,
-  assigned_admin_id uuid references profiles (id) on delete set null,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
 create index if not exists profiles_role_idx on profiles (role);
-create index if not exists profiles_assigned_admin_idx on profiles (assigned_admin_id);
+
+-- Drop the admin-tier assignment field from the earlier 3-role design.
+-- No-op if this database never had it (fresh installs never create it).
+drop index if exists profiles_assigned_admin_idx;
+alter table profiles drop column if exists assigned_admin_id;
 
 drop trigger if exists profiles_updated_at on profiles;
 create trigger profiles_updated_at before update on profiles
   for each row execute function set_updated_at();
 
 -- Auto-create a profile row whenever a new Supabase Auth user is created.
--- `role`/`assigned_admin_id` can be passed via the Admin API's user_metadata
--- at creation time (defaults to a plain 'user' otherwise).
+-- `role` can be passed via the Admin API's user_metadata at creation time
+-- (defaults to a plain 'user' otherwise).
 create or replace function handle_new_auth_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id, display_name, role, assigned_admin_id)
+  insert into public.profiles (id, display_name, role)
   values (
     new.id,
     coalesce(new.raw_user_meta_data->>'display_name', new.email),
-    coalesce((new.raw_user_meta_data->>'role')::user_role, 'user'),
-    nullif(new.raw_user_meta_data->>'assigned_admin_id', '')::uuid
+    coalesce((new.raw_user_meta_data->>'role')::user_role, 'user')
   );
   return new;
 end;

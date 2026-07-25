@@ -2,7 +2,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server-client";
 
-export type UserRole = "user" | "admin" | "master";
+export type UserRole = "user" | "master";
 export type UserStatus = "active" | "trial_ended" | "suspended" | "pending_approval";
 
 export interface CurrentUser {
