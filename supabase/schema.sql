@@ -542,6 +542,60 @@ create policy "own ai_usage_logs" on ai_usage_logs
   for select using (user_id = auth.uid());
 
 -- ============================================================================
+-- prompt_templates — versioned, admin-editable prompting layer (Workstream 5).
+-- Three independently-versioned types (see "AI prompting architecture" in
+-- docs/VASTOS_REVAMP_PLAN.md): 'system' (fixed scaffolding rules), 'planning'
+-- (one row per project category, holds that category's planner persona),
+-- 'builder' (the Prompt Builder's wording snippets). Only the published row
+-- for a given (type, category) feeds live generation, so drafts are safe to
+-- edit without affecting production. Server-only access (service role) —
+-- src/lib/ai/prompting/templates.ts falls back to hardcoded defaults (kept in
+-- sync with the seed rows below) when unconfigured or nothing is published
+-- yet, so generation works before anyone touches the admin console.
+-- ============================================================================
+do $$ begin
+  create type prompt_template_type as enum ('system', 'planning', 'builder');
+exception when duplicate_object then null; end $$;
+
+create table if not exists prompt_templates (
+  id          uuid primary key default gen_random_uuid(),
+  type        prompt_template_type not null,
+  category    text,   -- set for 'planning' rows only; null for 'system'/'builder'
+  version     int not null default 1,
+  body        jsonb not null,
+  published   boolean not null default false,
+  created_by  uuid references auth.users (id) on delete set null,
+  created_at  timestamptz not null default now()
+);
+create index if not exists prompt_templates_lookup_idx on prompt_templates (type, category, published);
+
+alter table prompt_templates enable row level security;
+
+-- Seed the MVP templates on a fresh install (no-ops once any row of that
+-- type/category exists, so re-running this file never clobbers admin edits).
+insert into prompt_templates (type, category, version, body, published)
+select 'system', null, 1,
+  '{"rules":"Photorealistic interior-design magazine photograph. Realistic materials, lighting, shadows and reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and fixtures implied by the brief below - do not invent unrelated objects."}'::jsonb,
+  true
+where not exists (select 1 from prompt_templates where type = 'system');
+
+insert into prompt_templates (type, category, version, body, published)
+select 'planning', c.category, 1, c.persona::jsonb, true
+from (values
+  ('Residential', '{"persona":"Think like an experienced interior designer creating a family home: prioritise comfort, warmth and everyday liveability alongside the chosen style."}'),
+  ('Apartment',   '{"persona":"Think like an interior designer working within an apartment''s real space constraints: prioritise efficient layouts and multi-purpose furniture while still honouring the chosen style."}'),
+  ('Commercial',  '{"persona":"Think like a commercial interior designer optimising the space for its business purpose (ambience, circulation, customer or client experience) alongside the chosen style."}'),
+  ('Custom',      '{"persona":"Think like a specialist interior designer for this exact category, prioritising the functional and safety needs of that category alongside the chosen style."}')
+) as c(category, persona)
+where not exists (select 1 from prompt_templates where type = 'planning' and category = c.category);
+
+insert into prompt_templates (type, category, version, body, published)
+select 'builder', null, 1,
+  '{"intro":"Generate one photorealistic interior photograph of the following room.","cameraPrefix":"Camera guidance:","negativePrefix":"Do not include:"}'::jsonb,
+  true
+where not exists (select 1 from prompt_templates where type = 'builder');
+
+-- ============================================================================
 -- Realtime — push live progress to the browser (pipeline + render status).
 -- ============================================================================
 do $$ begin

@@ -61,6 +61,10 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 `src/lib/ai/provider.ts` (revamp Workstream 4) is the intended single entry point for the *new* pipeline's AI calls: `generateImage`, `editImage`, `generateVideo`, `runOCR`, `runSemantic`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the new `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline.ts` calls `runOCR`/`runSemantic` (not `ocr.ts`/`semantic.ts` directly) so the live upload flow is instrumented. `editImage`/`generateVideo` delegate to the existing `render/gemini-image.ts`/`render/veo-client.ts` clients rather than duplicating them. `render/flux-client.ts` (fal.ai/FLUX) is still live as the old 3D-studio render path's fallback (`api/render/route.ts`) — removal is deferred to Workstream 8, when that path is replaced, not before.
 
+### AI prompting pipeline
+
+`src/lib/ai/prompting/` (revamp Workstream 5) implements the Universal JSON Architecture: `build-universal-input.ts` (validates frontend selections into a `UniversalInput`), `design-planning.ts` (`runDesignPlanning` — one Gemini call, via `provider.generateStructured`, into a `DesignSpecification` with per-room guidance), `prompt-builder.ts` (`buildRoomPrompt` — deterministic, no AI call, the only place natural-language prompt text is produced). Template wording (`system`/`planning`/`builder`) lives in the `prompt_templates` table, versioned and `published`-gated; `templates.ts` falls back to hardcoded defaults when unconfigured. Not called from any live route yet — the frontend screens that would collect a project's rooms/style/luxury/colour don't exist until Workstream 8.
+
 ### Profile page
 
 `/profile` (`src/app/profile/page.tsx`) shows account info (from `getCurrentUser()`) and a project list/count via `src/components/profile-projects.tsx`, which reads the same local-first `useVasto` store `/projects` uses — not the `projects` table, which isn't wired into any live page yet (see below). No cost figures are shown to a client; that stays admin-only.

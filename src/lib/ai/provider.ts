@@ -24,6 +24,7 @@ import "server-only";
 
 import { extractText } from "@/lib/pipeline/ocr";
 import { understandPlan } from "@/lib/pipeline/semantic";
+import { generateJson, type GeminiPart } from "@/lib/pipeline/gemini-client";
 import { editImageWithGemini } from "@/lib/render/gemini-image";
 import { generateVideoFromImage } from "@/lib/render/veo-client";
 import type { OcrResult, SemanticPlan } from "@/lib/pipeline/types";
@@ -64,7 +65,7 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Wraps a provider call: retry, time it, log it, normalize the thrown error. */
 async function instrumented<T>(
-  feature: "ocr" | "semantic" | "image" | "edit" | "video",
+  feature: "ocr" | "semantic" | "planning" | "image" | "edit" | "video",
   model: string,
   ctx: CallContext | undefined,
   fn: () => Promise<T>,
@@ -197,6 +198,28 @@ export async function runSemantic(
   ctx?: CallContext,
 ): Promise<SemanticPlan> {
   return instrumented("semantic", "gemini-flash", ctx, () => understandPlan(ocr, bytes, mimeType));
+}
+
+/**
+ * One structured Gemini call, constrained to `schema` — the Design Planning
+ * Layer (Workstream 5) uses this to turn a Universal Input into a Design
+ * Specification JSON. Generic (not tied to that shape) so any future
+ * structured-JSON planning call goes through this layer too, instead of a
+ * caller reaching for pipeline/gemini-client.ts directly.
+ */
+export async function generateStructured<T>(
+  prompt: string,
+  schema: object,
+  ctx?: CallContext,
+): Promise<T> {
+  if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
+  const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+  return instrumented("planning", model, ctx, async () => {
+    const parts: GeminiPart[] = [{ text: prompt }];
+    const out = await generateJson<T>(parts, { temperature: 0.4, responseSchema: schema });
+    if (out === null) throw new ProviderError("AiProviderError", "structured generation failed");
+    return out;
+  });
 }
 
 interface GeminiImageResponse {

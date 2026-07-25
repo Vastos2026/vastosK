@@ -5,7 +5,7 @@ import type { ErrorCategory } from "./errors";
 export interface UsageLogEntry {
   userId?: string | null;
   projectId?: string | null;
-  feature: "ocr" | "semantic" | "image" | "edit" | "video";
+  feature: "ocr" | "semantic" | "planning" | "image" | "edit" | "video";
   model?: string;
   success: boolean;
   durationMs: number;
