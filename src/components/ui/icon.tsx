@@ -8,6 +8,7 @@ import {
   Armchair, Table, BedDouble, DoorClosed, Tv, BookOpen, Lamp, Lightbulb, Frame,
   Sprout, Flame, Sofa, Maximize, ZoomIn, ZoomOut, RefreshCw, Crop, Paintbrush,
   PanelsTopLeft, Ruler, Trash, ImagePlus, Clapperboard, ListChecks, EyeOff,
+  LogOut,
   type LucideIcon,
 } from "lucide-react";
 
@@ -21,6 +22,7 @@ const REGISTRY: Record<string, LucideIcon> = {
   Armchair, Table, BedDouble, DoorClosed, Tv, BookOpen, Lamp, Lightbulb, Frame,
   Sprout, Flame, Sofa, Maximize, ZoomIn, ZoomOut, RefreshCw, Crop, Paintbrush,
   PanelsTopLeft, Ruler, Trash, ImagePlus, Clapperboard, ListChecks, EyeOff,
+  LogOut,
 };
 
 export type IconName = keyof typeof REGISTRY;

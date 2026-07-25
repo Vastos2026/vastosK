@@ -44,7 +44,18 @@ Entry point: `src/app/api/parse-plan/route.ts`. Each stage degrades gracefully w
 
 Supabase (hosted Postgres + Auth + Realtime), no ORM — schema is raw SQL in `supabase/schema.sql`, applied manually via the Supabase SQL editor. Two client wrappers in `src/lib/supabase/`: `server.ts` uses the service-role key and bypasses RLS; `browser.ts` uses the publishable key and is used only for Realtime subscriptions. Both return `null` when unconfigured, and callers treat persistence as best-effort — the app works without Supabase.
 
-Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (one per pipeline run, stores OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state, since auth isn't wired up yet — the app is local-first), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`.
+Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (one per pipeline run, stores OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state — predates real auth below and hasn't been migrated onto it yet, still local-first via an anonymous browser id), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`.
+
+### Auth
+
+Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a custom users table — `owner_id references auth.users(id)` was already in the schema, and Supabase Auth means no hand-rolled password hashing or session crypto. Clients never self-register; accounts are admin-issued via `supabase.auth.admin.createUser`.
+
+- `profiles` table (`supabase/schema.sql`) carries the app-specific fields Supabase Auth doesn't: `role` (`user`/`admin`/`master`), `status`, `assigned_admin_id`, `trial_ends_at`. A trigger (`handle_new_auth_user`) auto-creates the matching row whenever a new `auth.users` row is created, reading `role`/`assigned_admin_id` out of that call's `user_metadata` if passed.
+- `src/lib/supabase/server-client.ts` — cookie-aware Supabase client (`@supabase/ssr`) for Server Components/Route Handlers/Server Actions, distinct from `server.ts` (service-role, bypasses RLS, for privileged one-off calls like `admin.createUser`) and `browser.ts` (anon key, Realtime only).
+- `src/lib/auth/session.ts` — `getCurrentUser()`/`requireUser()`/`requireRole()`, the actual (non-optimistic) auth check. Verifies the JWT via `getClaims()` then loads the `profiles` row. Call this in every protected page/API route — don't rely on the proxy alone.
+- `src/proxy.ts` — Next 16 renamed `middleware.ts` → `proxy.ts` (now defaults to the Node.js runtime, not Edge). This is an *optimistic* redirect-only check (session cookie present or not); it does not query the database or check role.
+- `src/app/login/` — the sign-in page + `actions.ts` (`signIn`/`signOut` Server Actions). No signup route exists anywhere in the app by design.
+- Bootstrapping the first account: create a user in the Supabase dashboard, then `update profiles set role = 'master' where id = '<uuid>';` — see the comment in `schema.sql`.
 
 ### Env vars
 

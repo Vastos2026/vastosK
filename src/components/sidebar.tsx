@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "./ui/icon";
+import { signOut } from "@/app/login/actions";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: "LayoutDashboard" },
@@ -55,9 +56,16 @@ export function Sidebar() {
         <button className="grid size-11 place-items-center rounded-xl text-muted hover:bg-surface-2 hover:text-foreground cursor-pointer">
           <Icon name="Settings" className="size-[20px]" />
         </button>
-        <div className="mt-1 grid size-9 place-items-center rounded-full bg-surface-3 text-sm font-medium text-foreground ring-1 ring-border">
-          PV
-        </div>
+        <form action={signOut}>
+          <button
+            type="submit"
+            aria-label="Sign out"
+            title="Sign out"
+            className="grid size-9 place-items-center rounded-full bg-surface-3 text-muted ring-1 ring-border hover:text-foreground cursor-pointer"
+          >
+            <Icon name="LogOut" className="size-4" />
+          </button>
+        </form>
       </div>
     </aside>
   );

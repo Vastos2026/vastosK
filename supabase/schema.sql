@@ -322,6 +322,78 @@ create policy "own render_versions" on render_versions
     where r.id = render_versions.render_id and p.owner_id = auth.uid()));
 
 -- ============================================================================
+-- profiles — role/status metadata for each Supabase Auth user.
+--
+-- Identity + password hashing + sessions are handled entirely by Supabase Auth
+-- (auth.users) — this table only carries the app-specific fields the revamp
+-- plan calls for: role (user/admin/master), status, trial tracking, and which
+-- admin manages a client. Clients never self-register: accounts are created
+-- via the Admin API (auth.admin.createUser), which fires the trigger below to
+-- create the matching profile row automatically.
+-- ============================================================================
+do $$ begin
+  create type user_role as enum ('user', 'admin', 'master');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type user_status as enum ('active', 'trial_ended', 'suspended', 'pending_approval');
+exception when duplicate_object then null; end $$;
+
+create table if not exists profiles (
+  id               uuid primary key references auth.users (id) on delete cascade,
+  display_name     text,
+  role             user_role not null default 'user',
+  status           user_status not null default 'active',
+  trial_ends_at    timestamptz,
+  assigned_admin_id uuid references profiles (id) on delete set null,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+create index if not exists profiles_role_idx on profiles (role);
+create index if not exists profiles_assigned_admin_idx on profiles (assigned_admin_id);
+
+drop trigger if exists profiles_updated_at on profiles;
+create trigger profiles_updated_at before update on profiles
+  for each row execute function set_updated_at();
+
+-- Auto-create a profile row whenever a new Supabase Auth user is created.
+-- `role`/`assigned_admin_id` can be passed via the Admin API's user_metadata
+-- at creation time (defaults to a plain 'user' otherwise).
+create or replace function handle_new_auth_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, display_name, role, assigned_admin_id)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'display_name', new.email),
+    coalesce((new.raw_user_meta_data->>'role')::user_role, 'user'),
+    nullif(new.raw_user_meta_data->>'assigned_admin_id', '')::uuid
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created after insert on auth.users
+  for each row execute function handle_new_auth_user();
+
+-- RLS: everyone can read/update only their own profile. Broader access (the
+-- admin console's user list) goes through the service-role key server-side,
+-- same pattern the rest of this codebase already uses for privileged reads —
+-- avoids a recursive "admins can see all profiles" RLS policy entirely.
+alter table profiles enable row level security;
+drop policy if exists "own profile select" on profiles;
+create policy "own profile select" on profiles
+  for select using (id = auth.uid());
+drop policy if exists "own profile update" on profiles;
+create policy "own profile update" on profiles
+  for update using (id = auth.uid()) with check (id = auth.uid());
+
+-- Bootstrapping the first account: create a user in the Supabase dashboard
+-- (Authentication → Users → Add user), then promote it once via SQL editor:
+--   update profiles set role = 'master' where id = '<the new user's uuid>';
+
+-- ============================================================================
 -- project_snapshots — PRE-AUTH persistence bridge.
 -- The app is local-first (zustand) and auth isn't wired yet, so the normalized
 -- tables above (which require auth.users) can't be written to. This table mirrors
