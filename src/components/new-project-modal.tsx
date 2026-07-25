@@ -10,17 +10,25 @@ import { useVasto } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { PropertyType } from "@/lib/types";
 
-export function NewProjectModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function NewProjectModal({
+  open,
+  onClose,
+  initialType = "apartment",
+}: {
+  open: boolean;
+  onClose: () => void;
+  initialType?: PropertyType;
+}) {
   const router = useRouter();
   const createProject = useVasto((s) => s.createProject);
   const [name, setName] = useState("");
-  const [type, setType] = useState<PropertyType>("apartment");
+  const [type, setType] = useState<PropertyType>(initialType);
 
   const submit = () => {
     const id = createProject(name.trim() || "Untitled Project", type);
     onClose();
     setName("");
-    setType("apartment");
+    setType(initialType);
     router.push(`/projects/${id}/upload`);
   };
 

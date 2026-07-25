@@ -6,11 +6,12 @@ import { cn } from "@/lib/utils";
 import { Icon } from "./ui/icon";
 import { signOut } from "@/app/login/actions";
 
+// Styles / Asset Library belonged to the old 3D-placement studio, out of
+// scope for the revamp — dropped from the nav (routes still exist, dormant,
+// same "deprioritized not removed" treatment as the rest of that studio).
 const NAV = [
-  { href: "/", label: "Dashboard", icon: "LayoutDashboard" },
+  { href: "/", label: "Home", icon: "LayoutDashboard" },
   { href: "/projects", label: "Projects", icon: "PanelsTopLeft" },
-  { href: "/styles", label: "Styles", icon: "Palette" },
-  { href: "/assets", label: "Asset Library", icon: "Box" },
 ];
 
 export function Sidebar() {
