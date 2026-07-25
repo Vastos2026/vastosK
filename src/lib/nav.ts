@@ -1,13 +1,16 @@
 import type { Phase, Project } from "./types";
 
-// The 3D Studio phase was removed: 2D Review carries the exact room data
-// (dimensions, furniture sizes + placements, openings) straight into Rooms.
+// Workstream 8.5 rebuild: the old 3D-studio "Rooms"/multi-view "Renders"
+// phases are gone (see docs/VASTOS_REVAMP_PLAN.md "What's kept vs. what's
+// destroyed"). "Generate" is the new per-room card gallery; "Approve" is
+// Final Image Selection; "Walkthrough" is the simplified 3-second-clip video.
 export const PHASES: { id: Phase; label: string; icon: string }[] = [
   { id: "upload", label: "Upload", icon: "FileUp" },
-  { id: "review", label: "2D Review", icon: "Ruler" },
+  { id: "review", label: "Review", icon: "Ruler" },
   { id: "design", label: "Design", icon: "Palette" },
-  { id: "rooms", label: "Rooms", icon: "LayoutGrid" },
-  { id: "renders", label: "Renders", icon: "Image" },
+  { id: "generate", label: "Generate", icon: "Image" },
+  { id: "approve", label: "Approve", icon: "ListChecks" },
+  { id: "walkthrough", label: "Walkthrough", icon: "Clapperboard" },
 ];
 
 /** The phase a project should resume at, based on its status. */
@@ -19,9 +22,9 @@ export function resumePhase(project: Project): Phase {
     case "parsed":
       return "review";
     case "designing":
-      return "rooms";
+      return "generate";
     case "rendered":
-      return "renders";
+      return "walkthrough";
     default:
       return "upload";
   }

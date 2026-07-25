@@ -34,6 +34,9 @@ export default function DesignPage() {
   );
   const [luxuryLevel, setLuxuryLevel] = useState<LuxuryLevel>(project?.luxuryLevel ?? "Premium");
   const [colourPalette, setColourPalette] = useState(project?.colourPalette ?? COLOUR_PALETTES[0].id);
+  const [additionalRequirements, setAdditionalRequirements] = useState(
+    project?.additionalRequirements ?? "",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,15 +76,25 @@ export default function DesignPage() {
           name: r.name,
           widthFt: r.width,
           heightFt: r.height,
-          additionalNotes: r.brief,
+          // One global note (not per-room) — the Design Planning Layer decides
+          // which room(s) it actually applies to, so the same text is handed
+          // to every room rather than making the user pre-sort it.
+          additionalNotes: additionalRequirements.trim() || undefined,
           openings: r.openings,
         })),
         design: { style: style.name, luxuryLevel, colourPalette },
       });
-      setDesignPlan(id, { subcategory, luxuryLevel, colourPalette, universalInput, designSpec });
+      setDesignPlan(id, {
+        subcategory,
+        luxuryLevel,
+        colourPalette,
+        additionalRequirements: additionalRequirements.trim() || undefined,
+        universalInput,
+        designSpec,
+      });
       useVasto.getState().setStyle(id, styleId);
       useVasto.getState().setStatus(id, "designing");
-      router.push(`/projects/${id}/rooms`);
+      router.push(`/projects/${id}/generate`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Design planning failed");
     } finally {
@@ -198,6 +211,19 @@ export default function DesignPage() {
               </button>
             ))}
           </div>
+        </Section>
+
+        <Section title="Additional requirements">
+          <textarea
+            value={additionalRequirements}
+            onChange={(e) => setAdditionalRequirements(e.target.value)}
+            rows={3}
+            placeholder={`"I want a double-height living room." "Include a pooja space." "Wooden ceiling."`}
+            className="input w-full resize-none text-sm"
+          />
+          <p className="mt-1.5 text-[11px] text-faint">
+            One note for the whole project — no need to say which room it&apos;s for.
+          </p>
         </Section>
 
         {error && (

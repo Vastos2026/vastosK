@@ -37,7 +37,7 @@ export function NewProjectModal({
     setName("");
     setType(initialType);
     setShowPicker(!lockType);
-    router.push(`/projects/${id}/upload`);
+    router.push(`/projects/${id}/floor-plan`);
   };
 
   return (

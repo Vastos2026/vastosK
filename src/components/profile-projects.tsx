@@ -15,7 +15,7 @@ import { Icon } from "@/components/ui/icon";
 export function ProfileProjects() {
   const hydrated = useHydrated();
   const projects = useVasto((s) => s.projects);
-  const rendered = projects.filter((p) => p.renders.length > 0).length;
+  const rendered = projects.filter((p) => p.roomCards.some((c) => c.generations.length > 0)).length;
 
   return (
     <div className="mt-6">

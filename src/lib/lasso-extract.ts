@@ -5,11 +5,11 @@
  * space). These helpers isolate what falls inside that loop:
  *   • wall segments → their outer bounding lines give the room's true rectangle
  *   • OCR text tokens → the printed room name + "8'11" x 13'6"" dimension text
- *   • detected furniture / doors / windows → tagged as children of the room
+ *   • detected doors / windows → counted as inside the room
  * and map the result into plan feet-space so it can become an editable Room.
  */
 
-import type { DetectedGeometry, FloorPlan, PlacedItem, Room } from "./types";
+import type { DetectedGeometry, FloorPlan, Room } from "./types";
 import type { OcrResult } from "./pipeline/types";
 
 export interface Pt {
@@ -177,9 +177,7 @@ export interface LassoExtraction {
   /** suggested editable dimensions: printed label first, else measured rect */
   widthFt: number;
   heightFt: number;
-  /** detected furniture whose centre falls inside the region (plan feet) */
-  itemIds: string[];
-  counts: { walls: number; doors: number; windows: number; furniture: number };
+  counts: { walls: number; doors: number; windows: number };
   /** existing plan room this selection overlaps most (IoU > 0.4) — update it */
   matchedRoomId?: string;
 }
@@ -189,9 +187,8 @@ export function extractLassoRegion(args: {
   geometry: DetectedGeometry;
   plan: FloorPlan;
   ocr?: OcrResult;
-  items: PlacedItem[];
 }): LassoExtraction {
-  const { polygon, geometry: g, plan, ocr, items } = args;
+  const { polygon, geometry: g, plan, ocr } = args;
   const boundsPx = polygonBounds(polygon);
 
   // 1) Walls inside the loop → their outer bounding lines are the room's real
@@ -292,16 +289,7 @@ export function extractLassoRegion(args: {
     if (orientDiffers && elong >= 1.25) [widthFt, heightFt] = [heightFt, widthFt];
   }
 
-  // 6) Children: furniture whose centre (plan feet) falls in the region, plus
-  // door/window symbols (pixel space) inside the loop.
-  const itemIds = items
-    .filter((it) => !it.ghost)
-    .filter((it) => {
-      const cx = it.x + it.w / 2;
-      const cy = it.y + it.d / 2;
-      return cx >= rectFt.x && cx <= rectFt.x + rectFt.width && cy >= rectFt.y && cy <= rectFt.y + rectFt.height;
-    })
-    .map((it) => it.id);
+  // 6) Door/window symbols (pixel space) inside the loop.
   const doors = g.doors.filter((d) => pointInPolygon(d, polygon)).length;
   const windows = g.windows.filter((w) => pointInPolygon(w, polygon)).length;
 
@@ -327,8 +315,7 @@ export function extractLassoRegion(args: {
     labelDims,
     widthFt: r1(widthFt),
     heightFt: r1(heightFt),
-    itemIds,
-    counts: { walls: wallCount, doors, windows, furniture: itemIds.length },
+    counts: { walls: wallCount, doors, windows },
     matchedRoomId,
   };
 }

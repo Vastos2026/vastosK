@@ -6,7 +6,10 @@ export type PropertyType = "apartment" | "villa" | "office" | "commercial";
 
 export type ProjectStatus = "draft" | "parsing" | "parsed" | "designing" | "rendered";
 
-export type Phase = "upload" | "review" | "design" | "rooms" | "renders";
+/** Unit system for displaying/editing dimensions — canonical storage is always decimal feet. */
+export type Unit = "ft-in" | "ft" | "m" | "cm";
+
+export type Phase = "upload" | "review" | "design" | "generate" | "approve" | "walkthrough";
 
 export type RenderStatus = "queued" | "processing" | "completed" | "failed";
 
@@ -23,13 +26,6 @@ export interface Room {
   x: number;
   y: number;
   color: string;
-  /** ceiling height in feet (user-set on the room page); defaults to 9 if unset */
-  ceilingFt?: number;
-  /**
-   * Optional per-room design brief — leads the render prompt when set. Lives on
-   * the room (not page state) so a reload can't silently drop it mid-design.
-   */
-  brief?: string;
   /**
    * Doors/windows on this room's walls, assigned deterministically post-merge
    * (see pipeline/assign-openings.ts) — never asserts a room has NO openings,
@@ -169,110 +165,67 @@ export interface DesignStyle {
   name: string;
   tagline: string;
   palette: string[];
-  /** representative wall + floor colors used by the 3D preview */
-  wallColor: string;
-  floorColor: string;
-  accentColor: string;
 }
 
-export interface CatalogItem {
-  id: string;
-  name: string;
-  category: "seating" | "tables" | "storage" | "lighting" | "decor" | "beds";
-  /** footprint in feet */
-  w: number;
-  d: number;
-  /** height in feet */
-  h: number;
-  color: string;
-  icon: string;
-}
-
-/** An instance of a catalog item placed in a room. */
+/**
+ * A detected-furniture candidate from the parsing pipeline (OCR/vision reading
+ * what's drawn on the plan) — see pipeline/merge.ts's `toPlacedItems`. Kept
+ * only as pipeline output typing; the app no longer places, persists, or
+ * displays furniture as discrete objects (Workstream 8.5 destroyed the old
+ * 3D furniture-placement studio — see docs/VASTOS_REVAMP_PLAN.md).
+ */
 export interface PlacedItem {
   id: string;
   catalogId: string;
   name: string;
   roomId?: string;
-  /** position in feet on the plan */
   x: number;
   y: number;
-  /** rotation in degrees */
   rotation: number;
   w: number;
   d: number;
   h: number;
   color: string;
-  /** AI-suggested but not yet accepted */
   ghost?: boolean;
 }
 
-/**
- * One furniture item's verdict from the render verify loop: the render was
- * vision-checked against its own 3D screenshot, and missing pieces were
- * repaired in place with a targeted edit.
- *   present   — seen in the render where the plan puts it
- *   repaired  — was missing, added back by the repair pass, now present
- *   missing   — still absent after repairs (or repair unavailable)
- *   misplaced — present, but well away from where its 3D box sits in frame
- *   offscreen — its box isn't visible in this camera's frame (not an error)
- *   unchecked — the checker itself was unavailable; no claim either way
- */
-export interface FurnitureCheck {
-  name: string;
-  status: "present" | "repaired" | "missing" | "misplaced" | "offscreen" | "unchecked";
-  /** short location phrase from the checker (evidence, shown as a hint) */
-  where?: string;
-}
-
-export interface RenderVersion {
+/** One generated (or edited) image for a room — never overwritten, always a new entry. */
+export interface RoomGeneration {
   id: string;
-  label: string;
   createdAt: string;
-  note: string;
-  /** style snapshot for this version (enables visible compare / style-switch) */
-  styleId?: string;
-  /** URL of the real generated image for this version (served from storage) */
-  imageUrl?: string;
-  /** storage key of the image — used as the base for a later inpaint edit */
-  imageKey?: string;
-  /** the FLUX prompt that produced this version, for transparency */
-  prompt?: string;
-  /** furniture verify-loop result for this version (ticks in the UI) */
-  checklist?: FurnitureCheck[];
-  /** substantial furniture the checker saw that matches nothing in the plan */
-  extras?: string[];
-  /**
-   * Non-fatal quality warning for this version (shown as a banner). Set on a
-   * walkthrough clip when a side still couldn't be verified or a Veo turn
-   * couldn't be pinned to its end frame — the output is kept, but placements may
-   * drift and a retry would be cleaner.
-   */
-  warning?: string;
+  /** URL to display the image (served by GET /api/render) */
+  imageUrl: string;
+  /** storage key — base for a later lasso edit */
+  imageKey: string;
+  /** the assembled prompt that produced it, kept for traceability, never shown to the user */
+  prompt: string;
+  /** "Other requirements" note for this one generation (Generate More), if any */
+  note?: string;
+  /** true when this version came from a lasso edit of an earlier version, not a fresh generation */
+  edited?: boolean;
 }
 
-export interface RenderJob {
-  id: string;
-  // front/side/corner/corner-back/top are 3D-camera renders; left/right/back are
-  // stills extracted from the orbit VIDEO; pano holds the orbit video itself.
-  view: "front" | "side" | "corner" | "corner-back" | "left" | "right" | "back" | "top" | "pano";
-  styleId: string;
-  /** the room this render is focused on (room-by-room flow); absent = whole scene */
-  roomId?: string;
+/** One room's generation history + Final Image Selection state. */
+export interface RoomCard {
+  roomId: string;
+  generations: RoomGeneration[];
+  /** id of the RoomGeneration approved as this room's final image */
+  approvedId?: string;
+  /** included in the walkthrough — defaults to true once a room has an approved image */
+  included: boolean;
+}
+
+/** The finished walkthrough video for a project. */
+export interface Walkthrough {
   status: RenderStatus;
   createdAt: string;
-  /** progress 0–100 while processing */
-  progress: number;
-  versions: RenderVersion[];
-  /** failure reason when status === "failed" */
+  videoUrl?: string;
+  videoKey?: string;
+  /** stable unguessable token for the public share link */
+  shareToken?: string;
+  /** room ids in the confirmed order the clips were concatenated in */
+  roomOrder: string[];
   error?: string;
-  /**
-   * For the left/right/back stills extracted from a walkthrough: the id of the
-   * `pano` render they were produced with. Lets the reconcile pass complete
-   * exactly this attempt's sides (not every same-room side record) when it
-   * recovers a walkthrough whose response never reached the client.
-   */
-  videoOf?: string;
 }
 
 export interface Project {
@@ -285,8 +238,7 @@ export interface Project {
   thumbnail?: string;
   floorPlan?: FloorPlan;
   styleId?: string;
-  placedItems: PlacedItem[];
-  renders: RenderJob[];
+  units?: Unit;
   /**
    * Global design selections (revamp Workstream 8) — the Universal JSON
    * Architecture's `design` section, chosen once on the Design step and
@@ -295,7 +247,12 @@ export interface Project {
   subcategory?: string;
   luxuryLevel?: LuxuryLevel;
   colourPalette?: string;
+  /** One global free-text note (Workstream 8.5) — replaces the earlier per-room field. */
+  additionalRequirements?: string;
   /** Cached Universal Input + Design Specification from the last Design Planning run. */
   universalInput?: UniversalInput;
   designSpec?: DesignSpecification;
+  /** Per-room generation history — the Room Generation Gallery + Final Image Selection. */
+  roomCards: RoomCard[];
+  walkthrough?: Walkthrough;
 }

@@ -36,15 +36,21 @@ Upload (JPG/PNG) → AWS S3 → Inngest → OCR (Gemini Vision) → Gemini Flash
 
 Entry point: `src/app/api/parse-plan/route.ts`. Each stage degrades gracefully when its credentials are missing (e.g. no `GEMINI_API_KEY` → generic room names from geometry alone; no AWS creds → local disk storage). PDFs are not rasterized — they currently fall back to a sample layout; only PNG/JPG go through the real pipeline.
 
-### Rendering pipeline
+### Rendering pipeline — rebuilt, Workstream 8.5 (2026-07-26)
 
-`src/lib/render/`: `flux-client.ts` (fal.ai FLUX Pro — photorealistic stills), `gemini-image.ts` (Gemini/"Nano Banana" image edits), `veo-client.ts` (walkthrough video generation), plus `ffmpeg.ts`, `annotate.ts`, `prompt.ts`, `verify.ts`, `video-jobs.ts` supporting that flow.
+The old 3D furniture-placement studio and its multi-view/orbit-video render pipeline were **destroyed**, not deprecated — see `docs/VASTOS_REVAMP_PLAN.md`'s "What's kept vs. what's destroyed" for the full list. `render/flux-client.ts` (fal.ai), `render/verify.ts` (furniture-presence checker), `render/annotate.ts`, `render/prompt.ts`, `render/video-jobs.ts`, `render-client.ts`, `scene-3d.tsx`, `panorama-360.tsx`, `room-walkthrough.tsx`, `opening-editor.tsx`, `detect-room-client.ts`, `suggest-furniture-client.ts`, the `/api/detect-room` and `/api/suggest-furniture` routes, and the entire `PlacedItem`/furniture-catalog UI are gone.
+
+What's live now, all driven by the Universal JSON Architecture (see "AI prompting pipeline" below):
+- `src/lib/render/gemini-image.ts` — Nano Banana image edits, used by `/api/edit-room-image` (View & Edit's up-to-2-region lasso edit).
+- `src/lib/render/veo-client.ts` — Veo image-to-video, used by `/api/generate-walkthrough`: one 3-second cinematic-zoom-in clip per approved room image (Veo's minimum is 4s — each clip is generated at 4s and trimmed to exactly 3s via `ffmpeg.ts`'s `trimVideo`), concatenated in order.
+- `src/lib/render/ffmpeg.ts` — `concatVideos`, `trimVideo`; `assembleSlideshow`/`extractFramesFromVideo`/`probeDuration` are leftover from the old orbit flow, unused but harmless.
+- `/api/generate-room-image`, `/api/edit-room-image`, `/api/generate-walkthrough`, `/api/order-rooms`, `/api/design-plan` — small, single-purpose routes, replacing the old 859-line `/api/render` (which now only has a `GET ?key=` handler serving stored bytes back to the browser).
 
 ### Data layer
 
 Supabase (hosted Postgres + Auth + Realtime), no ORM — schema is raw SQL in `supabase/schema.sql`, applied manually via the Supabase SQL editor. Two client wrappers in `src/lib/supabase/`: `server.ts` uses the service-role key and bypasses RLS; `browser.ts` uses the publishable key and is used only for Realtime subscriptions. Both return `null` when unconfigured, and callers treat persistence as best-effort — the app works without Supabase.
 
-Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (one per pipeline run, stores OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state — predates real auth below and hasn't been migrated onto it yet, still local-first via an anonymous browser id), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`.
+Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (one per pipeline run, stores OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state — predates real auth below and hasn't been migrated onto it yet, still local-first via an anonymous browser id), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`. **Note**: `placed_items`, `scenes`, `renders`/`render_versions`, `render_jobs` back the destroyed old studio/render flow above — the local-first `useVasto` store (`src/lib/store.ts`) no longer reads or writes those shapes (`Project.roomCards`/`Project.walkthrough` replaced them client-side); the tables themselves are left alone pending a real migration, not touched by this pass.
 
 ### Auth
 
@@ -59,13 +65,13 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 ### AI provider layer
 
-`src/lib/ai/provider.ts` (revamp Workstream 4) is the intended single entry point for the *new* pipeline's AI calls: `generateImage`, `editImage`, `generateVideo`, `runOCR`, `runSemantic`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the new `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline.ts` calls `runOCR`/`runSemantic` (not `ocr.ts`/`semantic.ts` directly) so the live upload flow is instrumented. `editImage`/`generateVideo` delegate to the existing `render/gemini-image.ts`/`render/veo-client.ts` clients rather than duplicating them. `render/flux-client.ts` (fal.ai/FLUX) is still live as the old 3D-studio render path's fallback (`api/render/route.ts`) — removal is deferred to Workstream 8, when that path is replaced, not before.
+`src/lib/ai/provider.ts` (revamp Workstream 4) is the single entry point for AI calls: `generateImage`, `editImage`, `generateVideo`, `generateStructured`, `runOCR`, `runSemantic`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline.ts` calls `runOCR`/`runSemantic` (not `ocr.ts`/`semantic.ts` directly) so the live upload flow is instrumented. `editImage`/`generateVideo` delegate to `render/gemini-image.ts`/`render/veo-client.ts`. `render/flux-client.ts` (fal.ai/FLUX) is fully removed as of Workstream 8.5 — it was kept only as the old 3D-studio render path's fallback, and that path no longer exists.
 
-### AI prompting pipeline
+### AI prompting pipeline — live end-to-end as of Workstream 8.5
 
 `src/lib/ai/prompting/` (revamp Workstream 5) implements the Universal JSON Architecture: `build-universal-input.ts` (validates frontend selections into a `UniversalInput`), `design-planning.ts` (`runDesignPlanning` — one Gemini call, via `provider.generateStructured`, into a `DesignSpecification` with per-room guidance), `prompt-builder.ts` (`buildRoomPrompt` — deterministic, no AI call, the only place natural-language prompt text is produced). Template wording (`system`/`planning`/`builder`) lives in the `prompt_templates` table, versioned and `published`-gated; `templates.ts` falls back to hardcoded defaults when unconfigured.
 
-**Now live (Workstream 8, first slice)**: `/projects/[id]/design` collects style/subcategory/luxury level/colour palette and calls `POST /api/design-plan`, which runs `buildUniversalInput` + `runDesignPlanning` and returns `{ universalInput, designSpec }` — cached on the project via `useVasto`'s `setDesignPlan` (local-first store, not yet the real `projects.manifest` row — see the state-machine note below). `rooms/[roomId]`'s "Render front view" then calls `POST /api/generate-room-image` (`buildRoomPrompt` + `provider.generateImage`) whenever a project has a cached `designSpec`, instead of the old FLUX/3D-screenshot pipeline — which remains the fallback for projects that haven't run the Design step.
+The full flow, in order: `/projects/[id]/floor-plan` (Yes/No) → `upload` (OCR/OpenCV/Gemini detection) → `review` (Room Confirmation: rename, type, size, door/window counts, unit selector) → `design` (style/luxury/colour + one global Additional Requirements box) → `POST /api/design-plan` (`buildUniversalInput` + `runDesignPlanning`, cached on the project via `setDesignPlan`) → `generate` (Room Generation Gallery: `POST /api/generate-room-image`, `buildRoomPrompt` + `provider.generateImage`, one card per room, Generate More with its own per-call note) → `generate/[roomId]` (View & Edit: up to 2 numbered lasso regions, `POST /api/edit-room-image`) → `approve` (Final Image Selection) → `walkthrough` (`POST /api/generate-walkthrough`, one 3-second clip per approved image, concatenated). Everything is cached on the local-first `useVasto` project (`universalInput`, `designSpec`, `roomCards`, `walkthrough`) — not yet the real `projects.manifest` row (see the state-machine note below), same situation as before Workstream 8.5.
 
 ### Config-driven project types, detection toggle, room openings
 
@@ -83,12 +89,11 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 ### Env vars
 
-No `.env.example` is committed (`.env*` is gitignored). Everything is optional and the app degrades gracefully without it:
+`.env.example` documents every variable below (`.env*` is otherwise gitignored). Everything is optional and the app degrades gracefully without it:
 
 - `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL` — OCR, semantic reasoning, image edits, video
 - `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET` — real S3 upload storage
 - `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — persistence (run `supabase/schema.sql` first)
-- `FAL_KEY`, `FAL_TXT2IMG_MODEL`, `FAL_IMG2IMG_MODEL`, `FAL_INPAINT_MODEL`, `FAL_IMG2IMG_STRENGTH` — FLUX Pro rendering
 - `INNGEST_ENABLED` — switch parsing to the async Inngest path
 - `DETECTOR=labeled` — use the EasyOCR-assisted room detector instead of the default contour-based one
 - `PYTHON_BIN` — override the Python executable used to spawn geometry-detection scripts

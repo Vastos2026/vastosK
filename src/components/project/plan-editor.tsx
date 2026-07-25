@@ -1,15 +1,14 @@
 "use client";
 
 import { useRef, useState } from "react";
-import type { FloorPlan, PlacedItem, Room } from "@/lib/types";
+import type { FloorPlan, Room } from "@/lib/types";
 
 /** Which edge/corner of a room a resize drag is pulling. */
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 type DragState =
   | { kind: "room-move"; id: string; startX: number; startY: number; rect: Rect }
-  | { kind: "room-resize"; id: string; handle: Handle; startX: number; startY: number; rect: Rect }
-  | { kind: "item-move"; id: string; startX: number; startY: number; rect: Rect };
+  | { kind: "room-resize"; id: string; handle: Handle; startX: number; startY: number; rect: Rect };
 
 interface Rect {
   x: number;
@@ -26,10 +25,6 @@ export function PlanEditor({
   onSelect,
   onChangeRoom,
   issueIds,
-  items,
-  selectedItemId,
-  onSelectItem,
-  onChangeItem,
   focusId,
   shell,
 }: {
@@ -39,23 +34,17 @@ export function PlanEditor({
   onChangeRoom: (roomId: string, patch: Partial<Room>) => void;
   /** room ids flagged as overlapping / out-of-bounds — outlined in red */
   issueIds?: Set<string>;
-  /** placed furniture to render + drag (omit to hide the furniture layer) */
-  items?: PlacedItem[];
-  selectedItemId?: string | null;
-  onSelectItem?: (id: string | null) => void;
-  /** persist a furniture move (position + the room it now sits in) */
-  onChangeItem?: (itemId: string, patch: Partial<PlacedItem>) => void;
   /**
-   * Isolated room review: zoom the view onto this room and show only its own
-   * furniture; other rooms fade out and stop responding. Coordinates stay in
-   * plan space, so every edit writes back exactly as in the full view.
+   * Isolated room review: zoom the view onto this room; other rooms fade out
+   * and stop responding. Coordinates stay in plan space, so every edit writes
+   * back exactly as in the full view.
    */
   focusId?: string | null;
   /**
    * Draw the DETECTED structural shell — walls + windows — as a faint backdrop
    * (doors already always render). Used on the upload editor so the detected
    * building is visible even before any room is lassoed in; off elsewhere so
-   * the review/room editors stay uncluttered by raw wall lines.
+   * the review editor stays uncluttered by raw wall lines.
    */
   shell?: boolean;
 }) {
@@ -63,7 +52,6 @@ export function PlanEditor({
   const [drag, setDrag] = useState<DragState | null>(null);
   const pad = 2;
 
-  const editableItems = !!items && !!onChangeItem;
   const focusRoom = focusId ? plan.rooms.find((r) => r.id === focusId) : undefined;
   const viewBox = focusRoom
     ? `${focusRoom.x - pad} ${focusRoom.y - pad} ${focusRoom.width + pad * 2} ${focusRoom.height + pad * 2}`
@@ -79,10 +67,7 @@ export function PlanEditor({
 
   const begin = (e: React.PointerEvent, state: DragState, roomSelect: string | null) => {
     e.stopPropagation();
-    if (roomSelect !== null) {
-      onSelect(roomSelect);
-      onSelectItem?.(null);
-    }
+    if (roomSelect !== null) onSelect(roomSelect);
     svgRef.current?.setPointerCapture(e.pointerId);
     setDrag(state);
   };
@@ -101,35 +86,11 @@ export function PlanEditor({
     );
   };
 
-  const startItemMove = (e: React.PointerEvent, item: PlacedItem) => {
-    e.stopPropagation();
-    onSelectItem?.(item.id);
-    onSelect(null);
-    const { x, y } = toSvg(e.clientX, e.clientY);
-    svgRef.current?.setPointerCapture(e.pointerId);
-    setDrag({
-      kind: "item-move",
-      id: item.id,
-      startX: x,
-      startY: y,
-      rect: { x: item.x, y: item.y, w: item.w, h: item.d },
-    });
-  };
-
   const onMove = (e: React.PointerEvent) => {
     if (!drag) return;
     const { x, y } = toSvg(e.clientX, e.clientY);
     const dx = x - drag.startX;
     const dy = y - drag.startY;
-
-    if (drag.kind === "item-move") {
-      const it = items?.find((i) => i.id === drag.id);
-      if (!it) return;
-      const nx = clamp(round1(drag.rect.x + dx), 0, Math.max(0, plan.planWidth - it.w));
-      const ny = clamp(round1(drag.rect.y + dy), 0, Math.max(0, plan.planHeight - it.d));
-      onChangeItem?.(it.id, { x: nx, y: ny });
-      return;
-    }
 
     const room = plan.rooms.find((r) => r.id === drag.id);
     if (!room) return;
@@ -146,31 +107,14 @@ export function PlanEditor({
     onChangeRoom(room.id, resizeRect(drag.rect, drag.handle, dx, dy, plan));
   };
 
-  const end = () => {
-    // On dropping furniture, re-tag it to the room its centre now lands in.
-    if (drag?.kind === "item-move" && onChangeItem) {
-      const it = items?.find((i) => i.id === drag.id);
-      if (it) {
-        const cx = it.x + it.w / 2;
-        const cy = it.y + it.d / 2;
-        const room = plan.rooms.find(
-          (r) => cx >= r.x && cx <= r.x + r.width && cy >= r.y && cy <= r.y + r.height,
-        );
-        if ((room?.id ?? undefined) !== it.roomId) onChangeItem(it.id, { roomId: room?.id });
-      }
-    }
-    setDrag(null);
-  };
+  const end = () => setDrag(null);
 
   return (
     <svg
       ref={svgRef}
       viewBox={viewBox}
       className="h-full w-full touch-none select-none"
-      onPointerDown={() => {
-        onSelect(null);
-        onSelectItem?.(null);
-      }}
+      onPointerDown={() => onSelect(null)}
       onPointerMove={onMove}
       onPointerUp={end}
       onPointerCancel={end}
@@ -316,47 +260,6 @@ export function PlanEditor({
 
             {/* resize handles — drag any WALL (edge) or corner of the selected room */}
             {selected && <ResizeHandles room={room} onStart={startRoomResize} />}
-          </g>
-        );
-      })}
-
-      {/* furniture — draggable, re-homed to whatever room it's dropped in */}
-      {items?.map((it) => {
-        if (it.ghost) return null;
-        if (focusRoom && it.roomId !== focusRoom.id) return null;
-        const sel = it.id === selectedItemId;
-        const labelSize = Math.min(0.9, it.w / 5);
-        return (
-          <g
-            key={it.id}
-            onPointerDown={editableItems ? (e) => startItemMove(e, it) : undefined}
-            className={editableItems ? "cursor-grab" : "pointer-events-none"}
-          >
-            <rect
-              x={it.x}
-              y={it.y}
-              width={it.w}
-              height={it.d}
-              rx={0.25}
-              fill={it.color}
-              fillOpacity={sel ? 0.95 : 0.8}
-              stroke={sel ? "var(--color-accent)" : "var(--color-bg)"}
-              strokeWidth={sel ? 0.22 : 0.1}
-            />
-            {it.w > 2.2 && it.d > 1.2 && (
-              <text
-                x={it.x + it.w / 2}
-                y={it.y + it.d / 2}
-                fontSize={labelSize}
-                fill="#fff"
-                fillOpacity={0.92}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                className="pointer-events-none"
-              >
-                {it.name}
-              </text>
-            )}
           </g>
         );
       })}

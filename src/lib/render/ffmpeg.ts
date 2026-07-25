@@ -92,6 +92,31 @@ export async function assembleSlideshow(frames: Buffer[], secondsEach = 2): Prom
 }
 
 /**
+ * Trim a clip to exactly `seconds` from its start. Veo's shortest supported
+ * duration is 4s (no 3s option), so the walkthrough (revamp Workstream 8.5 —
+ * every clip must be exactly 3 seconds) requests the model's minimum and trims
+ * here rather than depending on the API to honor an unsupported duration.
+ */
+export async function trimVideo(clip: Buffer, seconds: number): Promise<Buffer> {
+  if (!ffmpegPath) throw new Error("ffmpeg is not available");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "veo-trim-"));
+  try {
+    const raw = path.join(dir, "raw.mp4");
+    await writeFile(raw, clip);
+    const out = path.join(dir, "trimmed.mp4");
+    await run([
+      "-i", raw,
+      "-t", seconds.toFixed(2),
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+      "-y", out,
+    ]);
+    return await readFile(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Concatenate mp4 clips into ONE seamless video, in order. Every input is
  * normalised to 1280×720/24fps first (Veo segments are already uniform, but the
  * concat demuxer hard-fails on any mismatch — a $10 walkthrough must not die on

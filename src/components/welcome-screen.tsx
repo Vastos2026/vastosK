@@ -7,9 +7,9 @@ import { Icon } from "./ui/icon";
 import type { PropertyType } from "@/lib/types";
 
 const CATEGORIES: { type: PropertyType; label: string; icon: string }[] = [
-  { type: "villa", label: "Individual home", icon: "Home" },
+  { type: "villa", label: "Residential Home", icon: "Home" },
   { type: "apartment", label: "Apartment", icon: "Building2" },
-  { type: "office", label: "Commercial office", icon: "Briefcase" },
+  { type: "office", label: "Commercial", icon: "Briefcase" },
   // "Custom" covers every business type that isn't an office — clinic,
   // restaurant, retail, temple, etc. (see config/project-types/custom.json)
   // — Sparkles reads as "something else", not the Store icon's retail-only
@@ -25,13 +25,13 @@ export function WelcomeScreen({ displayName }: { displayName: string | null }) {
       <WelcomeCarousel />
 
       <div className="relative z-10 flex flex-col items-center text-center">
-        <p className="text-sm font-medium text-muted">
+        <h1 className="text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
           {displayName ? `Hello, ${displayName}` : "Hello"}
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-          Welcome to Vastos
         </h1>
-        <p className="mt-3 max-w-md text-sm text-muted">What are you working on today?</p>
+        <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground/90 sm:text-3xl">
+          Welcome to Vastos
+        </p>
+        <p className="mt-4 max-w-md text-sm text-muted">What are you working on today?</p>
 
         <div className="mt-9 grid grid-cols-2 gap-3 sm:gap-4">
           {CATEGORIES.map((c) => (

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useVasto, useHydrated } from "@/lib/store";
-import { useVideoReconcile } from "@/hooks/use-video-reconcile";
 import { PHASES } from "@/lib/nav";
 import { PROPERTY_TYPES } from "@/lib/data";
 import { StatusBadge } from "@/components/ui/badge";
@@ -17,12 +16,8 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const hydrated = useHydrated();
   const project = useVasto((s) => s.projects.find((p) => p.id === params.id));
-  // Reclaim walkthrough clips that finished server-side while no tab was
-  // listening (reload / crash / sync race mid-generation).
-  useVideoReconcile(hydrated ? project?.id : undefined);
 
-  // Match the phase whose segment appears in the path (so /rooms/<id> and
-  // /renders/<id> still highlight their phase, not the trailing id).
+  // Match the phase whose segment appears in the path.
   const currentPhase = (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload") as Phase;
 
   if (hydrated && !project) {
@@ -83,9 +78,6 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
             <Icon name="CircleCheck" className="size-3.5 text-success" />
             Saved
           </span>
-          <Button variant="outline" size="sm" icon="Download" className="hidden sm:inline-flex">
-            Export
-          </Button>
         </div>
       </header>
 

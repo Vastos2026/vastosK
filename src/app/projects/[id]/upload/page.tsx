@@ -9,7 +9,7 @@ import {
   type DetectProgress,
   type ParseResult,
 } from "@/lib/parse-plan-client";
-import type { DetectedGeometry, FloorPlan, PlacedItem, Room } from "@/lib/types";
+import type { DetectedGeometry, FloorPlan, Room } from "@/lib/types";
 import type { PlanValidation } from "@/lib/pipeline/types";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -42,11 +42,8 @@ export default function UploadPage() {
   const { id } = useParams<{ id: string }>();
   const project = useProject(id);
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
-  const setItems = useVasto((s) => s.setItems);
   const setStatus = useVasto((s) => s.setStatus);
   const updateRoom = useVasto((s) => s.updateRoom);
-  const updateItem = useVasto((s) => s.updateItem);
-  const addItem = useVasto((s) => s.addItem);
   const addRoom = useVasto((s) => s.addRoom);
 
   const [stage, setStage] = useState<Stage>("idle");
@@ -59,7 +56,9 @@ export default function UploadPage() {
   const [calibrated, setCalibrated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selRoom, setSelRoom] = useState<string | null>(null);
-  const [selItem, setSelItem] = useState<string | null>(null);
+  // "Import another" discards the current analysis — a small inline confirm
+  // step (not a full modal) so an accidental click doesn't silently lose it.
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const [layers, setLayers] = useState<LayerToggles>({
     walls: true,
     doors: true,
@@ -114,9 +113,8 @@ export default function UploadPage() {
       setCalibrated(result.calibrated);
       // The reconstructed plan starts EMPTY: detection only supplies candidates.
       // The user lassos each room on the image — only confirmed selections are
-      // placed on the plan (with their furniture), so every room is user-verified.
+      // placed on the plan, so every room is user-verified.
       setFloorPlan(id, { ...result.plan, rooms: [] });
-      setItems(id, []);
       setLassoOn(true);
       setLasso(null);
       setStatus(id, "parsed");
@@ -129,7 +127,7 @@ export default function UploadPage() {
       setProgress(null);
       setStage("selected");
     }
-  }, [selected, id, setFloorPlan, setItems, setStatus]);
+  }, [selected, id, setFloorPlan, setStatus]);
 
   const reset = useCallback(() => {
     setSelected(null);
@@ -138,6 +136,7 @@ export default function UploadPage() {
     setProgress(null);
     setError(null);
     setCalibrated(false);
+    setConfirmingReset(false);
     setStage("idle");
   }, []);
 
@@ -145,30 +144,17 @@ export default function UploadPage() {
 
   const plan = project.floorPlan;
 
-  // Furniture pool for lasso extraction: pieces already placed on the plan plus
-  // the detected-but-unplaced candidates from the parse (they only reach the
-  // plan when the room around them is confirmed).
-  const placedIds = new Set(project.placedItems.map((it) => it.id));
-  const candidateItems = (parse?.items ?? []).filter((it) => !placedIds.has(it.id));
-  const lassoPool = [...project.placedItems, ...candidateItems];
-
-  /** Lasso closed → isolate walls/labels/furniture inside it into a proposal. */
+  /** Lasso closed → isolate walls/labels inside it into a room proposal. */
   const onLassoComplete = (polygon: Pt[]) => {
     if (!geometry || !plan) return;
-    const ext = extractLassoRegion({
-      polygon,
-      geometry,
-      plan,
-      ocr: parse?.ocr,
-      items: lassoPool,
-    });
+    const ext = extractLassoRegion({ polygon, geometry, plan, ocr: parse?.ocr });
     setLasso(ext);
     setLassoName(ext.name ?? "");
     setLassoW(String(ext.widthFt));
     setLassoH(String(ext.heightFt));
   };
 
-  /** Confirm the proposal: add (or update) the room and re-home its furniture. */
+  /** Confirm the proposal: add (or update) the room. */
   const confirmLasso = () => {
     if (!lasso || !plan) return;
     const w = Math.max(2, Number(lassoW) || lasso.widthFt);
@@ -177,11 +163,9 @@ export default function UploadPage() {
     const x = Math.max(0, Math.min(lasso.rectFt.x, plan.planWidth - w));
     const y = Math.max(0, Math.min(lasso.rectFt.y, plan.planHeight - h));
 
-    let roomId: string;
     if (lasso.matchedRoomId) {
       // The loop re-traced an auto-detected room — correct it instead of duplicating.
-      roomId = lasso.matchedRoomId;
-      updateRoom(id, roomId, {
+      updateRoom(id, lasso.matchedRoomId, {
         name,
         width: w,
         height: h,
@@ -190,9 +174,8 @@ export default function UploadPage() {
         ...(lasso.type ? { type: lasso.type } : {}),
       });
     } else {
-      roomId = uid("room");
       addRoom(id, {
-        id: roomId,
+        id: uid("room"),
         name,
         type: lasso.type,
         x,
@@ -201,26 +184,6 @@ export default function UploadPage() {
         height: h,
         color: ROOM_PALETTE[plan.rooms.length % ROOM_PALETTE.length],
       });
-    }
-
-    // Furniture inside the loop becomes children of this room: already-placed
-    // pieces are re-homed, detected candidates are PLACED now (they were held
-    // back until their room was confirmed). Positions scale from the measured
-    // rect into the (possibly hand-corrected) dimensions so the arrangement
-    // stays proportional — placements stay parametric.
-    const kx = lasso.rectFt.width > 0 ? w / lasso.rectFt.width : 1;
-    const ky = lasso.rectFt.height > 0 ? h / lasso.rectFt.height : 1;
-    for (const itemId of lasso.itemIds) {
-      const it = lassoPool.find((i) => i.id === itemId);
-      if (!it) continue;
-      const nx = x + (it.x - lasso.rectFt.x) * kx;
-      const ny = y + (it.y - lasso.rectFt.y) * ky;
-      const pos = {
-        x: Math.max(x, Math.min(Math.round(nx * 10) / 10, x + w - it.w)),
-        y: Math.max(y, Math.min(Math.round(ny * 10) / 10, y + h - it.d)),
-      };
-      if (placedIds.has(itemId)) updateItem(id, itemId, { roomId, ...pos });
-      else addItem(id, { ...it, roomId, ...pos });
     }
     setLasso(null);
   };
@@ -240,7 +203,6 @@ export default function UploadPage() {
                 <h2 className="font-semibold">2D design imported</h2>
                 <p className="text-sm text-muted">
                   {`${plan.walls?.length ?? 0} walls · ${plan.rooms.length} rooms · ${plan.doors.length} doors · ${plan.windows?.length ?? 0} windows`}
-                  {project.placedItems.length > 0 && ` · ${project.placedItems.length} furniture`}
                 </p>
               </div>
             </div>
@@ -330,7 +292,6 @@ export default function UploadPage() {
                   {lasso ? (
                     <LassoProposal
                       lasso={lasso}
-                      items={project.placedItems}
                       matchedName={
                         lasso.matchedRoomId
                           ? plan.rooms.find((r) => r.id === lasso.matchedRoomId)?.name
@@ -366,9 +327,7 @@ export default function UploadPage() {
                     Reconstructed plan · {plan.planWidth} × {plan.planHeight} ft
                   </span>
                   <span className="hidden text-[11px] text-faint sm:inline">
-                    {plan.rooms.length > 0
-                      ? "Drag walls & furniture to adjust"
-                      : "Fills as you lasso rooms"}
+                    {plan.rooms.length > 0 ? "Drag walls to adjust" : "Fills as you lasso rooms"}
                   </span>
                 </div>
                 <div className="relative aspect-[4/3] rounded-xl border border-border bg-grid bg-bg p-2">
@@ -377,10 +336,6 @@ export default function UploadPage() {
                     selectedId={selRoom}
                     onSelect={setSelRoom}
                     onChangeRoom={(roomId, patch) => updateRoom(id, roomId, patch)}
-                    items={project.placedItems}
-                    selectedItemId={selItem}
-                    onSelectItem={setSelItem}
-                    onChangeItem={(itemId, patch) => updateItem(id, itemId, patch)}
                     shell
                   />
                   {plan.rooms.length === 0 && (
@@ -388,7 +343,7 @@ export default function UploadPage() {
                       <div className="rounded-xl border border-dashed border-border bg-surface/85 px-4 py-2.5 text-center text-xs text-muted backdrop-blur">
                         <Icon name="Lasso" className="mx-auto mb-1 size-4 text-accent" />
                         Detected walls, doors &amp; windows shown. Lasso each room on
-                        the left to place it here with its dimensions and furniture.
+                        the left to place it here with its dimensions.
                       </div>
                     </div>
                   )}
@@ -407,9 +362,28 @@ export default function UploadPage() {
               {isDetected && plan.rooms.length > 0 && <RoomList rooms={plan.rooms} />}
 
               <div className="flex flex-wrap items-center gap-3">
-                <Button variant="outline" icon="RefreshCw" onClick={reset}>
-                  Import another
-                </Button>
+                {confirmingReset ? (
+                  <div className="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-3 py-1.5 text-xs text-warning">
+                    <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+                    This discards the current analysis.
+                    <button
+                      onClick={reset}
+                      className="cursor-pointer font-semibold underline underline-offset-2 hover:opacity-80"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      onClick={() => setConfirmingReset(false)}
+                      className="cursor-pointer text-faint hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <Button variant="outline" icon="RefreshCw" onClick={() => setConfirmingReset(true)}>
+                    Import another
+                  </Button>
+                )}
                 {parse && (
                   <span className="text-xs tabular-nums text-faint">
                     {plan.rooms.length} of ~{parse.plan.rooms.length} detected rooms placed
@@ -667,12 +641,11 @@ function ValidationChips({ validation }: { validation: PlanValidation }) {
 
 /**
  * The editable proposal built from a lasso selection: name + parametric
- * dimensions (printed label first, measured otherwise), the furniture
- * inventory found inside the loop, and confirm/discard actions.
+ * dimensions (printed label first, measured otherwise), and confirm/discard
+ * actions.
  */
 function LassoProposal({
   lasso,
-  items,
   matchedName,
   name,
   w,
@@ -684,7 +657,6 @@ function LassoProposal({
   onDiscard,
 }: {
   lasso: LassoExtraction;
-  items: PlacedItem[];
   /** name of the existing room this selection would update, if any */
   matchedName?: string;
   name: string;
@@ -696,13 +668,6 @@ function LassoProposal({
   onConfirm: () => void;
   onDiscard: () => void;
 }) {
-  // Group the furniture inventory by display name ("Sofa ×2, Chair ×4").
-  const inventory = new Map<string, number>();
-  for (const itemId of lasso.itemIds) {
-    const it = items.find((i) => i.id === itemId);
-    if (it) inventory.set(it.name, (inventory.get(it.name) ?? 0) + 1);
-  }
-
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -766,30 +731,6 @@ function LassoProposal({
         <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5">
           <Icon name="Frame" className="size-3" /> {lasso.counts.windows} windows
         </span>
-      </div>
-
-      <div>
-        <span className="mb-1.5 block text-[11px] font-medium text-muted">
-          Furniture in this room · {lasso.itemIds.length}
-        </span>
-        {inventory.size > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {[...inventory.entries()].map(([label, count]) => (
-              <span
-                key={label}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px]"
-              >
-                <Icon name="Armchair" className="size-3 text-accent" />
-                {label}
-                {count > 1 && <span className="text-faint">×{count}</span>}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[11px] text-faint">
-            No detected furniture falls inside this selection.
-          </p>
-        )}
       </div>
 
       <div className="flex items-center justify-end gap-2">

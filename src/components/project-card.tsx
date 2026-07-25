@@ -15,7 +15,7 @@ export function ProjectCard({ project }: { project: Project }) {
   const deleteProject = useVasto((s) => s.deleteProject);
   const [menu, setMenu] = useState(false);
   const propType = PROPERTY_TYPES.find((p) => p.id === project.propertyType);
-  const renderCount = project.renders.length;
+  const renderCount = project.roomCards.reduce((sum, c) => sum + c.generations.length, 0);
 
   return (
     <div className="group hover-lift relative animate-fade-up rounded-2xl border border-border bg-surface">

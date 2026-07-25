@@ -5,16 +5,15 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import { useSyncExternalStore } from "react";
 import type {
   Door,
-  PlacedItem,
   Project,
   ProjectStatus,
   PropertyType,
-  RenderJob,
-  RenderVersion,
   Room,
+  RoomCard,
+  RoomGeneration,
+  Walkthrough,
   Window,
 } from "./types";
-import { CATALOG, CATALOG_BY_ID } from "./data";
 import { uid } from "./utils";
 
 interface VastoState {
@@ -31,12 +30,9 @@ interface VastoState {
   updateRoom: (id: string, roomId: string, patch: Partial<Room>) => void;
   /** Append a room to the plan (lasso-extracted rooms). */
   addRoom: (id: string, room: Room) => void;
-  /** Delete a room from the plan (2D Review's room-list edit) and any furniture placed in it. */
+  /** Delete a room from the plan (Room Confirmation's room-list edit) and its generation history. */
   removeRoom: (id: string, roomId: string) => void;
-  /**
-   * Parametric resize: change a room's width/height AND rescale the positions
-   * of the furniture inside it (relative placement preserved, footprints kept).
-   */
+  /** Change a room's width/height (Room Confirmation's edit-size field). */
   resizeRoom: (id: string, roomId: string, size: { width?: number; height?: number }) => void;
   setStatus: (id: string, status: ProjectStatus) => void;
   setStyle: (id: string, styleId: string) => void;
@@ -45,49 +41,25 @@ interface VastoState {
    *  every room's render prompt is built from. */
   setDesignPlan: (
     id: string,
-    plan: Pick<Project, "subcategory" | "luxuryLevel" | "colourPalette" | "universalInput" | "designSpec">,
+    plan: Pick<Project, "subcategory" | "luxuryLevel" | "colourPalette" | "additionalRequirements" | "universalInput" | "designSpec">,
   ) => void;
 
-  addItem: (id: string, item: PlacedItem) => void;
-  /** Replace all placed items — used to seed furniture detected from the plan. */
-  setItems: (id: string, items: PlacedItem[]) => void;
-  updateItem: (id: string, itemId: string, patch: Partial<PlacedItem>) => void;
-  removeItem: (id: string, itemId: string) => void;
-
-  /** Doors/windows ("openings") on the plan's walls — placed & edited per room. */
+  /** Doors/windows ("openings") on the plan's walls. */
   addDoor: (id: string, door: Door) => void;
   updateDoor: (id: string, doorId: string, patch: Partial<Door>) => void;
   removeDoor: (id: string, doorId: string) => void;
   addWindow: (id: string, win: Window) => void;
   updateWindow: (id: string, winId: string, patch: Partial<Window>) => void;
   removeWindow: (id: string, winId: string) => void;
-  suggestFurniture: (id: string) => void;
-  setGhostFurniture: (id: string, ghosts: PlacedItem[]) => void;
-  acceptGhosts: (id: string) => void;
-  clearGhosts: (id: string) => void;
 
-  addRender: (id: string, render: RenderJob) => void;
-  updateRender: (id: string, renderId: string, patch: Partial<RenderJob>) => void;
-  addRenderVersion: (id: string, renderId: string, version: RenderVersion) => void;
-
-  /**
-   * Reference images keyed by furniture-item id / room id. Kept in memory only
-   * (large data URLs — excluded from localStorage via `partialize`), so they
-   * survive in-app navigation (rooms → render → back) instead of resetting.
-   */
-  itemRefs: Record<string, { url: string; name: string }>;
-  roomRefs: Record<string, { url: string; name: string }>;
-  setItemRef: (itemId: string, ref: { url: string; name: string } | null) => void;
-  setRoomRef: (roomId: string, ref: { url: string; name: string } | null) => void;
-
-  /**
-   * Per-room 3D screenshots (data URIs) of the LEFT/RIGHT/BACK wall cameras,
-   * captured when the front photo is rendered (the room page has the 3D scene).
-   * The render page later uses them to DERIVE the Left/Right/Back stills (each
-   * screenshot = the camera; the edited front = the styleRef). In memory only.
-   */
-  roomCaptures: Record<string, { left?: string; right?: string; back?: string }>;
-  setRoomCapture: (roomId: string, caps: { left?: string; right?: string; back?: string }) => void;
+  /** Room Generation Gallery — appends a new version, creating the room's card on first call. */
+  addGeneration: (id: string, roomId: string, generation: RoomGeneration) => void;
+  /** Final Image Selection — mark one generation as this room's approved image. */
+  setApproved: (id: string, roomId: string, generationId: string) => void;
+  /** Final Image Selection — include/exclude a room from the walkthrough. */
+  setIncluded: (id: string, roomId: string, included: boolean) => void;
+  /** Walkthrough screen — full replace (generating/completed/failed states). */
+  setWalkthrough: (id: string, walkthrough: Walkthrough) => void;
 }
 
 /**
@@ -102,45 +74,37 @@ const touch = (p: Project): Project => {
 };
 
 /**
- * Union two render lists by id. A render present on only one side ALWAYS
- * survives — long render jobs (the ~100s Veo walkthrough) race snapshot pulls,
- * and whole-project last-write-wins used to silently discard the records (and
- * with them, paid Veo output). For the same id, keep the richer record.
+ * Union two projects' room cards by roomId, and each room's generations by id.
+ * A generation present on only one side ALWAYS survives — paid AI output
+ * should never be silently dropped by a last-write-wins merge.
  */
-const mergeRenders = (preferred: RenderJob[], other: RenderJob[]): RenderJob[] => {
-  const richer = (a: RenderJob, b: RenderJob): RenderJob => {
-    if ((a.versions?.length ?? 0) !== (b.versions?.length ?? 0))
-      return (a.versions?.length ?? 0) > (b.versions?.length ?? 0) ? a : b;
-    if ((a.status === "completed") !== (b.status === "completed"))
-      return a.status === "completed" ? a : b;
-    return a;
-  };
-  const byId = new Map<string, RenderJob>();
-  for (const r of other) byId.set(r.id, r);
-  for (const r of preferred) {
-    const prev = byId.get(r.id);
-    byId.set(r.id, prev ? richer(r, prev) : r);
+const mergeRoomCards = (preferred: RoomCard[], other: RoomCard[]): RoomCard[] => {
+  const byRoom = new Map<string, RoomCard>(other.map((c) => [c.roomId, c]));
+  for (const c of preferred) {
+    const prev = byRoom.get(c.roomId);
+    if (!prev) {
+      byRoom.set(c.roomId, c);
+      continue;
+    }
+    const seen = new Set(prev.generations.map((g) => g.id));
+    const generations = [...prev.generations, ...c.generations.filter((g) => !seen.has(g.id))];
+    byRoom.set(c.roomId, { ...c, generations });
   }
-  return [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  return [...byRoom.values()];
 };
 
-/** Order-independent fingerprint of a render list, to detect merge additions. */
-const rendersSig = (rs: RenderJob[]): string =>
-  rs
-    .map((r) => `${r.id}:${r.versions?.length ?? 0}:${r.status}`)
+const cardsSig = (cards: RoomCard[]): string =>
+  cards
+    .map((c) => `${c.roomId}:${c.generations.length}`)
     .sort()
     .join("|");
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
-const clampN = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 export const useVasto = create<VastoState>()(
   persist(
     (set, get) => ({
       projects: [],
-      itemRefs: {},
-      roomRefs: {},
-      roomCaptures: {},
 
       createProject: (name, propertyType) => {
         const id = uid("proj");
@@ -151,8 +115,7 @@ export const useVasto = create<VastoState>()(
           status: "draft",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          placedItems: [],
-          renders: [],
+          roomCards: [],
         };
         set((s) => ({ projects: [project, ...s.projects] }));
         return id;
@@ -170,17 +133,17 @@ export const useVasto = create<VastoState>()(
               byId.set(remote.id, remote);
               continue;
             }
-            // Keep whichever project was touched last — but NEVER drop render
-            // records only the losing side has (see mergeRenders). If the merge
-            // actually added something, bump updatedAt so the sync layer pushes
-            // the union back up instead of leaving Supabase behind.
+            // Keep whichever project was touched last — but NEVER drop
+            // generation records only the losing side has (see mergeRoomCards).
+            // If the merge actually added something, bump updatedAt so the
+            // sync layer pushes the union back up instead of leaving Supabase behind.
             const winner = remote.updatedAt > local.updatedAt ? remote : local;
             const loser = winner === remote ? local : remote;
-            const renders = mergeRenders(winner.renders ?? [], loser.renders ?? []);
+            const roomCards = mergeRoomCards(winner.roomCards ?? [], loser.roomCards ?? []);
             const merged =
-              rendersSig(renders) === rendersSig(winner.renders ?? [])
+              cardsSig(roomCards) === cardsSig(winner.roomCards ?? [])
                 ? winner
-                : touch({ ...winner, renders });
+                : touch({ ...winner, roomCards });
             byId.set(remote.id, merged);
           }
           return {
@@ -239,7 +202,7 @@ export const useVasto = create<VastoState>()(
                 ...p.floorPlan,
                 rooms: p.floorPlan.rooms.filter((r) => r.id !== roomId),
               },
-              placedItems: p.placedItems.filter((it) => it.roomId !== roomId),
+              roomCards: p.roomCards.filter((c) => c.roomId !== roomId),
             });
           }),
         })),
@@ -252,24 +215,10 @@ export const useVasto = create<VastoState>()(
             if (!room) return p;
             const width = Math.max(2, r1(size.width ?? room.width));
             const height = Math.max(2, r1(size.height ?? room.height));
-            const kx = room.width > 0 ? width / room.width : 1;
-            const ky = room.height > 0 ? height / room.height : 1;
             const rooms = p.floorPlan.rooms.map((r) =>
               r.id === roomId ? { ...r, width, height } : r,
             );
-            // Furniture keeps its real-world footprint; only its position
-            // scales with the room so the arrangement stays proportional.
-            const placedItems = p.placedItems.map((it) => {
-              if (it.roomId !== roomId) return it;
-              const nx = room.x + (it.x - room.x) * kx;
-              const ny = room.y + (it.y - room.y) * ky;
-              return {
-                ...it,
-                x: clampN(r1(nx), room.x, Math.max(room.x, room.x + width - it.w)),
-                y: clampN(r1(ny), room.y, Math.max(room.y, room.y + height - it.d)),
-              };
-            });
-            return touch({ ...p, floorPlan: { ...p.floorPlan, rooms }, placedItems });
+            return touch({ ...p, floorPlan: { ...p.floorPlan, rooms } });
           }),
         })),
 
@@ -286,43 +235,6 @@ export const useVasto = create<VastoState>()(
       setDesignPlan: (id, plan) =>
         set((s) => ({
           projects: s.projects.map((p) => (p.id === id ? touch({ ...p, ...plan }) : p)),
-        })),
-
-      addItem: (id, item) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id ? touch({ ...p, placedItems: [...p.placedItems, item] }) : p,
-          ),
-        })),
-
-      setItems: (id, items) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id ? touch({ ...p, placedItems: items }) : p,
-          ),
-        })),
-
-      updateItem: (id, itemId, patch) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({
-                  ...p,
-                  placedItems: p.placedItems.map((it) =>
-                    it.id === itemId ? { ...it, ...patch } : it,
-                  ),
-                })
-              : p,
-          ),
-        })),
-
-      removeItem: (id, itemId) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({ ...p, placedItems: p.placedItems.filter((it) => it.id !== itemId) })
-              : p,
-          ),
         })),
 
       // --- Openings (doors + windows) — operate on the plan's arrays ----------
@@ -406,175 +318,88 @@ export const useVasto = create<VastoState>()(
           ),
         })),
 
-      suggestFurniture: (id) => {
-        const project = get().getProject(id);
-        if (!project?.floorPlan) return;
-        const ghosts: PlacedItem[] = [];
-        for (const room of project.floorPlan.rooms) {
-          const picks = SUGGESTIONS_BY_ROOM(room.name);
-          picks.forEach((catalogId, i) => {
-            const c = CATALOG_BY_ID[catalogId];
-            if (!c) return;
-            ghosts.push({
-              id: uid("ghost"),
-              catalogId,
-              name: c.name,
-              roomId: room.id,
-              x: room.x + 1 + (i % 2) * Math.min(room.width - c.w - 2, 4),
-              y: room.y + 1 + Math.floor(i / 2) * 3,
-              rotation: 0,
-              w: c.w,
-              d: c.d,
-              h: c.h,
-              color: c.color,
-              ghost: true,
-            });
-          });
-        }
+      addGeneration: (id, roomId, generation) =>
         set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({
-                  ...p,
-                  placedItems: [...p.placedItems.filter((it) => !it.ghost), ...ghosts],
-                })
-              : p,
-          ),
-        }));
-      },
-
-      setGhostFurniture: (id, ghosts) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({
-                  ...p,
-                  placedItems: [...p.placedItems.filter((it) => !it.ghost), ...ghosts],
-                })
-              : p,
-          ),
+          projects: s.projects.map((p) => {
+            if (p.id !== id) return p;
+            const existing = p.roomCards.find((c) => c.roomId === roomId);
+            const roomCards = existing
+              ? p.roomCards.map((c) =>
+                  c.roomId === roomId
+                    ? {
+                        ...c,
+                        generations: [...c.generations, generation],
+                        approvedId: c.approvedId ?? generation.id,
+                      }
+                    : c,
+                )
+              : [
+                  ...p.roomCards,
+                  { roomId, generations: [generation], approvedId: generation.id, included: true },
+                ];
+            return touch({ ...p, roomCards });
+          }),
         })),
 
-      acceptGhosts: (id) =>
+      setApproved: (id, roomId, generationId) =>
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === id
               ? touch({
                   ...p,
-                  placedItems: p.placedItems.map((it) =>
-                    it.ghost ? { ...it, ghost: false } : it,
+                  roomCards: p.roomCards.map((c) =>
+                    c.roomId === roomId ? { ...c, approvedId: generationId } : c,
                   ),
                 })
               : p,
           ),
         })),
 
-      clearGhosts: (id) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({ ...p, placedItems: p.placedItems.filter((it) => !it.ghost) })
-              : p,
-          ),
-        })),
-
-      addRender: (id, render) =>
-        set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id ? touch({ ...p, renders: [render, ...p.renders] }) : p,
-          ),
-        })),
-
-      updateRender: (id, renderId, patch) =>
+      setIncluded: (id, roomId, included) =>
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === id
               ? touch({
                   ...p,
-                  renders: p.renders.map((r) =>
-                    r.id === renderId ? { ...r, ...patch } : r,
-                  ),
+                  roomCards: p.roomCards.map((c) => (c.roomId === roomId ? { ...c, included } : c)),
                 })
               : p,
           ),
         })),
 
-      addRenderVersion: (id, renderId, version) =>
+      setWalkthrough: (id, walkthrough) =>
         set((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === id
-              ? touch({
-                  ...p,
-                  renders: p.renders.map((r) =>
-                    r.id === renderId ? { ...r, versions: [...r.versions, version] } : r,
-                  ),
-                })
-              : p,
-          ),
+          projects: s.projects.map((p) => (p.id === id ? touch({ ...p, walkthrough }) : p)),
         })),
-
-      setItemRef: (itemId, ref) =>
-        set((s) => {
-          const next = { ...s.itemRefs };
-          if (ref) next[itemId] = ref;
-          else delete next[itemId];
-          return { itemRefs: next };
-        }),
-
-      setRoomRef: (roomId, ref) =>
-        set((s) => {
-          const next = { ...s.roomRefs };
-          if (ref) next[roomId] = ref;
-          else delete next[roomId];
-          return { roomRefs: next };
-        }),
-
-      setRoomCapture: (roomId, caps) =>
-        set((s) => ({ roomCaptures: { ...s.roomCaptures, [roomId]: caps } })),
     }),
     {
       name: "vasto-store-v1",
       storage: createJSONStorage(() => localStorage),
-      version: 2,
-      // Reference images are large in-memory data URLs — never persist them.
+      version: 3,
       partialize: (s) => ({ projects: s.projects }),
       // v2: drop the old seeded demo projects so only real, user-created
-      // projects remain. Matches them by their fixed seed ids.
+      // projects remain. v3: the Workstream 8.5 rebuild destroyed the 3D
+      // furniture-placement studio and the multi-view render pipeline —
+      // `placedItems`/`renders` on any persisted project are stale shapes
+      // the new code no longer reads or writes; drop them rather than carry
+      // dead fields forward indefinitely.
       migrate: (persisted, fromVersion) => {
-        const state = persisted as { projects?: Project[] } | undefined;
+        const state = persisted as { projects?: (Project & { placedItems?: unknown; renders?: unknown })[] } | undefined;
         if (fromVersion < 2 && state?.projects) {
           const SEED_IDS = new Set(["proj_villa", "proj_apt", "proj_office", "proj_retail"]);
           state.projects = state.projects.filter((p) => !SEED_IDS.has(p.id));
         }
+        if (fromVersion < 3 && state?.projects) {
+          state.projects = state.projects.map((p) => {
+            const { placedItems: _placedItems, renders: _renders, ...rest } = p;
+            return { ...rest, roomCards: rest.roomCards ?? [] };
+          });
+        }
         return state as VastoState;
       },
-      // The persisted slice is only { projects } (refs are excluded by partialize),
-      // and rehydration REPLACES the store state. Without re-supplying them here,
-      // `itemRefs` / `roomRefs` come back undefined and a read like `roomRefs[id]`
-      // crashes. Keep the live in-memory refs and take only `projects` from storage.
-      merge: (persisted, current) => ({
-        ...(current as VastoState),
-        ...(persisted as Partial<VastoState>),
-        itemRefs: (current as VastoState).itemRefs ?? {},
-        roomRefs: (current as VastoState).roomRefs ?? {},
-        roomCaptures: (current as VastoState).roomCaptures ?? {},
-      }),
     },
   ),
 );
-
-/** Naive room-name → suggested catalog ids mapping for the "Suggest Layout" feature. */
-function SUGGESTIONS_BY_ROOM(name: string): string[] {
-  const n = name.toLowerCase();
-  if (n.includes("living")) return ["sofa-3", "coffee-table", "tv-unit", "plant"];
-  if (n.includes("master") || n.includes("bedroom")) return ["bed-queen", "wardrobe"];
-  if (n.includes("dining")) return ["dining-table", "dining-chair"];
-  if (n.includes("pooja")) return ["pooja-unit"];
-  if (n.includes("kitchen")) return ["bookshelf"];
-  return [];
-}
-
-export const ALL_CATALOG = CATALOG;
 
 /** Subscribe to a single project by id. */
 export function useProject(id: string) {

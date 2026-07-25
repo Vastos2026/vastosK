@@ -10,7 +10,7 @@ const eslintConfig = defineConfig([
       // A leading underscore is this codebase's convention for a
       // deliberately-unused parameter (kept for a shared function signature) —
       // don't warn on those specifically.
-      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },
   // Override default ignores of eslint-config-next.
