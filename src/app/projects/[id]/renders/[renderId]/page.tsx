@@ -72,19 +72,17 @@ export default function RenderDetailPage() {
   // matches is simply ignored, so no synchronous reset is ever needed.
   const [annotated, setAnnotated] = useState<{ key: string; url: string } | null>(null);
 
-  // default to the latest version
-  useEffect(() => {
-    if (!render) return;
-    const ids = render.versions.map((v) => v.id);
-    if (!activeVersionId || !ids.includes(activeVersionId)) {
-      setActiveVersionId(render.versions.at(-1)?.id ?? null);
-    }
-  }, [render, activeVersionId]);
+  // Default to the latest version whenever nothing (or a since-removed
+  // version) is explicitly selected — derived at render time rather than
+  // synced via an effect, so there's no stale-state flash on first render.
+  const effectiveVersionId =
+    activeVersionId && render?.versions.some((v) => v.id === activeVersionId)
+      ? activeVersionId
+      : (render?.versions.at(-1)?.id ?? null);
 
   // Re-annotate only when something that CHANGES the drawing changes (the key),
   // not on every store touch — walkthrough job updates would otherwise redraw.
-  const annVersion =
-    render?.versions.find((v) => v.id === activeVersionId) ?? render?.versions.at(-1);
+  const annVersion = render?.versions.find((v) => v.id === effectiveVersionId);
   const annRoom = project?.floorPlan?.rooms.find((r) => r.id === render?.roomId);
   const annItems =
     project?.placedItems.filter((it) => it.roomId === render?.roomId && !it.ghost) ?? [];
@@ -142,7 +140,7 @@ export default function RenderDetailPage() {
   if (!project || !render) return null;
 
   const versions = render.versions;
-  const activeIdx = versions.findIndex((v) => v.id === activeVersionId);
+  const activeIdx = versions.findIndex((v) => v.id === effectiveVersionId);
   const activeVersion = versions[activeIdx];
   const displayedStyleId = activeVersion?.styleId ?? render.styleId;
   const displayedStyle = STYLE_BY_ID[displayedStyleId] ?? STYLES[0];
@@ -985,7 +983,7 @@ export default function RenderDetailPage() {
             </h3>
             <div className="space-y-1.5">
               {[...versions].reverse().map((v) => {
-                const active = v.id === activeVersionId;
+                const active = v.id === effectiveVersionId;
                 return (
                   <button
                     key={v.id}

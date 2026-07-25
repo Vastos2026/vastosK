@@ -2,7 +2,6 @@
 
 import { useRef, useState } from "react";
 import type { FloorPlan, PlacedItem, Room } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 /** Which edge/corner of a room a resize drag is pulling. */
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";

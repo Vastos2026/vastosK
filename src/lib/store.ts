@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import type {
   Door,
   PlacedItem,
@@ -556,8 +556,8 @@ export function useProject(id: string) {
  * Returns true once the persisted store has rehydrated on the client.
  * Gate persisted-data UI on this to avoid SSR/CSR hydration mismatches.
  */
+const subscribeNever = () => () => {};
+
 export function useHydrated() {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
-  return hydrated;
+  return useSyncExternalStore(subscribeNever, () => true, () => false);
 }
