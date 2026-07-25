@@ -1,10 +1,12 @@
 /* Domain types for the Vasto Studios frontend (mock layer). */
 
+import type { DesignSpecification, LuxuryLevel, UniversalInput } from "./ai/prompting/types";
+
 export type PropertyType = "apartment" | "villa" | "office" | "commercial";
 
 export type ProjectStatus = "draft" | "parsing" | "parsed" | "designing" | "rendered";
 
-export type Phase = "upload" | "review" | "rooms" | "renders";
+export type Phase = "upload" | "review" | "design" | "rooms" | "renders";
 
 export type RenderStatus = "queued" | "processing" | "completed" | "failed";
 
@@ -285,4 +287,15 @@ export interface Project {
   styleId?: string;
   placedItems: PlacedItem[];
   renders: RenderJob[];
+  /**
+   * Global design selections (revamp Workstream 8) — the Universal JSON
+   * Architecture's `design` section, chosen once on the Design step and
+   * shared by every room so the whole project reads as one designer's work.
+   */
+  subcategory?: string;
+  luxuryLevel?: LuxuryLevel;
+  colourPalette?: string;
+  /** Cached Universal Input + Design Specification from the last Design Planning run. */
+  universalInput?: UniversalInput;
+  designSpec?: DesignSpecification;
 }

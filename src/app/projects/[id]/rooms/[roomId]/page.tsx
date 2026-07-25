@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { STYLES, STYLE_BY_ID, CATALOG, FURNITURE_CATEGORIES } from "@/lib/data";
 import { generateRender as apiGenerateRender } from "@/lib/render-client";
+import { generateRoomImage } from "@/lib/design-plan-client";
 import { suggestFurnitureAI } from "@/lib/suggest-furniture-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -376,33 +377,54 @@ export default function RoomDesignPage() {
       .filter((it) => itemRefs[it.id])
       .map((it) => ({ label: it.name, image: itemRefs[it.id].url }));
 
+    // Universal JSON Architecture path (revamp Workstream 8): when a project
+    // has been through the Design step, its cached Universal Input + Design
+    // Specification exist, so this room's prompt is assembled deterministically
+    // by the Prompt Builder from that shared design language instead of the old
+    // 3D-scene/FLUX pipeline below (kept as the fallback for projects that
+    // haven't run Design planning, and for the furniture-placement flow).
+    const useDesignPipeline = !!(project.universalInput && project.designSpec);
+
     void (async () => {
       try {
-        const front = await apiGenerateRender({
-          projectId: id,
-          view: "front",
-          style,
-          propertyType: project.propertyType,
-          plan: { ...plan, rooms: [room] },
-          items: roomItems,
-          image: frontImage,
-          seed,
-          notes: brief.trim() || undefined,
-          references: references.length ? references : undefined,
-          styleRef: roomRef?.url,
-          noFluxFallback: true,
-        });
+        let result: { imageUrl: string; key: string; prompt: string };
+        if (useDesignPipeline && project.universalInput && project.designSpec) {
+          result = await generateRoomImage({
+            projectId: id,
+            universalInput: project.universalInput,
+            room: {
+              name: room.name,
+              size: `${room.width} x ${room.height} ft`,
+              additional_notes: brief.trim() || undefined,
+              openings: room.openings,
+            },
+            designSpec: project.designSpec,
+          });
+        } else {
+          result = await apiGenerateRender({
+            projectId: id,
+            view: "front",
+            style,
+            propertyType: project.propertyType,
+            plan: { ...plan, rooms: [room] },
+            items: roomItems,
+            image: frontImage,
+            seed,
+            notes: brief.trim() || undefined,
+            references: references.length ? references : undefined,
+            styleRef: roomRef?.url,
+            noFluxFallback: true,
+          });
+        }
         addRenderVersion(id, frontId, {
           id: uid("v"),
           label: "v1",
           createdAt: new Date().toISOString(),
           note: `${room.name} · Front`,
           styleId: style.id,
-          imageUrl: front.imageUrl,
-          imageKey: front.key,
-          prompt: front.prompt,
-          checklist: front.checklist,
-          extras: front.extras,
+          imageUrl: result.imageUrl,
+          imageKey: result.key,
+          prompt: result.prompt,
         });
         updateRender(id, frontId, { status: "completed", progress: 100 });
       } catch (e) {

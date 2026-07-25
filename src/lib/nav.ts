@@ -5,6 +5,7 @@ import type { Phase, Project } from "./types";
 export const PHASES: { id: Phase; label: string; icon: string }[] = [
   { id: "upload", label: "Upload", icon: "FileUp" },
   { id: "review", label: "2D Review", icon: "Ruler" },
+  { id: "design", label: "Design", icon: "Palette" },
   { id: "rooms", label: "Rooms", icon: "LayoutGrid" },
   { id: "renders", label: "Renders", icon: "Image" },
 ];

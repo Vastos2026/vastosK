@@ -31,6 +31,8 @@ interface VastoState {
   updateRoom: (id: string, roomId: string, patch: Partial<Room>) => void;
   /** Append a room to the plan (lasso-extracted rooms). */
   addRoom: (id: string, room: Room) => void;
+  /** Delete a room from the plan (2D Review's room-list edit) and any furniture placed in it. */
+  removeRoom: (id: string, roomId: string) => void;
   /**
    * Parametric resize: change a room's width/height AND rescale the positions
    * of the furniture inside it (relative placement preserved, footprints kept).
@@ -38,6 +40,13 @@ interface VastoState {
   resizeRoom: (id: string, roomId: string, size: { width?: number; height?: number }) => void;
   setStatus: (id: string, status: ProjectStatus) => void;
   setStyle: (id: string, styleId: string) => void;
+  /** Persists a Design Planning run's result (revamp Workstream 8): the global
+   *  design selections plus the cached Universal Input + Design Specification
+   *  every room's render prompt is built from. */
+  setDesignPlan: (
+    id: string,
+    plan: Pick<Project, "subcategory" | "luxuryLevel" | "colourPalette" | "universalInput" | "designSpec">,
+  ) => void;
 
   addItem: (id: string, item: PlacedItem) => void;
   /** Replace all placed items — used to seed furniture detected from the plan. */
@@ -220,6 +229,21 @@ export const useVasto = create<VastoState>()(
           }),
         })),
 
+      removeRoom: (id, roomId) =>
+        set((s) => ({
+          projects: s.projects.map((p) => {
+            if (p.id !== id || !p.floorPlan) return p;
+            return touch({
+              ...p,
+              floorPlan: {
+                ...p.floorPlan,
+                rooms: p.floorPlan.rooms.filter((r) => r.id !== roomId),
+              },
+              placedItems: p.placedItems.filter((it) => it.roomId !== roomId),
+            });
+          }),
+        })),
+
       resizeRoom: (id, roomId, size) =>
         set((s) => ({
           projects: s.projects.map((p) => {
@@ -257,6 +281,11 @@ export const useVasto = create<VastoState>()(
       setStyle: (id, styleId) =>
         set((s) => ({
           projects: s.projects.map((p) => (p.id === id ? touch({ ...p, styleId }) : p)),
+        })),
+
+      setDesignPlan: (id, plan) =>
+        set((s) => ({
+          projects: s.projects.map((p) => (p.id === id ? touch({ ...p, ...plan }) : p)),
         })),
 
       addItem: (id, item) =>

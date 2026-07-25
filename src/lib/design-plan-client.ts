@@ -1,0 +1,47 @@
+/**
+ * Client helpers for the Design Planning + room image generation APIs — the
+ * frontend's only touchpoints for the Universal JSON Architecture (revamp
+ * plan). The frontend never constructs a prompt; it sends structured
+ * selections and gets back structured JSON (or a final image URL).
+ */
+
+import type { DesignSelection, RoomSelection } from "./ai/prompting/build-universal-input";
+import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./ai/prompting/types";
+
+async function postJson<T>(url: string, payload: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(msg);
+  }
+  return (await res.json()) as T;
+}
+
+export function runDesignPlan(input: {
+  projectId: string;
+  category: string;
+  subcategory: string;
+  rooms: RoomSelection[];
+  design: DesignSelection;
+}): Promise<{ universalInput: UniversalInput; designSpec: DesignSpecification }> {
+  return postJson("/api/design-plan", input);
+}
+
+export function generateRoomImage(input: {
+  projectId: string;
+  universalInput: UniversalInput;
+  room: UniversalInputRoom;
+  designSpec: DesignSpecification;
+}): Promise<{ imageUrl: string; key: string; prompt: string }> {
+  return postJson("/api/generate-room-image", input);
+}

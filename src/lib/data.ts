@@ -107,6 +107,23 @@ export const CATALOG: CatalogItem[] = [
   { id: "pooja-unit", name: "Pooja Mandir", category: "decor", w: 3, d: 1.6, h: 5, color: "#d4972a", icon: "Flame" },
 ];
 
+/** Locked luxury-level presets (revamp plan) — a global Design-step field. */
+export const LUXURY_LEVELS: { id: import("./ai/prompting/types").LuxuryLevel; label: string; tagline: string }[] = [
+  { id: "Standard", label: "Standard", tagline: "Clean, functional, everyday-quality finishes" },
+  { id: "Premium", label: "Premium", tagline: "Elevated materials, more detailing and craft" },
+  { id: "Ultra Luxury", label: "Ultra Luxury", tagline: "Show-stopping materials, bespoke detailing" },
+];
+
+/** Colour palette presets for the Design step's global colour picker. */
+export const COLOUR_PALETTES: { id: string; label: string; swatch: string[] }[] = [
+  { id: "Warm White", label: "Warm White", swatch: ["#f3ead3", "#c8a06a", "#7a5236"] },
+  { id: "Cool Grey", label: "Cool Grey", swatch: ["#e9e6e1", "#9c8c7c", "#3a3a3d"] },
+  { id: "Earthy Terracotta", label: "Earthy Terracotta", swatch: ["#e9d6b0", "#a8431f", "#3a1d12"] },
+  { id: "Deep Jewel", label: "Deep Jewel", swatch: ["#caa64a", "#3a2f5e", "#14110d"] },
+  { id: "Sage & Sand", label: "Sage & Sand", swatch: ["#e6e3d6", "#7fa08a", "#4f4a3a"] },
+  { id: "Charcoal & Brass", label: "Charcoal & Brass", swatch: ["#d4972a", "#4f4f52", "#161616"] },
+];
+
 export const STYLE_BY_ID = Object.fromEntries(STYLES.map((s) => [s.id, s]));
 export const CATALOG_BY_ID = Object.fromEntries(CATALOG.map((c) => [c.id, c]));
 

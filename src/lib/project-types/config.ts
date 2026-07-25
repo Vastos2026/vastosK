@@ -2,6 +2,7 @@ import residential from "../../../config/project-types/residential.json";
 import apartment from "../../../config/project-types/apartment.json";
 import commercial from "../../../config/project-types/commercial.json";
 import custom from "../../../config/project-types/custom.json";
+import type { PropertyType } from "../types";
 
 /**
  * Config-driven project types (revamp Workstream 6). Adding a new vertical —
@@ -39,6 +40,26 @@ export function listProjectTypes(): ProjectTypeConfig[] {
 
 export function getProjectTypeConfig(category: string): ProjectTypeConfig | null {
   return BY_CATEGORY[category] ?? null;
+}
+
+/**
+ * Maps the welcome screen's PropertyType (the local-first store's category
+ * field, predating the config-driven project types) onto a project-type
+ * config category — the Universal Input Schema's `project.category`. Matches
+ * the welcome screen's cards: villa → Individual home, office → Commercial
+ * office, commercial → Custom (see custom.json's note on why).
+ */
+export function categoryForPropertyType(propertyType: PropertyType): string {
+  switch (propertyType) {
+    case "villa":
+      return "Residential";
+    case "apartment":
+      return "Apartment";
+    case "office":
+      return "Commercial";
+    case "commercial":
+      return "Custom";
+  }
 }
 
 /**

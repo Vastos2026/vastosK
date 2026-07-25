@@ -16,10 +16,10 @@ export default function ReviewPage() {
   const router = useRouter();
   const project = useProject(id);
   const updateRoom = useVasto((s) => s.updateRoom);
+  const removeRoom = useVasto((s) => s.removeRoom);
   const resizeRoom = useVasto((s) => s.resizeRoom);
   const updateItem = useVasto((s) => s.updateItem);
   const removeItem = useVasto((s) => s.removeItem);
-  const setStatus = useVasto((s) => s.setStatus);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   // Room-by-room review: isolate zooms onto the selected room with only its
@@ -87,12 +87,12 @@ export default function ReviewPage() {
     for (const { id: roomId, patch } of tidyLayout(plan)) updateRoom(id, roomId, patch);
   };
 
-  // 2D Review hands off DIRECTLY to Rooms — the reviewed plan (room dimensions,
-  // furniture sizes + placements, door/window positions) is the single source of
-  // truth the render prompts are built from. No 3D Studio step in between.
-  const goToRooms = () => {
-    setStatus(id, "designing");
-    router.push(`/projects/${id}/rooms`);
+  // 2D Review hands off to Design (revamp Workstream 8): the reviewed plan
+  // (room dimensions, furniture sizes + placements, door/window positions) is
+  // the single source of truth the Universal Input — and from it, every
+  // room's render prompt — is built from.
+  const goToDesign = () => {
+    router.push(`/projects/${id}/design`);
   };
 
   return (
@@ -298,6 +298,31 @@ export default function ReviewPage() {
                 Area ≈ <span className="text-foreground">{Math.round(selected.width * selected.height * 10) / 10} sq ft</span>
               </div>
 
+              <Field label="Additional requirements (optional)">
+                <textarea
+                  value={selected.brief ?? ""}
+                  onChange={(e) => updateRoom(id, selected.id, { brief: e.target.value })}
+                  rows={2}
+                  placeholder={`e.g. "Need lots of natural light", "Include a reading nook"`}
+                  className="input w-full resize-none text-sm"
+                />
+              </Field>
+              <p className="-mt-2 text-[11px] text-faint">
+                Feeds this room&apos;s design prompt specifically — every other room keeps the shared style.
+              </p>
+
+              <Button
+                size="sm"
+                variant="outline"
+                icon="Trash2"
+                onClick={() => {
+                  removeRoom(id, selected.id);
+                  setSelectedId(null);
+                }}
+              >
+                Delete room
+              </Button>
+
               {/* Furniture inventory extracted for this room */}
               <div>
                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">
@@ -363,8 +388,8 @@ export default function ReviewPage() {
         </div>
 
         <div className="border-t border-border p-4">
-          <Button className="w-full" iconRight="ArrowRight" onClick={goToRooms}>
-            Continue to Rooms
+          <Button className="w-full" iconRight="ArrowRight" onClick={goToDesign}>
+            Continue to Design
           </Button>
         </div>
       </aside>
