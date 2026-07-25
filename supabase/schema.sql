@@ -27,9 +27,29 @@ do $$ begin
   create type property_type as enum ('apartment', 'villa', 'office', 'commercial');
 exception when duplicate_object then null; end $$;
 
+-- Project lifecycle state machine (revamp Workstream 3). Single source of
+-- truth for a project's stage — the frontend renders off this field instead
+-- of ad-hoc booleans (isUploaded/isParsing/etc). See src/lib/projects/state.ts
+-- for the transition graph. `add value if not exists` covers upgrading a
+-- database created before this revamp; the `create type` covers a fresh one.
 do $$ begin
-  create type project_status as enum ('draft', 'parsing', 'parsed', 'designing', 'rendered');
+  create type project_status as enum (
+    'created', 'floor_plan_uploaded', 'parsing', 'needs_review', 'ready_for_generation',
+    'generating_images', 'images_ready', 'editing', 'generating_walkthrough',
+    'completed', 'failed'
+  );
 exception when duplicate_object then null; end $$;
+alter type project_status add value if not exists 'created';
+alter type project_status add value if not exists 'floor_plan_uploaded';
+alter type project_status add value if not exists 'parsing';
+alter type project_status add value if not exists 'needs_review';
+alter type project_status add value if not exists 'ready_for_generation';
+alter type project_status add value if not exists 'generating_images';
+alter type project_status add value if not exists 'images_ready';
+alter type project_status add value if not exists 'editing';
+alter type project_status add value if not exists 'generating_walkthrough';
+alter type project_status add value if not exists 'completed';
+alter type project_status add value if not exists 'failed';
 
 do $$ begin
   create type render_status as enum ('queued', 'processing', 'completed', 'failed');
@@ -65,13 +85,23 @@ create table if not exists projects (
   owner_id      uuid not null references auth.users (id) on delete cascade,
   name          text not null,
   property_type property_type not null,
-  status        project_status not null default 'draft',
+  status        project_status not null default 'created',
+  -- Single JSONB manifest: Universal Input (design selections + additional
+  -- requirements), detected rooms + user edits, the cached Design
+  -- Specification from the Design Planning Layer, generation settings, and a
+  -- pointer to each room's currently-selected generation. See "AI prompting
+  -- architecture" / "Database model" in docs/VASTOS_REVAMP_PLAN.md.
+  manifest      jsonb not null default '{}'::jsonb,
   style_id      text,                          -- references a style preset (app-side)
   thumbnail_url text,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
 create index if not exists projects_owner_idx on projects (owner_id, updated_at desc);
+
+-- Bring an already-created projects table up to date (no-ops if fresh).
+alter table projects add column if not exists manifest jsonb not null default '{}'::jsonb;
+alter table projects alter column status set default 'created';
 
 drop trigger if exists projects_updated_at on projects;
 create trigger projects_updated_at before update on projects

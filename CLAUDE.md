@@ -57,6 +57,12 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 - `src/app/login/` — the sign-in page + `actions.ts` (`signIn`/`signOut` Server Actions). No signup route exists anywhere in the app by design.
 - Bootstrapping the first account: create a user in the Supabase dashboard, then `update profiles set role = 'master' where id = '<uuid>';` — see the comment in `schema.sql`.
 
+### Project lifecycle state machine
+
+`projects.status` (11-value enum, `supabase/schema.sql`) plus `projects.manifest` (JSONB) are the backend foundation for the revamped flow — the frontend is meant to read this one field instead of maintaining separate boolean flags. `src/lib/projects/state.ts` has the transition graph (`transitionProject`) and manifest helpers (`getProjectManifest`/`updateProjectManifest`). Named `ProjectState` to avoid colliding with the unrelated, pre-existing `ProjectStatus` in `src/lib/types.ts` (the old local-first store's status, a different concept).
+
+**Not wired into the live app yet.** Every current page still persists through `project_snapshots` (see below), not the normalized `projects` table — nothing calls `transitionProject` today. That wiring happens once the frontend is rebuilt onto real `projects` rows.
+
 ### Env vars
 
 No `.env.example` is committed (`.env*` is gitignored). Everything is optional and the app degrades gracefully without it:
