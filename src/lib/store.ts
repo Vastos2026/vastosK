@@ -62,6 +62,11 @@ interface VastoState {
   setIncluded: (id: string, roomId: string, included: boolean) => void;
   /** Walkthrough screen — full replace (generating/completed/failed states). */
   setWalkthrough: (id: string, walkthrough: Walkthrough) => void;
+
+  /** Rooms currently generating an image, per project — session-only, never persisted (see store.ts comment). */
+  generatingRoomIds: Record<string, string[]>;
+  startGenerating: (projectId: string, roomId: string) => void;
+  stopGenerating: (projectId: string, roomId: string) => void;
 }
 
 /**
@@ -107,6 +112,7 @@ export const useVasto = create<VastoState>()(
   persist(
     (set, get) => ({
       projects: [],
+      generatingRoomIds: {},
 
       createProject: (name, propertyType) => {
         const id = uid("proj");
@@ -403,6 +409,25 @@ export const useVasto = create<VastoState>()(
         set((s) => ({
           projects: s.projects.map((p) => (p.id === id ? touch({ ...p, walkthrough }) : p)),
         })),
+
+      startGenerating: (projectId, roomId) =>
+        set((s) => {
+          const existing = s.generatingRoomIds[projectId] ?? [];
+          if (existing.includes(roomId)) return s;
+          return { generatingRoomIds: { ...s.generatingRoomIds, [projectId]: [...existing, roomId] } };
+        }),
+
+      stopGenerating: (projectId, roomId) =>
+        set((s) => {
+          const existing = s.generatingRoomIds[projectId];
+          if (!existing) return s;
+          return {
+            generatingRoomIds: {
+              ...s.generatingRoomIds,
+              [projectId]: existing.filter((id) => id !== roomId),
+            },
+          };
+        }),
     }),
     {
       name: "vasto-store-v1",

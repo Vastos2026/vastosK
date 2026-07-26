@@ -6,11 +6,11 @@ import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
-import { runDesignPlan } from "@/lib/design-plan-client";
+import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { cn } from "@/lib/utils";
+import { cn, uid } from "@/lib/utils";
 
 /**
  * Design step (revamp Workstream 8, plan flow step 5/5a) — the ONE global
@@ -99,6 +99,41 @@ export default function DesignPage() {
       });
       useVasto.getState().setStyle(id, styleId);
       useVasto.getState().setStatus(id, "designing");
+
+      // Fire every room's first image generation now, in parallel, so it's
+      // already in flight before the user even sees the Generate page — not
+      // awaited: the Generate page (rebuilt in a later task) reads progress
+      // from the store (generatingRoomIds + roomCards), not from this promise.
+      for (const room of rooms) {
+        useVasto.getState().startGenerating(id, room.id);
+        generateRoomImage({
+          projectId: id,
+          universalInput,
+          room: {
+            name: room.name,
+            size: `${room.width} x ${room.height} ft`,
+            additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
+            openings: room.openings,
+          },
+          designSpec,
+        })
+          .then((gen) => {
+            useVasto.getState().addGeneration(id, room.id, {
+              id: uid("gen"),
+              createdAt: new Date().toISOString(),
+              imageUrl: gen.imageUrl,
+              imageKey: gen.key,
+              prompt: gen.prompt,
+            });
+          })
+          .catch((e) => {
+            console.warn(`[generate] room "${room.name}" failed:`, e instanceof Error ? e.message : e);
+          })
+          .finally(() => {
+            useVasto.getState().stopGenerating(id, room.id);
+          });
+      }
+
       router.push(`/projects/${id}/generate`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Design planning failed");
