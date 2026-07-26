@@ -2,26 +2,27 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useProject } from "@/lib/store";
+import { useProject, useVasto } from "@/lib/store";
+import { emptyPlan } from "@/lib/pipeline/extract-plan";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
-/**
- * Floor Plan step (revamp Workstream 8.5, flow step 4) — the Yes/No branch
- * that was missing entirely before this pass. Yes goes straight to the
- * existing upload flow. No shows a plain placeholder: the Sketch Tool
- * (Workstream 8.6) is the real answer here, not built yet, and the user was
- * explicit that no interim stopgap (not even a simple form) should be built
- * ahead of it.
- */
 export default function FloorPlanPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const project = useProject(id);
+  const setFloorPlan = useVasto((s) => s.setFloorPlan);
+  const setStatus = useVasto((s) => s.setStatus);
   const [choice, setChoice] = useState<"yes" | "no" | null>(null);
 
   if (!project) return null;
+
+  const goManual = () => {
+    setFloorPlan(id, emptyPlan());
+    setStatus(id, "parsed");
+    router.push(`/projects/${id}/review`);
+  };
 
   return (
     <div className="grid h-full place-items-center px-6">
@@ -59,16 +60,9 @@ export default function FloorPlanPage() {
         </div>
 
         {choice === "no" && (
-          <div className="mt-6 rounded-2xl border border-border bg-surface-2 p-5 text-left">
-            <p className="flex items-center gap-2 text-sm font-medium">
-              <Icon name="Sparkles" className="size-4 text-accent" />
-              Sketch tool coming soon
-            </p>
-            <p className="mt-1.5 text-sm text-muted">
-              A quick sketch tool for laying out rooms without a real plan is on the way. For now,
-              upload a floor plan to continue.
-            </p>
-          </div>
+          <Button className="mt-6" iconRight="ArrowRight" onClick={goManual}>
+            Add rooms manually
+          </Button>
         )}
 
         {choice === "yes" && (
