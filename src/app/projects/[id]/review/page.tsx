@@ -298,6 +298,7 @@ function AddRoomForm({
             value={width}
             onChange={(e) => setWidth(e.target.value)}
             className="input"
+            aria-label="Width"
           />
           <span className="text-faint">ft</span>
         </span>
@@ -309,6 +310,7 @@ function AddRoomForm({
             value={height}
             onChange={(e) => setHeight(e.target.value)}
             className="input"
+            aria-label="Height"
           />
           <span className="text-faint">ft</span>
         </span>

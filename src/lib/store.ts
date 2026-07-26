@@ -230,7 +230,7 @@ export const useVasto = create<VastoState>()(
             if (p.id !== id || !p.floorPlan) return p;
             const room = p.floorPlan.rooms.find((r) => r.id === roomId);
             if (!room) return p;
-            const target = Math.max(0, Math.round(count));
+            const target = Math.min(20, Math.max(0, Math.round(count)));
             const current = room.openings ?? [];
             const ofKind = current.filter((o) => o.type === kind);
             const others = current.filter((o) => o.type !== kind);
