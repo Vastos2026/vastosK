@@ -2,25 +2,43 @@
 
 /**
  * Google Flow-style looping carousel: several columns of cards drifting
- * upward at different speeds, behind the welcome greeting. Takes real
- * reference-image URLs once the user's image folder lands (revamp plan,
- * "Deferred to next phase" — carousel image assets); until then each column
- * renders elegant gradient placeholder cards so the layout/motion is real
- * today, not just a mock.
+ * upward at different speeds, behind the welcome greeting. Renders real
+ * interior/architecture reference photos (public/carousel/) — grayscale plus
+ * a dark tint so they read as moody background texture, not a bright photo
+ * grid competing with the "Hello" greeting in front of them.
  */
 
-// Black & white, with the mild dark-green glow as the only colour — matches
-// the rest of the theme (globals.css), never a saturated accent.
-const PALETTES = [
-  "from-white/10 to-transparent",
-  "from-[#1f4d3a]/25 to-transparent",
-  "from-surface-3 to-surface",
-  "from-white/5 to-surface-2",
-  "from-[#1f4d3a]/15 to-surface",
+const IMAGES = [
+  "apartment_interior_0.jpg",
+  "apartment_interior_1.jpg",
+  "apartment_interior_2.jpg",
+  "apartment_interior_3.jpg",
+  "colorful_modern_interior_0.jpg",
+  "colorful_modern_interior_1.jpg",
+  "colorful_modern_interior_2.jpg",
+  "colorful_modern_interior_3.jpg",
+  "minimalist_office_interior_0.jpg",
+  "minimalist_office_interior_1.jpg",
+  "minimalist_office_interior_2.jpg",
+  "minimalist_office_interior_3.jpg",
+  "modern_architecture_building_0.jpg",
+  "modern_architecture_building_1.jpg",
+  "modern_architecture_building_2.jpg",
+  "modern_architecture_building_3.jpg",
+  "modern_minimalist_exterior_1.jpg",
+  "modern_minimalist_exterior_2.jpg",
+  "modern_minimalist_exterior_3.jpg",
+  "modern_minimalist_interior_0.jpg",
+  "modern_minimalist_interior_1.jpg",
+  "modern_minimalist_interior_2.jpg",
+  "modern_minimalist_interior_3.jpg",
+  "traditional_home_exterior_0.jpg",
+  "traditional_home_exterior_1.jpg",
+  "traditional_home_exterior_3.jpg",
 ];
 
 function Column({ seed, duration, reverse }: { seed: number; duration: number; reverse?: boolean }) {
-  const cards = Array.from({ length: 6 }, (_, i) => PALETTES[(seed + i) % PALETTES.length]);
+  const cards = Array.from({ length: 6 }, (_, i) => IMAGES[(seed + i * 3) % IMAGES.length]);
   const doubled = [...cards, ...cards];
 
   return (
@@ -29,11 +47,23 @@ function Column({ seed, duration, reverse }: { seed: number; duration: number; r
         className={reverse ? "animate-carousel-up" : "animate-carousel-down"}
         style={{ animationDuration: `${duration}s` }}
       >
-        {doubled.map((gradient, i) => (
+        {doubled.map((file, i) => (
           <div
             key={i}
-            className={`mb-4 aspect-[3/4] w-full rounded-2xl border border-white/5 bg-gradient-to-br ${gradient} shadow-lg`}
-          />
+            className="relative mb-4 aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 shadow-lg"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`/carousel/${file}`}
+              alt=""
+              className="h-full w-full object-cover grayscale"
+              style={{ filter: "grayscale(1) brightness(0.55) contrast(1.05)" }}
+            />
+            {/* Dark + faint green tint, matching the theme's mild dark-green
+                glow so photos read as moody background texture, not a bright
+                photo grid competing with the greeting in front of them. */}
+            <div className="absolute inset-0 bg-gradient-to-br from-black/40 via-[#1f4d3a]/25 to-black/60" />
+          </div>
         ))}
       </div>
     </div>
