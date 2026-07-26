@@ -16,9 +16,9 @@ export function GeneratingLoader({ className }: { className?: string }) {
           return (
             <span
               key={i}
-              className="absolute left-1/2 top-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent"
+              className="absolute left-1/2 top-1/2 size-1.5 rounded-full bg-accent"
               style={{
-                transform: `rotate(${angle}deg) translate(0, -16px)`,
+                transform: `translate(-50%, -50%) rotate(${angle}deg) translate(0, -16px)`,
                 animation: `vasto-dot-pulse 1.2s ease-in-out ${(i / dots.length) * 1.2}s infinite`,
               }}
             />
