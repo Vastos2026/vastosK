@@ -14,6 +14,7 @@ import { extractFloorPlan, type RawExtractedRoom } from "@/lib/ai/provider";
 import { ROOM_PALETTE } from "@/lib/utils";
 import type { FloorPlan, Room } from "@/lib/types";
 import type { OpeningSide, RoomOpening } from "./assign-openings";
+import { DEFAULT_ROOM_SIZE_FT, emptyPlan } from "./empty-plan";
 
 export interface ExtractPlanInput {
   bytes: Buffer;
@@ -30,7 +31,6 @@ export interface ExtractPlanResult {
   confidence: number;
 }
 
-const DEFAULT_ROOM_SIZE_FT = 10;
 /** Grid packing constants — cosmetic only, see file header. */
 const GRID_GAP_FT = 2;
 const GRID_COLS = 4;
@@ -64,19 +64,6 @@ export async function runPlanExtraction(input: ExtractPlanInput): Promise<Extrac
   };
 
   return { plan, readable: true, confidence: raw.confidence };
-}
-
-/** An empty plan for the no-floor-plan path and the low-confidence fallback — both land here, then the user adds rooms manually. */
-export function emptyPlan(fileName = ""): FloorPlan {
-  return {
-    fileName,
-    planWidth: DEFAULT_ROOM_SIZE_FT,
-    planHeight: DEFAULT_ROOM_SIZE_FT,
-    rooms: [],
-    doors: [],
-    windows: [],
-    meta: { source: "manual" },
-  };
 }
 
 function toRoom(r: RawExtractedRoom, index: number): Room {

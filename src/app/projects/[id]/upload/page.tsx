@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { parsePlanViaApi } from "@/lib/parse-plan-client";
-import { emptyPlan } from "@/lib/pipeline/extract-plan";
+import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";

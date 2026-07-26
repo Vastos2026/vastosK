@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
-import { emptyPlan } from "@/lib/pipeline/extract-plan";
+import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
