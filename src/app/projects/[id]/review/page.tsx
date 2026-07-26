@@ -25,6 +25,7 @@ export default function ReviewPage() {
   const project = useProject(id);
   const updateRoom = useVasto((s) => s.updateRoom);
   const removeRoom = useVasto((s) => s.removeRoom);
+  const resizeRoom = useVasto((s) => s.resizeRoom);
   const addRoom = useVasto((s) => s.addRoom);
   const patchProject = useVasto((s) => s.patchProject);
   const [addingRoom, setAddingRoom] = useState(false);
@@ -106,13 +107,13 @@ export default function ReviewPage() {
                     label="W"
                     feet={room.width}
                     unit={unit}
-                    onChange={(v) => updateRoom(id, room.id, { width: v })}
+                    onChange={(v) => resizeRoom(id, room.id, { width: v })}
                   />
                   <DimensionInline
                     label="H"
                     feet={room.height}
                     unit={unit}
-                    onChange={(v) => updateRoom(id, room.id, { height: v })}
+                    onChange={(v) => resizeRoom(id, room.id, { height: v })}
                   />
 
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-muted">
