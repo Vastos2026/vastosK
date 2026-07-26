@@ -11,8 +11,14 @@ import { formatLength, fromFeet, ftInToFeet, feetToFtIn, toFeet } from "@/lib/un
 import { UNITS } from "@/lib/data";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { cn } from "@/lib/utils";
+import { cn, uid } from "@/lib/utils";
 import type { Room, Unit } from "@/lib/types";
+
+/** Same palette the parsing pipeline assigns detected rooms from. */
+const ROOM_PALETTE = [
+  "#e6a45c", "#6da8e2", "#5cc98a", "#d4972a", "#b98ce2",
+  "#e27d9a", "#6dc7e2", "#8ac98a", "#c98a8a", "#8a9ec9",
+];
 
 /** Door/window counts detected + assigned to this room (best-effort, never asserts zero). */
 function openingCounts(room: Room) {
@@ -30,9 +36,11 @@ export default function ReviewPage() {
   const updateRoom = useVasto((s) => s.updateRoom);
   const removeRoom = useVasto((s) => s.removeRoom);
   const resizeRoom = useVasto((s) => s.resizeRoom);
+  const addRoom = useVasto((s) => s.addRoom);
   const patchProject = useVasto((s) => s.patchProject);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isolate, setIsolate] = useState(false);
+  const [addingRoom, setAddingRoom] = useState(false);
 
   // Hooks must run on every render — before the early returns below (Rules of
   // Hooks). Guard against a not-yet-loaded plan.
@@ -259,9 +267,33 @@ export default function ReviewPage() {
           )}
 
           <div className="mt-6">
-            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-muted">
-              Rooms · {plan.rooms.length}
-            </h3>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted">
+                Rooms · {plan.rooms.length}
+              </h3>
+              {!addingRoom && (
+                <button
+                  onClick={() => setAddingRoom(true)}
+                  className="flex cursor-pointer items-center gap-1 text-xs font-medium text-accent hover:opacity-80"
+                >
+                  <Icon name="Plus" className="size-3.5" /> Add room
+                </button>
+              )}
+            </div>
+
+            {addingRoom && (
+              <AddRoomForm
+                roomTypes={roomTypes}
+                paletteIndex={plan.rooms.length}
+                onAdd={(room) => {
+                  addRoom(id, room);
+                  setSelectedId(room.id);
+                  setAddingRoom(false);
+                }}
+                onCancel={() => setAddingRoom(false)}
+              />
+            )}
+
             <div className="space-y-1">
               {plan.rooms.map((r) => {
                 const { doors, windows } = openingCounts(r);
@@ -297,6 +329,83 @@ export default function ReviewPage() {
           </Button>
         </div>
       </aside>
+    </div>
+  );
+}
+
+/** Manual room entry — the missed-room fallback now that detection places rooms directly. */
+function AddRoomForm({
+  roomTypes,
+  paletteIndex,
+  onAdd,
+  onCancel,
+}: {
+  roomTypes: string[];
+  paletteIndex: number;
+  onAdd: (room: Room) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState("");
+  const [width, setWidth] = useState("10");
+  const [height, setHeight] = useState("10");
+
+  const submit = () => {
+    const w = Math.max(2, Number(width) || 10);
+    const h = Math.max(2, Number(height) || 10);
+    onAdd({
+      id: uid("room"),
+      name: name.trim() || "New room",
+      type: type || undefined,
+      x: 0,
+      y: 0,
+      width: w,
+      height: h,
+      color: ROOM_PALETTE[paletteIndex % ROOM_PALETTE.length],
+    });
+  };
+
+  return (
+    <div className="mb-2 space-y-2.5 rounded-xl border border-border bg-surface-2 p-3">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Room name"
+        className="input"
+      />
+      <div className="grid grid-cols-3 gap-2">
+        <select value={type} onChange={(e) => setType(e.target.value)} className="input cursor-pointer">
+          <option value="">Type</option>
+          {roomTypes.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+        <input
+          type="number"
+          inputMode="decimal"
+          value={width}
+          onChange={(e) => setWidth(e.target.value)}
+          placeholder="Width ft"
+          className="input"
+        />
+        <input
+          type="number"
+          inputMode="decimal"
+          value={height}
+          onChange={(e) => setHeight(e.target.value)}
+          placeholder="Height ft"
+          className="input"
+        />
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" icon="Plus" onClick={submit}>
+          Add
+        </Button>
+      </div>
     </div>
   );
 }
