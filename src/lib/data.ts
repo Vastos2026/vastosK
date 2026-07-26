@@ -34,13 +34,13 @@ export const LUXURY_LEVELS: { id: import("./ai/prompting/types").LuxuryLevel; la
 ];
 
 /** Colour palette presets for the Design step's global colour picker. */
-export const COLOUR_PALETTES: { id: string; label: string; swatch: string[] }[] = [
-  { id: "Warm White", label: "Warm White", swatch: ["#f3ead3", "#c8a06a", "#7a5236"] },
-  { id: "Cool Grey", label: "Cool Grey", swatch: ["#e9e6e1", "#9c8c7c", "#3a3a3d"] },
-  { id: "Earthy Terracotta", label: "Earthy Terracotta", swatch: ["#e9d6b0", "#a8431f", "#3a1d12"] },
-  { id: "Deep Jewel", label: "Deep Jewel", swatch: ["#caa64a", "#3a2f5e", "#14110d"] },
-  { id: "Sage & Sand", label: "Sage & Sand", swatch: ["#e6e3d6", "#7fa08a", "#4f4a3a"] },
-  { id: "Charcoal & Brass", label: "Charcoal & Brass", swatch: ["#d4972a", "#4f4f52", "#161616"] },
+export const COLOUR_PALETTES: { id: string; label: string; swatch: string[]; description: string }[] = [
+  { id: "Warm White", label: "Warm White", swatch: ["#f3ead3", "#c8a06a", "#7a5236"], description: "cream and warm white walls, honey oak tones, soft walnut brown accents" },
+  { id: "Cool Grey", label: "Cool Grey", swatch: ["#e9e6e1", "#9c8c7c", "#3a3a3d"], description: "soft greige and cool grey surfaces, warm taupe accents, charcoal detailing" },
+  { id: "Earthy Terracotta", label: "Earthy Terracotta", swatch: ["#e9d6b0", "#a8431f", "#3a1d12"], description: "sandy cream base, burnt terracotta orange accents, deep umber brown" },
+  { id: "Deep Jewel", label: "Deep Jewel", swatch: ["#caa64a", "#3a2f5e", "#14110d"], description: "brushed gold accents, deep indigo-purple, near-black charcoal base" },
+  { id: "Sage & Sand", label: "Sage & Sand", swatch: ["#e6e3d6", "#7fa08a", "#4f4a3a"], description: "warm sand base, muted sage green accents, deep olive-brown detailing" },
+  { id: "Charcoal & Brass", label: "Charcoal & Brass", swatch: ["#d4972a", "#4f4f52", "#161616"], description: "near-black charcoal base, warm brass gold accents, mid-grey surfaces" },
 ];
 
 /** Unit systems for the dimension selector — ft/in is the default everywhere. */

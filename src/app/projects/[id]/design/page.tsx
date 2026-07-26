@@ -65,6 +65,7 @@ export default function DesignPage() {
       setError("Choose or enter a project subcategory.");
       return;
     }
+    const palette = COLOUR_PALETTES.find((c) => c.id === colourPalette) ?? COLOUR_PALETTES[0];
     setBusy(true);
     setError(null);
     try {
@@ -82,7 +83,11 @@ export default function DesignPage() {
           additionalNotes: additionalRequirements.trim() || undefined,
           openings: r.openings,
         })),
-        design: { style: style.name, luxuryLevel, colourPalette },
+        design: {
+          style: style.name,
+          luxuryLevel,
+          colourPalette: `${palette.label} (${palette.description})`,
+        },
       });
       setDesignPlan(id, {
         subcategory,
@@ -149,21 +154,14 @@ export default function DesignPage() {
                 key={s.id}
                 onClick={() => setStyleId(s.id)}
                 className={cn(
-                  "group cursor-pointer overflow-hidden rounded-2xl border text-left transition-colors",
+                  "cursor-pointer rounded-2xl border p-3.5 text-left transition-colors",
                   s.id === styleId
                     ? "border-accent/60 bg-accent/5"
                     : "border-border bg-surface hover:border-border-strong",
                 )}
               >
-                <div className="flex h-10 overflow-hidden">
-                  {s.palette.map((c, i) => (
-                    <div key={i} className="flex-1" style={{ background: c }} />
-                  ))}
-                </div>
-                <div className="p-3">
-                  <p className="text-sm font-medium">{s.name}</p>
-                  <p className="mt-0.5 text-xs text-muted">{s.tagline}</p>
-                </div>
+                <p className="text-sm font-medium">{s.name}</p>
+                <p className="mt-0.5 text-xs text-muted">{s.tagline}</p>
               </button>
             ))}
           </div>
@@ -196,18 +194,21 @@ export default function DesignPage() {
                 key={c.id}
                 onClick={() => setColourPalette(c.id)}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2.5 rounded-2xl border p-3 text-left transition-colors",
-                  colourPalette === c.id
+                  "group cursor-pointer overflow-hidden rounded-2xl border text-left transition-colors",
+                  c.id === colourPalette
                     ? "border-accent/60 bg-accent/5"
                     : "border-border bg-surface hover:border-border-strong",
                 )}
               >
-                <div className="flex h-7 w-10 shrink-0 overflow-hidden rounded-lg">
+                <div className="flex h-10 overflow-hidden">
                   {c.swatch.map((sw, i) => (
                     <div key={i} className="flex-1" style={{ background: sw }} />
                   ))}
                 </div>
-                <span className="text-sm font-medium">{c.label}</span>
+                <div className="p-3">
+                  <p className="text-sm font-medium">{c.label}</p>
+                  <p className="mt-0.5 line-clamp-1 text-xs text-muted">{c.description}</p>
+                </div>
               </button>
             ))}
           </div>
