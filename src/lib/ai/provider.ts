@@ -228,7 +228,12 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
     const raw = await generateJson<RawExtractionResponse>(parts, {
       temperature: 0.1,
       thinkingBudget: 0,
-      maxOutputTokens: 8192,
+      // Dense plans (many rooms, each with a full opening list) were hitting
+      // MAX_TOKENS and getting truncated/salvaged instead of returning every
+      // room. Extraction correctness matters more than output-token cost —
+      // this cap exists only to bound a runaway generation, not to save
+      // tokens, so it's set high enough that a real plan should never hit it.
+      maxOutputTokens: 65536,
       responseSchema: buildExtractionSchema(roomTypeHints),
     });
     if (!raw) throw new ProviderError("AiProviderError", "floor plan extraction failed");
