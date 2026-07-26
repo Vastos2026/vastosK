@@ -366,7 +366,12 @@ export async function generateStructured<T>(
   const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
   return instrumented("planning", model, ctx, async () => {
     const parts: GeminiPart[] = [{ text: prompt }];
-    const out = await generateJson<T>(parts, { temperature: 0.4, responseSchema: schema });
+    const out = await generateJson<T>(parts, {
+      temperature: 0.4,
+      thinkingBudget: 0,
+      maxOutputTokens: 8192,
+      responseSchema: schema,
+    });
     if (out === null) throw new ProviderError("AiProviderError", "structured generation failed");
     return out;
   });
