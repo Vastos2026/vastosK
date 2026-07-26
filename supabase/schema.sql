@@ -1,5 +1,5 @@
 -- ============================================================================
--- Vasto Studios — database schema (full production flow)
+-- Vastos — database schema (full production flow)
 --
 --   Floor Plan ─▶ OCR ─▶ Gemini Flash ─▶ OpenCV ─▶ Merge
 --      (upload)   (text)  (rooms+dims)  (geometry) (semantics+geometry)

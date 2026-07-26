@@ -1,4 +1,4 @@
-/* Domain types for the Vasto Studios frontend (mock layer). */
+/* Domain types for the Vastos frontend (mock layer). */
 
 import type { DesignSpecification, LuxuryLevel, UniversalInput } from "./ai/prompting/types";
 
