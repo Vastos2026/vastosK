@@ -107,8 +107,7 @@ Reproduced by the user: uploading a floor plan throws `Cannot read properties of
 
 **Kept, because they're genuinely still load-bearing:**
 - The whole upload pipeline (`src/lib/pipeline/`: OCR, OpenCV geometry, Gemini semantic, merge, `assign-openings`) — unchanged, it's what the Upload screen already does correctly.
-- `lasso-select.tsx` + `lasso-extract.ts` — the implementation of "Add room" on the confirmation screen (snaps to real detected walls, pulls printed dimension text).
-- `lasso-canvas.tsx` — kept, extended to 2 independently-numbered regions for the View & Edit screen (see "Full page-by-page flow").
+- `lasso-canvas.tsx` — kept, extended to 2 independently-numbered regions for the View & Edit screen (see "Full page-by-page flow"). Not to be confused with the now-deleted `lasso-select.tsx` (freehand-on-the-upload-image tool, **removed 2026-07-26** — it had no place once detection started placing rooms directly instead of requiring a per-room lasso confirmation); `lasso-extract.ts` is trimmed to just `pxToFtTransform`, the one export the parsing pipeline still depends on.
 - `plan-editor.tsx` — kept, but stripped of furniture-dragging responsibilities; room boxes only, used by Room Confirmation and the new Sketch Tool.
 - `gemini-image.ts`, `veo-client.ts`, `ffmpeg.ts` — kept, called much more simply (one edit call with two regions instead of a checklist/repair loop; one 3-second image-to-video call per room instead of a 4-segment orbit; plain concatenation instead of orbit-stitching).
 - Everything from Workstreams 2-7a (auth, `projects.status`/`manifest`, the AI provider layer, the prompting pipeline, project-type configs, the detection toggle, `assign-openings`) — this is the new backbone, untouched by any of the above.
@@ -236,7 +235,7 @@ Superseded the previous version of this section entirely (it still described 3D-
 
 5. **Upload** (Yes path)
    - **Drag & drop / browse** → selects a file client-side, no call yet.
-   - **Analyze floor plan** button → `POST /api/parse-plan`. Server: uploads to S3 (or local disk), runs OCR (Gemini Vision) + OpenCV geometry + Gemini semantic understanding, merges into rooms/walls/doors/windows, runs `assign-openings` to attach each door/window to a room + side. Returns the structured plan.
+   - **Analyze floor plan** button → `POST /api/parse-plan`. Server: uploads to S3 (or local disk), runs OCR (Gemini Vision) + OpenCV/EasyOCR geometry (`DETECTOR=labeled` swaps in a fully offline, Gemini-free room detector — see "Env vars" in CLAUDE.md) + Gemini semantic understanding, merges into rooms/walls/doors/windows, runs `assign-openings` to attach each door/window to a room + side. Returns the structured plan. **Detected rooms land on the plan directly** — no per-room confirmation step on this screen; the result is a single detection panel (image + overlay + layer toggles + stats), and rooms are reviewed/renamed/corrected on the next screen (Room Confirmation), same as everything else about them.
    - **Import another** button → **now shows a small inline disclaimer before discarding** ("This will discard the current analysis") rather than silently wiping it — a brief confirm step, not a full modal, since the cost of an accidental click here is a wasted detection pass the user has to redo. No backend call either way.
 
 6. **Room Confirmation** (rebuilt content on the existing review route)
@@ -246,7 +245,7 @@ Superseded the previous version of this section entirely (it still described 3D-
    - **Change type** (dropdown, from the active category's `roomTypes`) — this is the room's *category tag* (Bedroom, Kitchen, Study, etc.), separate from its free-text name. It matters because the name alone can be unreliable ("Ananya's Room," "Chotu's Room," a mis-detected label) — `type` is the reliable signal the walkthrough ordering and the Design Planning Layer actually key off. Detection guesses it; this dropdown is how the user corrects a wrong guess or sets it for a room detection couldn't classify.
    - **Edit size** (width/height, in the selected unit) → local state.
    - **Delete room** button → removes it from the list.
-   - **Add room** button → opens the lasso tool over the uploaded plan image; drawing a loop snaps to detected walls and pulls printed dimension text, adds a new room.
+   - **Add room** button → opens a small inline form (name, type, width, height) and appends the room at a default position; no lasso, no access to the uploaded plan image on this screen — the user drags it into place afterward (or hits **Tidy layout** to auto-separate overlaps).
    - **Continue to Design** button → no backend call yet; the room list only becomes a real `UniversalInput` once Design is confirmed.
 
 7. **Design** — the one global-inputs screen

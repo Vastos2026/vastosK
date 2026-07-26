@@ -45,6 +45,12 @@ subprocess entirely and rely on Gemini vision alone for floor-plan geometry
 (requires `GEMINI_API_KEY`). Useful if Python is broken locally, or for a
 deploy target without a Python runtime.
 
+**Gemini-free option**: set `DETECTOR=labeled` to use the EasyOCR-assisted
+Python detector (`pip install -r scripts/requirements.txt` first) instead of
+the default contour-based one. It reads room names/types/dimensions and
+doors/windows straight off the plan's printed labels — works with no
+`GEMINI_API_KEY` at all.
+
 ## Project structure
 
 ```
@@ -98,11 +104,13 @@ Upload (JPG/PNG) → AWS S3 → Inngest → OCR → Gemini Flash → OpenCV → 
 | Openings     | `pipeline/assign-openings.ts`                   | Deterministically assigns each door/window to its room + side        |
 
 It degrades gracefully at every stage: missing AWS creds → local storage;
-missing `GEMINI_API_KEY` → OpenCV geometry with generic room names; missing
-Supabase config → no persistence, everything else still works.
+missing `GEMINI_API_KEY` → OpenCV geometry with generic room names (or, with
+`DETECTOR=labeled`, real names/types/dimensions read locally — no Gemini call
+needed at all); missing Supabase config → no persistence, everything else
+still works.
 
-> **PDF note:** PDFs currently fall back to a sample layout — OpenCV needs a
-> raster image. Export plans to PNG/JPG for the full pipeline.
+> **PDF note:** PDFs are rejected with an error — OpenCV needs a raster
+> image. Export plans to PNG/JPG for the full pipeline.
 
 ## Deploying
 

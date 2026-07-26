@@ -22,7 +22,15 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
+
+# editors
+.vscode/
+.idea/
+
+# Claude Code — local-only, machine/account-specific (launch.json stays tracked)
+.claude/settings.local.json
 
 # debug
 npm-debug.log*
