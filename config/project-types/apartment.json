@@ -8,21 +8,29 @@
     "Dining Room",
     "Master Bedroom",
     "Bedroom",
+    "Guest Room",
     "Kitchen",
     "Bathroom",
     "Study",
+    "Pooja Room",
+    "Foyer",
     "Utility",
+    "Store Room",
     "Balcony"
   ],
   "walkthroughOrder": [
+    "Foyer",
     "Living Room",
     "Dining Room",
     "Kitchen",
     "Master Bedroom",
     "Bedroom",
+    "Guest Room",
     "Study",
+    "Pooja Room",
     "Bathroom",
     "Balcony",
-    "Utility"
+    "Utility",
+    "Store Room"
   ]
 }
