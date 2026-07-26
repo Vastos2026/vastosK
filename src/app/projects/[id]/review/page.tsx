@@ -27,6 +27,7 @@ export default function ReviewPage() {
   const updateRoom = useVasto((s) => s.updateRoom);
   const removeRoom = useVasto((s) => s.removeRoom);
   const resizeRoom = useVasto((s) => s.resizeRoom);
+  const setOpeningCount = useVasto((s) => s.setOpeningCount);
   const addRoom = useVasto((s) => s.addRoom);
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const patchProject = useVasto((s) => s.patchProject);
@@ -52,16 +53,13 @@ export default function ReviewPage() {
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
-        <div className="mb-2 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">Room Confirmation</h2>
-            <p className="mt-1 text-sm text-muted">
-              {rooms.length > 0
-                ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} found. Review and correct anything below.`
-                : "No rooms yet. Add your first one below."}
-            </p>
-          </div>
-          <UnitSelect value={unit} onChange={(u) => patchProject(id, { units: u })} />
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold tracking-tight">Room Confirmation</h2>
+          <p className="mt-1 text-sm text-muted">
+            {rooms.length > 0
+              ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} found. Review and correct anything below.`
+              : "No rooms yet. Add your first one below."}
+          </p>
         </div>
 
         {referenceImage && (
@@ -83,16 +81,32 @@ export default function ReviewPage() {
                 className="hover-lift animate-fade-up rounded-2xl border border-border bg-surface p-4 transition-colors"
                 style={{ animationDelay: `${Math.min(i, 10) * 60}ms` }}
               >
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-3">
                   <span className="size-3 shrink-0 rounded-sm" style={{ background: room.color }} />
-
                   <input
                     value={room.name}
                     onChange={(e) => updateRoom(id, room.id, { name: e.target.value })}
                     className="input min-w-0 flex-1 font-medium"
                     aria-label={`${room.name || "Room"} name`}
                   />
+                  {room.dimensionsEstimated && (
+                    <span
+                      className="inline-flex shrink-0 items-center text-warning"
+                      title="Dimensions weren't printed on the plan — estimated as a default 10 x 10 ft. Please verify."
+                    >
+                      <Icon name="CircleAlert" className="size-3.5" />
+                    </span>
+                  )}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    icon="Trash2"
+                    aria-label="Delete room"
+                    onClick={() => setPendingDeleteId(room.id)}
+                  />
+                </div>
 
+                <div className="mt-2.5 flex flex-wrap items-center gap-2.5 pl-6">
                   <select
                     value={room.type ?? ""}
                     onChange={(e) => updateRoom(id, room.id, { type: e.target.value || undefined })}
@@ -118,28 +132,15 @@ export default function ReviewPage() {
                     onChange={(v) => resizeRoom(id, room.id, { height: v })}
                   />
 
-                  {room.dimensionsEstimated && (
-                    <span
-                      className="inline-flex shrink-0 items-center text-warning"
-                      title="Dimensions weren't printed on the plan — estimated as a default 10 x 10 ft. Please verify."
-                    >
-                      <Icon name="CircleAlert" className="size-3.5" />
-                    </span>
-                  )}
-
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-muted">
-                    <Icon name="DoorClosed" className="size-3" /> {doors}
-                  </span>
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-muted">
-                    <Icon name="Frame" className="size-3" /> {windows}
-                  </span>
-
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    icon="Trash2"
-                    aria-label="Delete room"
-                    onClick={() => setPendingDeleteId(room.id)}
+                  <OpeningCountField
+                    label="Doors"
+                    value={doors}
+                    onChange={(v) => setOpeningCount(id, room.id, "door", v)}
+                  />
+                  <OpeningCountField
+                    label="Windows"
+                    value={windows}
+                    onChange={(v) => setOpeningCount(id, room.id, "window", v)}
                   />
                 </div>
 
@@ -175,7 +176,11 @@ export default function ReviewPage() {
           )}
         </div>
 
-        <div className="mt-4">
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <UnitSelect value={unit} onChange={(u) => patchProject(id, { units: u })} />
+        </div>
+
+        <div className="mt-2.5">
           {addingRoom ? (
             <AddRoomForm
               roomTypes={roomTypes}
@@ -207,6 +212,32 @@ export default function ReviewPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** A small labelled number input for door/window counts — editable, not just a read-out. */
+function OpeningCountField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
+      {label}
+      <input
+        type="number"
+        min={0}
+        max={20}
+        value={value}
+        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+        className="input w-14 text-center"
+        aria-label={label}
+      />
+    </span>
   );
 }
 
@@ -243,36 +274,44 @@ function AddRoomForm({
 
   return (
     <div className="space-y-2.5 rounded-2xl border border-border bg-surface-2 p-4">
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Room name"
-        className="input"
-      />
-      <div className="grid grid-cols-3 gap-2">
-        <select value={type} onChange={(e) => setType(e.target.value)} className="input cursor-pointer">
+      <div className="flex gap-2">
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Room name"
+          className="input min-w-0 flex-1"
+        />
+        <select value={type} onChange={(e) => setType(e.target.value)} className="input w-36 shrink-0 cursor-pointer">
           <option value="">Type</option>
           {roomTypes.map((t) => (
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        <input
-          type="number"
-          inputMode="decimal"
-          value={width}
-          onChange={(e) => setWidth(e.target.value)}
-          placeholder="Width ft"
-          className="input"
-        />
-        <input
-          type="number"
-          inputMode="decimal"
-          value={height}
-          onChange={(e) => setHeight(e.target.value)}
-          placeholder="Height ft"
-          className="input"
-        />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="flex flex-1 items-center gap-1.5 text-xs text-muted">
+          W
+          <input
+            type="number"
+            inputMode="decimal"
+            value={width}
+            onChange={(e) => setWidth(e.target.value)}
+            className="input"
+          />
+          <span className="text-faint">ft</span>
+        </span>
+        <span className="flex flex-1 items-center gap-1.5 text-xs text-muted">
+          H
+          <input
+            type="number"
+            inputMode="decimal"
+            value={height}
+            onChange={(e) => setHeight(e.target.value)}
+            className="input"
+          />
+          <span className="text-faint">ft</span>
+        </span>
       </div>
       <div className="flex items-center justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>
@@ -288,16 +327,19 @@ function AddRoomForm({
 
 function UnitSelect({ value, onChange }: { value: Unit; onChange: (u: Unit) => void }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as Unit)}
-      className="input cursor-pointer !py-1.5 text-xs"
-      aria-label="Units"
-    >
-      {UNITS.map((u) => (
-        <option key={u.id} value={u.id}>{u.label}</option>
-      ))}
-    </select>
+    <label className="flex items-center gap-2 text-xs text-muted">
+      Units
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as Unit)}
+        className="input cursor-pointer !w-auto !py-1.5 text-xs"
+        aria-label="Units"
+      >
+        {UNITS.map((u) => (
+          <option key={u.id} value={u.id}>{u.label}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 

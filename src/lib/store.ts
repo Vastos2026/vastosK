@@ -34,6 +34,8 @@ interface VastoState {
   removeRoom: (id: string, roomId: string) => void;
   /** Change a room's width/height (Room Confirmation's edit-size field). */
   resizeRoom: (id: string, roomId: string, size: { width?: number; height?: number }) => void;
+  /** Set the number of door/window openings on a room (Room Confirmation's editable count field) — pads with generic entries or truncates from the end. */
+  setOpeningCount: (id: string, roomId: string, kind: "door" | "window", count: number) => void;
   setStatus: (id: string, status: ProjectStatus) => void;
   setStyle: (id: string, styleId: string) => void;
   /** Persists a Design Planning run's result (revamp Workstream 8): the global
@@ -217,6 +219,36 @@ export const useVasto = create<VastoState>()(
             const height = Math.max(2, r1(size.height ?? room.height));
             const rooms = p.floorPlan.rooms.map((r) =>
               r.id === roomId ? { ...r, width, height } : r,
+            );
+            return touch({ ...p, floorPlan: { ...p.floorPlan, rooms } });
+          }),
+        })),
+
+      setOpeningCount: (id, roomId, kind, count) =>
+        set((s) => ({
+          projects: s.projects.map((p) => {
+            if (p.id !== id || !p.floorPlan) return p;
+            const room = p.floorPlan.rooms.find((r) => r.id === roomId);
+            if (!room) return p;
+            const target = Math.max(0, Math.round(count));
+            const current = room.openings ?? [];
+            const ofKind = current.filter((o) => o.type === kind);
+            const others = current.filter((o) => o.type !== kind);
+            let nextOfKind: typeof ofKind;
+            if (ofKind.length > target) {
+              nextOfKind = ofKind.slice(0, target);
+            } else {
+              nextOfKind = [
+                ...ofKind,
+                ...Array.from({ length: target - ofKind.length }, () => ({
+                  type: kind,
+                  side: "north" as const,
+                  connectsTo: null,
+                })),
+              ];
+            }
+            const rooms = p.floorPlan.rooms.map((r) =>
+              r.id === roomId ? { ...r, openings: [...others, ...nextOfKind] } : r,
             );
             return touch({ ...p, floorPlan: { ...p.floorPlan, rooms } });
           }),
