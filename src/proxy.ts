@@ -12,7 +12,7 @@ import { NextResponse, type NextRequest } from "next/server";
  * and API route. Never rely on this file alone — see Next's own auth guide.
  */
 
-const PUBLIC_PREFIXES = ["/login", "/api/inngest"];
+const PUBLIC_PREFIXES = ["/login"];
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

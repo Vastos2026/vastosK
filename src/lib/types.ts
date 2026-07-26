@@ -22,6 +22,12 @@ export interface Room {
   /** width × height in feet */
   width: number;
   height: number;
+  /**
+   * True when width and/or height weren't legible on the plan and fell back
+   * to DEFAULT_ROOM_SIZE_FT instead of a real reading (see extract-plan.ts's
+   * toRoom) — lets the UI flag the dimension as a guess, not an extraction.
+   */
+  dimensionsEstimated?: boolean;
   /** top-left position on the 2D plan grid, in feet */
   x: number;
   y: number;

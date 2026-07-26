@@ -79,6 +79,7 @@ function toRoom(r: RawExtractedRoom, index: number): Room {
     y: 0,
     color: ROOM_PALETTE[index % ROOM_PALETTE.length],
     openings: r.openings.map((o) => toRoomOpening(o)),
+    dimensionsEstimated: r.widthFt === undefined || r.heightFt === undefined,
   };
 }
 

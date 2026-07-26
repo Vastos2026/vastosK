@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
+import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { fromFeet, ftInToFeet, feetToFtIn, toFeet } from "@/lib/units";
 import { UNITS } from "@/lib/data";
@@ -27,6 +28,7 @@ export default function ReviewPage() {
   const removeRoom = useVasto((s) => s.removeRoom);
   const resizeRoom = useVasto((s) => s.resizeRoom);
   const addRoom = useVasto((s) => s.addRoom);
+  const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const patchProject = useVasto((s) => s.patchProject);
   const [addingRoom, setAddingRoom] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -88,14 +90,14 @@ export default function ReviewPage() {
                     value={room.name}
                     onChange={(e) => updateRoom(id, room.id, { name: e.target.value })}
                     className="input min-w-0 flex-1 font-medium"
-                    aria-label="Room name"
+                    aria-label={`${room.name || "Room"} name`}
                   />
 
                   <select
                     value={room.type ?? ""}
                     onChange={(e) => updateRoom(id, room.id, { type: e.target.value || undefined })}
                     className="input w-40 shrink-0 cursor-pointer"
-                    aria-label="Room type"
+                    aria-label={`${room.name || "Room"} type`}
                   >
                     <option value="">Unset type</option>
                     {roomTypes.map((t) => (
@@ -115,6 +117,15 @@ export default function ReviewPage() {
                     unit={unit}
                     onChange={(v) => resizeRoom(id, room.id, { height: v })}
                   />
+
+                  {room.dimensionsEstimated && (
+                    <span
+                      className="inline-flex shrink-0 items-center text-warning"
+                      title="Dimensions weren't printed on the plan — estimated as a default 10 x 10 ft. Please verify."
+                    >
+                      <Icon name="CircleAlert" className="size-3.5" />
+                    </span>
+                  )}
 
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-muted">
                     <Icon name="DoorClosed" className="size-3" /> {doors}
@@ -170,7 +181,11 @@ export default function ReviewPage() {
               roomTypes={roomTypes}
               paletteIndex={rooms.length}
               onAdd={(room) => {
-                addRoom(id, room);
+                if (!project.floorPlan) {
+                  setFloorPlan(id, { ...emptyPlan(), rooms: [room] });
+                } else {
+                  addRoom(id, room);
+                }
                 setAddingRoom(false);
               }}
               onCancel={() => setAddingRoom(false)}

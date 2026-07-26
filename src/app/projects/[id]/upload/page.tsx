@@ -152,9 +152,14 @@ export default function UploadPage() {
             </div>
 
             {error && (
-              <div className="mt-3 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/5 px-3 py-2.5 text-xs text-danger">
-                <Icon name="CircleAlert" className="mt-0.5 size-4 shrink-0" />
-                <span>{error}</span>
+              <div className="mt-3 rounded-xl border border-danger/30 bg-danger/5 px-3.5 py-3 text-xs text-danger">
+                <p className="flex items-start gap-2">
+                  <Icon name="CircleAlert" className="mt-0.5 size-4 shrink-0" />
+                  <span>{error}</span>
+                </p>
+                <Button size="sm" variant="outline" className="mt-2.5" icon="ListPlus" onClick={goManual}>
+                  Switch to manual entry
+                </Button>
               </div>
             )}
 

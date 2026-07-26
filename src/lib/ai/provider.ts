@@ -21,7 +21,7 @@ import "server-only";
  * src/lib/pipeline/extract-plan.ts).
  */
 
-import { generateJson, type GeminiPart } from "@/lib/pipeline/gemini-client";
+import { generateJson, geminiConfigured, type GeminiPart } from "@/lib/pipeline/gemini-client";
 import { downscaleForGemini } from "@/lib/pipeline/image-utils";
 import { editImageWithGemini } from "@/lib/render/gemini-image";
 import { generateVideoFromImage } from "@/lib/render/veo-client";
@@ -186,6 +186,9 @@ export async function extractFloorPlan(
   roomTypeHints: string[],
   ctx?: CallContext,
 ): Promise<RawExtraction> {
+  if (!geminiConfigured()) {
+    throw new ProviderError("ValidationError", "GEMINI_API_KEY is not configured");
+  }
   const img = await downscaleForGemini(bytes);
   const hints = roomTypeHints.length
     ? `Prefer one of these types when it fits: ${roomTypeHints.join(", ")}. If none fit, use your own best short label.`
