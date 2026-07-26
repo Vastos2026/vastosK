@@ -50,7 +50,7 @@ export default function UploadPage() {
     setUnreadable(false);
 
     if (!selected.isImage) {
-      setError("PDFs can't be analyzed yet — export the plan as a PNG or JPG and re-import.");
+      setError("PDFs can't be analyzed yet. Export the plan as a PNG or JPG and re-import.");
       return;
     }
 
@@ -189,7 +189,7 @@ export default function UploadPage() {
             </div>
           </div>
           <p className="mt-3 text-center text-xs text-faint">
-            Reads rooms, dimensions, doors and windows automatically — everything is
+            Reads rooms, dimensions, doors and windows automatically. Everything is
             reviewable and editable on the next screen.
           </p>
         </div>

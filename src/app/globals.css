@@ -169,10 +169,10 @@
   50% { opacity: 0.45; }
 }
 @keyframes vasto-sweep {
-  0% { top: -34%; opacity: 0; }
+  0% { transform: translateY(-102%); opacity: 0; }
   15% { opacity: 1; }
   85% { opacity: 1; }
-  100% { top: 100%; opacity: 0; }
+  100% { transform: translateY(300%); opacity: 0; }
 }
 @keyframes vasto-shimmer {
   100% { transform: translateX(100%); }
