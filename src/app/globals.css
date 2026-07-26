@@ -168,6 +168,10 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+@keyframes vasto-dot-pulse {
+  0%, 100% { transform: scale(0.6); opacity: 0.35; }
+  50% { transform: scale(1); opacity: 1; }
+}
 @keyframes vasto-sweep {
   0% { transform: translateY(-102%); opacity: 0; }
   15% { opacity: 1; }
