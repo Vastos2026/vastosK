@@ -6,8 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- `npm run dev` — start the app (http://localhost:3000). The floor-plan pipeline runs synchronously here by default; no other services needed.
-- `npm run dev:inngest` — run alongside `npm run dev` in a second terminal to test the async (Inngest) job path.
+- `npm run dev` — start the app (http://localhost:3000). Floor-plan extraction runs synchronously in the request; no other services needed.
 - `npm run build` — production build.
 - `npm run start` — run a production build.
 - `npm run lint` — ESLint.
@@ -15,26 +14,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-There is no separate backend service. Next.js API routes under `src/app/api/*` are the backend, running server-side inside the same app. One of them spawns a Python subprocess for image geometry detection.
+There is no separate backend service. Next.js API routes under `src/app/api/*` are the backend, running server-side inside the same app.
 
-### Floor-plan parsing pipeline
+### Floor-plan extraction
 
-Core domain logic, spread across `src/lib/pipeline/`:
+A single Gemini vision call does the whole job — no OCR/semantic/geometry/merge staged pipeline and no async job queue. Entry point: `src/app/api/parse-plan/route.ts`, which calls `runPlanExtraction` in `src/lib/pipeline/extract-plan.ts`; that in turn calls `extractFloorPlan` in `src/lib/ai/provider.ts` (the only function in that layer allowed to make the extraction call), passing the uploaded image plus the active project category's room-type hints. Gemini returns room names (verbatim), types, printed dimensions where legible, and door/window presence with side + connection, constrained by a response schema; `extract-plan.ts` maps that onto the existing `FloorPlan`/`Room` shape and assigns each room a cosmetic grid position (`PlanThumb`/`project-card.tsx` still render `room.x`/`y`). Without `GEMINI_API_KEY`, extraction fails outright (surfaced to the frontend as `readable: false`, routing to manual entry) rather than falling back to a heuristic — there's no local/offline detection path in the live app. PDFs are rejected outright with an error (`/api/parse-plan/route.ts`) — export to PNG/JPG first.
 
-```
-Upload (JPG/PNG) → AWS S3 → Inngest → OCR (Gemini Vision) → Gemini Flash (semantics) → OpenCV (geometry) → Merge Engine → FloorPlan
-```
-
-| Stage | Module | Purpose |
-| --- | --- | --- |
-| Storage | `pipeline/storage.ts` | Uploads to S3; falls back to local temp storage if AWS env vars are unset |
-| Queue | `inngest/` + `app/api/inngest` | Optional retryable/observable async job execution |
-| OCR | `pipeline/ocr.ts` + `pipeline/gemini-client.ts` | Gemini Vision, prompted as an OCR engine, transcribes room names/dimensions/scale from the image |
-| Semantics | `pipeline/semantic.ts` | Gemini Flash reasons over OCR text into structured rooms/types/scale |
-| Geometry | `pipeline/opencv.ts` → `scripts/parse_plan.py` | Spawns Python/OpenCV to detect walls, doors, windows, room boxes in pixels. `scripts/detect_rooms_labeled.py` is an alternate detector (`DETECTOR=labeled`) that uses local EasyOCR to grow labeled rooms out to walls |
-| Merge | `pipeline/merge.ts` | Resolves px→feet scale and merges OCR + geometry into one `FloorPlan` |
-
-Entry point: `src/app/api/parse-plan/route.ts`. Each stage degrades gracefully when its credentials are missing. Without `GEMINI_API_KEY`: `runOCR`/`runSemantic` still get called but every Gemini call short-circuits to `null` (`gemini-client.ts`'s `generateJson` checks the key before any request), so OCR returns no tokens and semantic understanding falls through to `heuristic()`/empty — `merge.ts` then falls back to whatever the geometry stage detected on its own. With `DETECTOR=labeled` (below), that's a **complete room detection path with zero Gemini calls**: the EasyOCR-assisted Python detector reads room name/type/dimensions and scale straight off the plan's printed labels, and `merge.ts:244`'s `sem?.name ?? detected?.name` prefers Gemini's read but falls back to the detector's own name when Gemini has nothing. Missing AWS creds → local disk storage. PDFs are rejected outright with an error (`/api/parse-plan/route.ts`) — export to PNG/JPG first; only raster images go through the real pipeline.
+The old staged pipeline (`pipeline/ocr.ts`, `pipeline/semantic.ts`, `pipeline/merge.ts`, `pipeline/pipeline.ts`, `pipeline/validate.ts`, `pipeline/job-store.ts`) and its Inngest async job path (`lib/inngest/`, `app/api/inngest/route.ts`) were retired 2026-07-26 — nothing in the live app called them. `src/lib/pipeline/opencv.ts` (spawns `scripts/parse_plan.py`/`scripts/detect_rooms_labeled.py` for Python/OpenCV geometry detection) is left in place per this plan's scope but is currently dormant/uncalled — see `DETECTOR`/`DETECTION_MODE` in "Env vars" below.
 
 ### Rendering pipeline — rebuilt, Workstream 8.5 (2026-07-26)
 
@@ -50,7 +36,7 @@ What's live now, all driven by the Universal JSON Architecture (see "AI promptin
 
 Supabase (hosted Postgres + Auth + Realtime), no ORM — schema is raw SQL in `supabase/schema.sql`, applied manually via the Supabase SQL editor. Two client wrappers in `src/lib/supabase/`: `server.ts` uses the service-role key and bypasses RLS; `browser.ts` uses the publishable key and is used only for Realtime subscriptions. Both return `null` when unconfigured, and callers treat persistence as best-effort — the app works without Supabase.
 
-Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (one per pipeline run, stores OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state — predates real auth below and hasn't been migrated onto it yet, still local-first via an anonymous browser id), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`. **Note**: `placed_items`, `scenes`, `renders`/`render_versions`, `render_jobs` back the destroyed old studio/render flow above — the local-first `useVasto` store (`src/lib/store.ts`) no longer reads or writes those shapes (`Project.roomCards`/`Project.walkthrough` replaced them client-side); the tables themselves are left alone pending a real migration, not touched by this pass.
+Main tables (RLS-scoped by `auth.users`): `projects`, `parse_jobs` (was one row per old async pipeline run, storing OCR/semantic/geometry/merge JSON + status), `floor_plans`, `placed_items`, `scenes`, `renders`/`render_versions`, `project_snapshots` (JSONB mirror of client state — predates real auth below and hasn't been migrated onto it yet, still local-first via an anonymous browser id), `render_jobs` (durable registry for long-running Veo video jobs). Realtime is enabled on `parse_jobs`, `renders`, `render_versions`, `project_snapshots`. **Note**: `parse_jobs`, `placed_items`, `scenes`, `renders`/`render_versions`, `render_jobs` back retired/destroyed flows above (`parse_jobs` backed the old async Inngest job path, retired 2026-07-26 along with its only reader/writer `src/lib/pipeline/job-store.ts`/`src/lib/supabase/parse-jobs.ts`) — the local-first `useVasto` store (`src/lib/store.ts`) no longer reads or writes those shapes (`Project.roomCards`/`Project.walkthrough` replaced them client-side); the tables themselves are left alone pending a real migration, not touched by this pass.
 
 ### Auth
 
@@ -65,7 +51,7 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 ### AI provider layer
 
-`src/lib/ai/provider.ts` (revamp Workstream 4) is the single entry point for AI calls: `generateImage`, `editImage`, `generateVideo`, `generateStructured`, `runOCR`, `runSemantic`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline.ts` calls `runOCR`/`runSemantic` (not `ocr.ts`/`semantic.ts` directly) so the live upload flow is instrumented. `editImage`/`generateVideo` delegate to `render/gemini-image.ts`/`render/veo-client.ts`. `render/flux-client.ts` (fal.ai/FLUX) is fully removed as of Workstream 8.5 — it was kept only as the old 3D-studio render path's fallback, and that path no longer exists.
+`src/lib/ai/provider.ts` (revamp Workstream 4) is the single entry point for AI calls: `generateImage`, `editImage`, `generateVideo`, `generateStructured`, `extractFloorPlan`. Each call retries per `src/lib/ai/errors.ts`'s policy, times itself, and writes a best-effort row to the `ai_usage_logs` table (`src/lib/ai/usage-log.ts`) with a normalized `ErrorCategory`. `pipeline/extract-plan.ts` calls `extractFloorPlan` so the live upload flow is instrumented (the old `runOCR`/`runSemantic` wrappers around `pipeline/ocr.ts`/`pipeline/semantic.ts` were removed 2026-07-26 along with those two files — nothing called them once the old staged pipeline was retired). `editImage`/`generateVideo` delegate to `render/gemini-image.ts`/`render/veo-client.ts`. `render/flux-client.ts` (fal.ai/FLUX) is fully removed as of Workstream 8.5 — it was kept only as the old 3D-studio render path's fallback, and that path no longer exists.
 
 ### AI prompting pipeline — live end-to-end as of Workstream 8.5
 
@@ -73,11 +59,11 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 The full flow, in order: `/projects/[id]/floor-plan` (Yes/No) → `upload` (detection: one panel showing the image + wall/door/window/room overlay + layer toggles + stats — detected rooms land on the plan directly, no per-room confirmation step here) → `review` (Room Confirmation: rename, type, size, door/window counts, unit selector, delete room, and a manual "Add room" form — name/type/width/height — for anything detection missed) → `design` (style/luxury/colour + one global Additional Requirements box) → `POST /api/design-plan` (`buildUniversalInput` + `runDesignPlanning`, cached on the project via `setDesignPlan`) → `generate` (Room Generation Gallery: `POST /api/generate-room-image`, `buildRoomPrompt` + `provider.generateImage`, one card per room, Generate More with its own per-call note) → `generate/[roomId]` (View & Edit: up to 2 numbered lasso regions, `POST /api/edit-room-image`) → `approve` (Final Image Selection) → `walkthrough` (`POST /api/generate-walkthrough`, one 3-second clip per approved image, concatenated). Everything is cached on the local-first `useVasto` project (`universalInput`, `designSpec`, `roomCards`, `walkthrough`) — not yet the real `projects.manifest` row (see the state-machine note below), same situation as before Workstream 8.5.
 
-**Upload page has no lasso tool** (removed 2026-07-26) — `lasso-select.tsx` (freehand-on-the-upload-image drawing) is deleted; `lasso-extract.ts` is trimmed to just `pxToFtTransform`, which `pipeline.ts` still needs. The View & Edit screen's lasso (`lasso-canvas.tsx`, numbered mask regions on a *generated* room image) is a separate, still-live component — don't confuse the two.
+**Upload page has no lasso tool** (removed 2026-07-26) — `lasso-select.tsx` (freehand-on-the-upload-image drawing) is deleted; `lasso-extract.ts` is trimmed to just `pxToFtTransform`, which had no caller left once `pipeline.ts` was retired in the same pass — left in place (unused) rather than deleted, since it wasn't in this pass's file list. The View & Edit screen's lasso (`lasso-canvas.tsx`, numbered mask regions on a *generated* room image) is a separate, still-live component — don't confuse the two.
 
 ### Config-driven project types, detection toggle, room openings
 
-`config/project-types/*.json` (Workstream 6) — one file per category, loaded by `src/lib/project-types/config.ts`. `DETECTION_MODE=gemini` (Workstream 7) skips the Python/OpenCV subprocess via `opencv.ts`'s `emptyGeometry()`, relying on `merge.ts`'s existing under-segmentation fallback to build the plan from Gemini vision alone — useful if Python is broken locally, or for a future Python-free deploy. `feature_flags` table + `src/lib/feature-flags.ts` is a separate, generic on/off-toggle mechanism (no rollout logic), not yet read anywhere. `src/lib/pipeline/assign-openings.ts` (Workstream 7a) deterministically assigns each detected door/window to the room(s) it borders (`Room.openings`), run post-merge in both the sync and async (Inngest) pipelines; `ai/prompting/prompt-builder.ts` turns that into a natural-language clause when present.
+`config/project-types/*.json` (Workstream 6) — one file per category, loaded by `src/lib/project-types/config.ts`, and passed into `extractFloorPlan` as room-type hints. `DETECTOR`/`DETECTION_MODE` (Workstream 7) describe the dormant Python/OpenCV path (`opencv.ts`, `scripts/parse_plan.py`/`scripts/detect_rooms_labeled.py`) — left in the codebase per this plan's scope but currently unused by the live app, which extracts via Gemini vision alone (see "Floor-plan extraction" above). `feature_flags` table + `src/lib/feature-flags.ts` is a separate, generic on/off-toggle mechanism (no rollout logic), not yet read anywhere. `src/lib/pipeline/assign-openings.ts` (Workstream 7a) used to deterministically assign each detected door/window to the room(s) it borders via pixel geometry; that algorithm was retired 2026-07-26 — the new extraction pipeline gets door/window side + connection directly from Gemini instead, and only the file's `OpeningSide`/`RoomOpening` types remain, still consumed by `ai/prompting/prompt-builder.ts` to turn `Room.openings` into a natural-language clause.
 
 ### Profile page
 
@@ -93,9 +79,9 @@ The full flow, in order: `/projects/[id]/floor-plan` (Yes/No) → `upload` (dete
 
 `.env.example` documents every variable below (`.env*` is otherwise gitignored). Everything is optional and the app degrades gracefully without it:
 
-- `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL` — OCR, semantic reasoning, image edits, video
+- `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL` — floor-plan extraction, image edits, video
 - `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET` — real S3 upload storage
 - `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — persistence (run `supabase/schema.sql` first)
-- `INNGEST_ENABLED` — switch parsing to the async Inngest path
-- `DETECTOR=labeled` — use the EasyOCR-assisted room detector (`scripts/detect_rooms_labeled.py`) instead of the default contour-based one (`scripts/parse_plan.py`). Reads room name/type/dimensions/scale AND doors/windows straight off the plan's printed labels — **works fully offline, no `GEMINI_API_KEY` needed** (confirmed 2026-07-26, see "Floor-plan parsing pipeline" above). Requires `easyocr` installed (`pip install -r scripts/requirements.txt`); it's a heavier dependency than the default detector's plain OpenCV, so it's opt-in rather than the default.
-- `PYTHON_BIN` — override the Python executable used to spawn geometry-detection scripts
+- `DETECTOR=labeled` — use the EasyOCR-assisted room detector (`scripts/detect_rooms_labeled.py`) instead of the default contour-based one (`scripts/parse_plan.py`). **Currently unused by the live app** — this and `DETECTION_MODE` describe the dormant Python/OpenCV path (`opencv.ts`), not called by anything since the old staged pipeline was retired 2026-07-26; left in the codebase per this plan's scope. Requires `easyocr` installed (`pip install -r scripts/requirements.txt`).
+- `DETECTION_MODE=gemini` — see above; also currently unused by the live app.
+- `PYTHON_BIN` — override the Python executable used to spawn geometry-detection scripts (also currently unused by the live app, see above)

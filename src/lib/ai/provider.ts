@@ -10,25 +10,21 @@ import "server-only";
  * failures to an ErrorCategory, and writes one ai_usage_logs row — all
  * best-effort, so a logging hiccup never breaks a generation.
  *
- * The existing floor-plan pipeline stages (ocr.ts, semantic.ts) and the old
- * 3D-studio render stack (render/gemini-image.ts, render/veo-client.ts,
- * render/flux-client.ts) already existed before this layer and do their own
- * direct Gemini calls — they're deliberately left as-is (the 3D studio is
+ * The old 3D-studio render stack (render/gemini-image.ts, render/veo-client.ts,
+ * render/flux-client.ts) already existed before this layer and does its own
+ * direct Gemini calls — it's deliberately left as-is (the 3D studio is
  * explicitly deprioritized-not-removed, and ripping out its FLUX fallback
  * before Workstream 8 replaces it with the new flow would break the only
- * currently-working generation path). runOCR/runSemantic below wrap them so
- * the *new* pipeline entry points go through this layer; generateImage/
- * editImage/generateVideo are net-new for the new flow's room-image and
- * walkthrough generation.
+ * currently-working generation path). generateImage/editImage/generateVideo
+ * wrap it so that stack goes through this layer too; extractFloorPlan below
+ * is the new pipeline's single-call extraction entry point (see
+ * src/lib/pipeline/extract-plan.ts).
  */
 
-import { extractText } from "@/lib/pipeline/ocr";
-import { understandPlan } from "@/lib/pipeline/semantic";
 import { generateJson, type GeminiPart } from "@/lib/pipeline/gemini-client";
 import { downscaleForGemini } from "@/lib/pipeline/image-utils";
 import { editImageWithGemini } from "@/lib/render/gemini-image";
 import { generateVideoFromImage } from "@/lib/render/veo-client";
-import type { OcrResult, SemanticPlan } from "@/lib/pipeline/types";
 import type { DesignStyle } from "@/lib/types";
 import { ProviderError, RETRYABLE_CATEGORIES, MAX_RETRIES, backoffMs, sleep } from "./errors";
 import { logUsage } from "./usage-log";
@@ -66,7 +62,7 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Wraps a provider call: retry, time it, log it, normalize the thrown error. */
 async function instrumented<T>(
-  feature: "ocr" | "semantic" | "planning" | "image" | "edit" | "video",
+  feature: "planning" | "image" | "edit" | "video",
   model: string,
   ctx: CallContext | undefined,
   fn: () => Promise<T>,
@@ -323,25 +319,6 @@ export async function generateVideo(
     if (!out) throw new ProviderError("AiProviderError", "video generation failed");
     return { bytes: out.bytes, contentType: out.contentType };
   });
-}
-
-/** OCR stage — delegates to pipeline/ocr.ts, the new pipeline's entry point. */
-export async function runOCR(
-  bytes: Buffer,
-  mimeType: string,
-  ctx?: CallContext,
-): Promise<OcrResult> {
-  return instrumented("ocr", "gemini-vision", ctx, () => extractText(bytes, mimeType));
-}
-
-/** Semantic understanding stage — delegates to pipeline/semantic.ts. */
-export async function runSemantic(
-  ocr: OcrResult | (() => Promise<OcrResult>),
-  bytes?: Buffer,
-  mimeType?: string,
-  ctx?: CallContext,
-): Promise<SemanticPlan> {
-  return instrumented("semantic", "gemini-flash", ctx, () => understandPlan(ocr, bytes, mimeType));
 }
 
 /**

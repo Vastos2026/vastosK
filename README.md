@@ -2,8 +2,10 @@
 
 Turns a 2D floor plan into photorealistic AI interior renders and walkthrough
 videos. Next.js 16 (App Router) frontend + API routes, Supabase for auth and
-persistence, Python/OpenCV for floor-plan geometry detection, Gemini for OCR,
-reasoning, image generation and video.
+persistence, a single Gemini vision call for floor-plan extraction, Gemini for
+reasoning, image generation and video. (A Python/OpenCV geometry-detection
+path also exists in the codebase but is currently unused by the live app —
+see "Floor-plan extraction" below.)
 
 See `CLAUDE.md` for the full architecture writeup and `docs/VASTOS_REVAMP_PLAN.md`
 for the current product plan and build status.
@@ -11,45 +13,33 @@ for the current product plan and build status.
 ## Prerequisites
 
 - Node.js 20+
-- **Python 3.10+** with a real interpreter on `PATH` as `python` — the floor-plan
-  geometry stage (`scripts/parse_plan.py`) spawns it as a subprocess. On Windows,
-  the built-in `python` command may resolve to a non-functional Microsoft Store
-  stub; either install Python from [python.org](https://www.python.org/) and
-  check "Add to PATH", or set `PYTHON_BIN` in `.env.local` to a real interpreter's
-  path. You can also disable the stub at Settings → Apps → Advanced app settings
-  → App execution aliases.
+- A `GEMINI_API_KEY`, to actually extract rooms from an uploaded floor plan
+  (optional to start the app, but without it extraction fails and the flow
+  routes to manual room entry — see below)
 - A Supabase project, if you want persistence/auth (optional — see below)
+- **Python 3.10+** is only needed if you plan to use the dormant Python/OpenCV
+  geometry-detection path (`DETECTOR`/`DETECTION_MODE`, see `.env.example`) —
+  not required for the live floor-plan extraction flow. See "Floor-plan
+  extraction" below.
 
 ## Setup
 
 ```bash
 npm install
-pip install -r scripts/requirements.txt
 cp .env.example .env.local   # fill in what you need — everything is optional
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). The app degrades
-gracefully with no env vars set at all — floor-plan parsing runs on geometry
-alone, storage falls back to local disk, and there's no persistence. Fill in
-`.env.local` incrementally as you need each piece (see `.env.example` for
-what each var unlocks).
+gracefully with no env vars set at all — storage falls back to local disk,
+there's no persistence, and floor-plan extraction fails (routing to manual
+room entry) until `GEMINI_API_KEY` is set. Fill in `.env.local` incrementally
+as you need each piece (see `.env.example` for what each var unlocks).
 
 **Supabase**: if you set the `SUPABASE_*` vars, run `supabase/schema.sql` in
 your project's SQL editor first (it's idempotent — safe to re-run after
 pulling changes that touch it). Bootstrap your first account per the comment
 near the end of that file.
-
-**Python-free option**: set `DETECTION_MODE=gemini` to skip the Python
-subprocess entirely and rely on Gemini vision alone for floor-plan geometry
-(requires `GEMINI_API_KEY`). Useful if Python is broken locally, or for a
-deploy target without a Python runtime.
-
-**Gemini-free option**: set `DETECTOR=labeled` to use the EasyOCR-assisted
-Python detector (`pip install -r scripts/requirements.txt` first) instead of
-the default contour-based one. It reads room names/types/dimensions and
-doors/windows straight off the plan's printed labels — works with no
-`GEMINI_API_KEY` at all.
 
 ## Project structure
 
@@ -61,7 +51,7 @@ doors/windows straight off the plan's printed labels — works with no
 │   └── lib/            # domain logic: pipeline/, ai/, render/, supabase/, projects/, auth/
 ├── config/
 │   └── project-types/  # one JSON per project category (residential/apartment/commercial/custom)
-├── scripts/             # Python floor-plan geometry detectors
+├── scripts/             # Python floor-plan geometry detectors (currently unused by the live app)
 │   ├── parse_plan.py
 │   ├── detect_rooms_labeled.py
 │   └── requirements.txt
@@ -78,44 +68,46 @@ doors/windows straight off the plan's printed labels — works with no
 
 ## Commands
 
-- `npm run dev` — start the app. Floor-plan parsing runs synchronously by default.
-- `npm run dev:inngest` — run alongside `npm run dev` in a second terminal to
-  test the async (Inngest) job path (`INNGEST_ENABLED=1`).
+- `npm run dev` — start the app. Floor-plan extraction runs synchronously in
+  the request.
 - `npm run build` / `npm run start` — production build / run it.
 - `npm run lint` — ESLint. No test runner is configured in this repo.
 
-## Floor-plan parsing pipeline
+## Floor-plan extraction
 
-Uploaded plans flow through discrete, observable stages (`src/lib/pipeline/`,
-orchestrated by `src/lib/ai/provider.ts` for the AI calls):
+One Gemini vision call does the whole job — no staged pipeline, no async job
+queue. `src/app/api/parse-plan/route.ts` calls `runPlanExtraction`
+(`src/lib/pipeline/extract-plan.ts`), which calls `extractFloorPlan`
+(`src/lib/ai/provider.ts`, the sole entry point for the Gemini call), passing
+the uploaded image plus the active project category's room-type hints.
+Gemini returns room names (verbatim), types, printed dimensions where
+legible, and door/window presence with side + connection; `extract-plan.ts`
+maps that onto the app's `FloorPlan`/`Room` shape.
 
-```
-Upload (JPG/PNG) → AWS S3 → Inngest → OCR → Gemini Flash → OpenCV → Merge Engine → openings → FloorPlan
-```
+| Stage      | Module                                        | What it does                                                        |
+| ---------- | ---------------------------------------------- | -------------------------------------------------------------------- |
+| AWS S3     | `pipeline/storage.ts`                          | Stores the upload; local-temp fallback when AWS env vars are unset   |
+| Extraction | `ai/provider.ts` → `pipeline/extract-plan.ts`  | Single Gemini vision call: rooms, types, dimensions, openings        |
 
-| Stage        | Module                                          | What it does                                                          |
-| ------------ | ----------------------------------------------- | -------------------------------------------------------------------- |
-| AWS S3       | `pipeline/storage.ts`                           | Stores the upload; local-temp fallback when AWS env vars are unset    |
-| Inngest      | `inngest/` + `app/api/inngest`                  | Runs the job as retryable, observable steps (opt-in)                  |
-| OCR          | `ai/provider.ts` → `pipeline/ocr.ts`            | Gemini Vision transcribes labels (room names, dimensions, scale)      |
-| Gemini Flash | `ai/provider.ts` → `pipeline/semantic.ts`       | Reasons over OCR text into structured rooms / types / scale          |
-| OpenCV       | `pipeline/opencv.ts` + `scripts/parse_plan.py`  | Detects walls, doors, windows, room boxes (pixels) — skippable, see `DETECTION_MODE` above |
-| Merge Engine | `pipeline/merge.ts`                             | Resolves scale, converts px→feet, labels each room                   |
-| Openings     | `pipeline/assign-openings.ts`                   | Deterministically assigns each door/window to its room + side        |
+It degrades gracefully: missing AWS creds → local storage; missing
+`GEMINI_API_KEY` → extraction fails outright, surfaced to the frontend as
+`readable: false`, routing to manual room entry (there is no offline/local
+fallback in the live app); missing Supabase config → no persistence,
+everything else still works.
 
-It degrades gracefully at every stage: missing AWS creds → local storage;
-missing `GEMINI_API_KEY` → OpenCV geometry with generic room names (or, with
-`DETECTOR=labeled`, real names/types/dimensions read locally — no Gemini call
-needed at all); missing Supabase config → no persistence, everything else
-still works.
+> **PDF note:** PDFs are rejected with an error. Export plans to PNG/JPG.
 
-> **PDF note:** PDFs are rejected with an error — OpenCV needs a raster
-> image. Export plans to PNG/JPG for the full pipeline.
+The old staged pipeline (OCR → Gemini Flash semantics → OpenCV geometry →
+merge engine → deterministic opening assignment) and its Inngest async job
+queue were retired 2026-07-26 — nothing in the live app called them. A
+Python/OpenCV geometry-detection path (`pipeline/opencv.ts`,
+`scripts/parse_plan.py`, `scripts/detect_rooms_labeled.py`, toggled by the
+`DETECTOR`/`DETECTION_MODE` env vars) still exists in the codebase but is
+currently dormant/unused by the live app.
 
 ## Deploying
 
-The floor-plan pipeline's Python step needs a runtime that can spawn a
-subprocess with OpenCV/numpy installed — a plain Vercel deployment can't do
-that. Either deploy somewhere with a Python runtime available (a container,
-or a platform with a Python buildpack), or set `DETECTION_MODE=gemini` to
-drop the Python dependency entirely and deploy anywhere Next.js runs.
+The live floor-plan extraction path is pure Next.js + a Gemini API call — no
+Python runtime needed, so a plain Vercel deployment works out of the box. A
+Python runtime is only required if you additionally want the dormant
+`DETECTOR`/`DETECTION_MODE` geometry-detection path (see above) available.
