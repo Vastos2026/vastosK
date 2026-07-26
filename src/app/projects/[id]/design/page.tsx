@@ -237,7 +237,7 @@ export default function DesignPage() {
           <Link href={`/projects/${id}/review`}>
             <Button variant="ghost" icon="ArrowLeft">Back to review</Button>
           </Link>
-          <Button icon="Sparkles" iconRight="ArrowRight" onClick={confirm} loading={busy} disabled={busy}>
+          <Button icon="Wand2" iconRight="ArrowRight" onClick={confirm} loading={busy} disabled={busy}>
             {busy ? "Planning the design…" : "Confirm & plan design"}
           </Button>
         </div>

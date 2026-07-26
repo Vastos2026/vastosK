@@ -11,7 +11,7 @@ export const PROPERTY_TYPES: {
   { id: "office", label: "Office", description: "Workspaces & cabins", icon: "Briefcase" },
   // Maps to the welcome screen's "Custom" category (config/project-types/custom.json)
   // — clinics, restaurants, retail, temples, anything that isn't an office.
-  { id: "commercial", label: "Custom", description: "Clinics, restaurants, retail & more", icon: "Sparkles" },
+  { id: "commercial", label: "Custom", description: "Clinics, restaurants, retail & more", icon: "Store" },
 ];
 
 /** Design styles with an Indian-interior focus (per the product spec). */

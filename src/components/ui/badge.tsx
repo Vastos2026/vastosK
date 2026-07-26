@@ -32,7 +32,7 @@ const PROJECT_STATUS: Record<ProjectStatus, { label: string; cls: string; icon: 
   parsing: { label: "Parsing", cls: "text-info border-info/30 bg-info/10", icon: "Loader2" },
   parsed: { label: "Parsed", cls: "text-info border-info/30 bg-info/10", icon: "CircleCheck" },
   designing: { label: "Designing", cls: "text-accent border-accent/30 bg-accent/10", icon: "Wand2" },
-  rendered: { label: "Rendered", cls: "text-success border-success/30 bg-success/10", icon: "Sparkles" },
+  rendered: { label: "Rendered", cls: "text-success border-success/30 bg-success/10", icon: "CircleCheck" },
 };
 
 export function StatusBadge({ status }: { status: ProjectStatus }) {

@@ -114,7 +114,7 @@ export default function UploadPage() {
             <div className="absolute inset-0 ring-1 ring-inset ring-accent/30" />
           </div>
           <p className="flex items-center justify-center gap-2 text-sm font-medium">
-            <Icon name="Sparkles" className="size-4 text-accent" />
+            <Icon name="ScanLine" className="size-4 text-accent" />
             Reading your floor plan…
           </p>
           <p className="mt-2 text-center text-xs text-faint">
@@ -191,7 +191,7 @@ export default function UploadPage() {
               <Button variant="ghost" icon="ArrowLeft" onClick={reset}>
                 Choose another
               </Button>
-              <Button icon="Sparkles" onClick={runDetection}>
+              <Button icon="ScanLine" onClick={runDetection}>
                 Analyze floor plan
               </Button>
             </div>
