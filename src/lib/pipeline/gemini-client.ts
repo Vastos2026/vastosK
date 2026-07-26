@@ -12,12 +12,16 @@
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 // gemini-2.0-flash was RETIRED (its generateContent endpoint now 404s even
-// though ListModels still lists it), so it can't be the default or a fallback.
-const DEFAULT_MODEL = "gemini-2.5-flash";
-// Live fallbacks with SEPARATE capacity pools, verified against the API:
-// flash-latest is an always-current alias; flash-lite is the last resort
-// (real but 503-prone). All support generateContent today.
-const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash-lite"];
+// though ListModels still lists it). gemini-2.5-flash followed (2026-07-09,
+// "no longer available to new users") ahead of its official Oct 16 2026
+// shutdown date, so neither can be the default any more. gemini-flash-latest
+// is an always-current alias — it now resolves to the Gemini 3.x generation,
+// see callModel's thinking-config handling below for what that changes.
+const DEFAULT_MODEL = "gemini-flash-latest";
+// Live fallbacks with SEPARATE capacity pools: explicit-versioned 3.x models
+// in case the `-latest` alias has its own outage, then legacy 2.5-flash last
+// for any project/key that still has access ahead of its shutdown date.
+const FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
 
 export type GeminiPart =
   | { text: string }
@@ -33,9 +37,14 @@ export interface GenerateOptions {
   /** override the model for this call (else GEMINI_MODEL, else default) */
   model?: string;
   /**
-   * Gemini 2.5 "thinking" budget in tokens. Set to 0 to disable the slow
-   * thinking pass — structured extraction/transcription don't need it and it
-   * roughly halves latency. Omitted = model default.
+   * Model-agnostic "keep thinking minimal" knob for structured extraction/
+   * transcription calls that don't benefit from the slow thinking pass. Set
+   * to 0 to request the fastest/cheapest reasoning the resolved model
+   * allows; omit for the model's default. callModel translates this into
+   * whichever wire format the resolved model generation actually accepts
+   * (Gemini 2.5's token-count `thinkingBudget`, or Gemini 3.x's semantic
+   * `thinkingLevel` — 3.x Flash/Flash-Lite cannot disable thinking outright,
+   * so 0 maps to its lowest level instead of "off").
    */
   thinkingBudget?: number;
   /**
@@ -109,11 +118,26 @@ async function callModel<T>(
 ): Promise<ModelResult<T>> {
   const url = `${API_BASE}/${model}:generateContent?key=${key}`;
 
-  // gemini-2.5-pro requires thinking (rejects thinkingBudget:0 with HTTP 400),
-  // so only send a 0 budget to models that allow disabling it (flash / lite).
+  // Only the Gemini 2.5 generation accepts `thinkingBudget` (a token count).
+  // Gemini 3.x — including what `gemini-flash-latest` resolves to today —
+  // replaced it with `thinkingLevel` (a semantic tier) and 400s outright
+  // ("Request contains an invalid argument") if thinkingBudget is sent at
+  // all. gemini-2.5-pro is the one 2.5 model that still rejects budget:0
+  // specifically (it requires some thinking) with the same 400.
+  const isGemini25 = /^gemini-2\.5-/.test(model);
   const isPro = model.includes("pro");
-  const sendThinking =
-    opts.thinkingBudget !== undefined && !(isPro && opts.thinkingBudget === 0);
+  let thinkingConfig: { thinkingBudget: number } | { thinkingLevel: string } | undefined;
+  if (opts.thinkingBudget !== undefined) {
+    if (isGemini25) {
+      if (!(isPro && opts.thinkingBudget === 0)) {
+        thinkingConfig = { thinkingBudget: opts.thinkingBudget };
+      }
+    } else {
+      // Gemini 3.x Flash/Flash-Lite can't fully disable thinking — "minimal"
+      // is its lowest tier, the closest analog to budget:0's intent.
+      thinkingConfig = { thinkingLevel: opts.thinkingBudget === 0 ? "minimal" : "high" };
+    }
+  }
 
   const body = JSON.stringify({
     contents: [{ role: "user", parts }],
@@ -122,7 +146,7 @@ async function callModel<T>(
       responseMimeType: "application/json",
       ...(opts.responseSchema ? { responseSchema: opts.responseSchema } : {}),
       ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
-      ...(sendThinking ? { thinkingConfig: { thinkingBudget: opts.thinkingBudget } } : {}),
+      ...(thinkingConfig ? { thinkingConfig } : {}),
     },
   });
 

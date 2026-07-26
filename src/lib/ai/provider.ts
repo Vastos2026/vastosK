@@ -224,7 +224,7 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
     { text: prompt },
   ];
 
-  return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash", ctx, async () => {
+  return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest", ctx, async () => {
     const raw = await generateJson<RawExtractionResponse>(parts, {
       temperature: 0.1,
       thinkingBudget: 0,
@@ -358,7 +358,7 @@ export async function generateStructured<T>(
   ctx?: CallContext,
 ): Promise<T> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
-  const model = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+  const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
   return instrumented("planning", model, ctx, async () => {
     const parts: GeminiPart[] = [{ text: prompt }];
     const out = await generateJson<T>(parts, { temperature: 0.4, responseSchema: schema });

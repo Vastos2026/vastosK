@@ -66,7 +66,10 @@ export default function UploadPage() {
         setStage("selected");
         return;
       }
-      setFloorPlan(id, result.plan);
+      // selected.url is a blob: URL (createObjectURL) — not durable across a
+      // reload, but Room Confirmation's reference panel only needs it for
+      // the current continuous upload → review hop, so that's fine.
+      setFloorPlan(id, selected.url ? { ...result.plan, previewUrl: selected.url } : result.plan);
       setStatus(id, "parsed");
       router.push(`/projects/${id}/review`);
     } catch (e) {
