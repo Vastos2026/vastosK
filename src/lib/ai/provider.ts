@@ -25,6 +25,7 @@ import "server-only";
 import { extractText } from "@/lib/pipeline/ocr";
 import { understandPlan } from "@/lib/pipeline/semantic";
 import { generateJson, type GeminiPart } from "@/lib/pipeline/gemini-client";
+import { downscaleForGemini } from "@/lib/pipeline/image-utils";
 import { editImageWithGemini } from "@/lib/render/gemini-image";
 import { generateVideoFromImage } from "@/lib/render/veo-client";
 import type { OcrResult, SemanticPlan } from "@/lib/pipeline/types";
@@ -100,6 +101,149 @@ async function instrumented<T>(
 export interface GeneratedImage {
   bytes: Buffer;
   contentType: string;
+}
+
+export interface RawOpening {
+  kind: "door" | "window";
+  side: "north" | "south" | "east" | "west";
+  /** another room's name, "exterior", or omitted if the model couldn't tell */
+  connectsTo?: string;
+}
+
+export interface RawExtractedRoom {
+  /** verbatim as printed/labeled on the plan — never normalized */
+  name: string;
+  /** classified type, ideally one of the caller's roomTypeHints */
+  type?: string;
+  widthFt?: number;
+  heightFt?: number;
+  openings: RawOpening[];
+}
+
+export interface RawExtraction {
+  rooms: RawExtractedRoom[];
+  /** 0..1 overall extraction confidence, the model's own self-assessment */
+  confidence: number;
+  /** false when the model could not make sense of this as a floor plan at all */
+  readable: boolean;
+}
+
+const PLAN_EXTRACTION_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    readable: { type: "BOOLEAN" },
+    confidence: { type: "NUMBER" },
+    rooms: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          name: { type: "STRING" },
+          type: { type: "STRING" },
+          widthFt: { type: "NUMBER" },
+          heightFt: { type: "NUMBER" },
+          openings: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                kind: { type: "STRING", enum: ["door", "window"] },
+                side: { type: "STRING", enum: ["north", "south", "east", "west"] },
+                connectsTo: { type: "STRING" },
+              },
+              required: ["kind", "side"],
+            },
+          },
+        },
+        required: ["name", "openings"],
+      },
+    },
+  },
+  required: ["readable", "confidence", "rooms"],
+} as const;
+
+interface RawExtractionResponse {
+  readable?: boolean;
+  confidence?: number;
+  rooms?: {
+    name?: string;
+    type?: string;
+    widthFt?: number;
+    heightFt?: number;
+    openings?: { kind?: string; side?: string; connectsTo?: string }[];
+  }[];
+}
+
+/**
+ * Single-call floor-plan extraction — replaces the old OCR + OpenCV geometry +
+ * semantic + merge pipeline. Reads room names verbatim, classifies each into a
+ * type (preferring roomTypeHints when the project's category has a fixed
+ * list), reads printed dimensions where legible, and reports door/window
+ * presence per room with a rough side and connection. `readable: false` is
+ * the model's own signal that this image doesn't look like a floor plan it
+ * can extract from — callers route that to manual entry, never a fabricated
+ * result.
+ */
+export async function extractFloorPlan(
+  bytes: Buffer,
+  mimeType: string,
+  roomTypeHints: string[],
+  ctx?: CallContext,
+): Promise<RawExtraction> {
+  const img = await downscaleForGemini(bytes);
+  const hints = roomTypeHints.length
+    ? `Prefer one of these types when it fits: ${roomTypeHints.join(", ")}. If none fit, use your own best short label.`
+    : `This project type has no fixed room-type list — use your own best short label (e.g. "Bedroom", "Kitchen").`;
+
+  const prompt = `You are reading an architectural floor plan image to extract its rooms.
+
+For each room you can identify, return:
+- "name": the room's label EXACTLY as printed on the plan (e.g. "KIDS", "Hall", "M. Bedroom"). Never invent a name if none is printed — use a short generic description instead (e.g. "Unlabeled room").
+- "type": a classification of what kind of room this is, based on its printed name and typical layout position. ${hints}
+- "widthFt"/"heightFt": only if a dimension is actually printed near the room (e.g. "12'3\"X9'1\""), converted to decimal feet. Omit both if nothing is legible — never estimate or guess a size.
+- "openings": every door and window you can see on this room's walls. For each: "kind" (door or window), "side" (which wall of the room it's on: north/south/east/west, using the plan's own up-is-north orientation), "connectsTo" (the name of the room on the other side of a door, or "exterior" for an outer wall or a window). Omit anything you can't confidently see.
+
+Also return:
+- "confidence": your own 0 to 1 confidence that this extraction is accurate and complete.
+- "readable": false if this image does not look like a floor plan you can meaningfully extract rooms from at all (e.g. it's blank, unrelated, or too unclear to read), true otherwise.
+
+Return only rooms you can actually identify. Never fabricate a room, dimension, or opening that isn't legible in the image.`;
+
+  const parts: GeminiPart[] = [
+    { inlineData: { mimeType: img.mimeType, data: img.data } },
+    { text: prompt },
+  ];
+
+  return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash", ctx, async () => {
+    const raw = await generateJson<RawExtractionResponse>(parts, {
+      temperature: 0.1,
+      responseSchema: PLAN_EXTRACTION_SCHEMA,
+    });
+    if (!raw) throw new ProviderError("AiProviderError", "floor plan extraction failed");
+
+    const sides = new Set(["north", "south", "east", "west"]);
+    const rooms: RawExtractedRoom[] = (raw.rooms ?? [])
+      .filter((r): r is typeof r & { name: string } => !!r.name?.trim())
+      .map((r) => ({
+        name: r.name.trim(),
+        type: r.type?.trim() || undefined,
+        widthFt: typeof r.widthFt === "number" && r.widthFt > 0 ? r.widthFt : undefined,
+        heightFt: typeof r.heightFt === "number" && r.heightFt > 0 ? r.heightFt : undefined,
+        openings: (r.openings ?? [])
+          .filter((o) => (o.kind === "door" || o.kind === "window") && sides.has(o.side ?? ""))
+          .map((o) => ({
+            kind: o.kind as "door" | "window",
+            side: o.side as "north" | "south" | "east" | "west",
+            connectsTo: o.connectsTo?.trim() || undefined,
+          })),
+      }));
+
+    return {
+      rooms,
+      confidence: typeof raw.confidence === "number" ? Math.max(0, Math.min(1, raw.confidence)) : 0,
+      readable: raw.readable !== false && rooms.length > 0,
+    };
+  });
 }
 
 /**
