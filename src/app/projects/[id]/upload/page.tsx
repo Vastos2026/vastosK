@@ -9,8 +9,7 @@ import {
   type DetectProgress,
   type ParseResult,
 } from "@/lib/parse-plan-client";
-import type { DetectedGeometry, FloorPlan, Room } from "@/lib/types";
-import type { PlanValidation } from "@/lib/pipeline/types";
+import type { DetectedGeometry, Room } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { PlanThumb } from "@/components/plan-thumb";
@@ -194,31 +193,27 @@ export default function UploadPage() {
     return (
       <div className="scrollbar-thin h-full overflow-y-auto">
         <div className="mx-auto max-w-5xl px-6 py-8">
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-xl bg-success/15 text-success">
+          <div className="glass mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-4">
+            <div className="flex items-center gap-3.5">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-success/15 text-success">
                 <Icon name="CircleCheck" className="size-5" />
               </span>
               <div>
-                <h2 className="font-semibold">2D design imported</h2>
+                <h2 className="text-lg font-bold tracking-tight">Floor plan analyzed</h2>
                 <p className="text-sm text-muted">
-                  {`${plan.walls?.length ?? 0} walls · ${plan.rooms.length} rooms · ${plan.doors.length} doors · ${plan.windows?.length ?? 0} windows`}
+                  {`${plan.walls?.length ?? 0} walls · ${plan.rooms.length} rooms placed · ${plan.doors.length} doors · ${plan.windows?.length ?? 0} windows`}
                 </p>
               </div>
             </div>
             {isDetected && <ConfidenceBadge value={confidence} />}
           </div>
 
-          {isDetected && parse && <PipelineStagesStrip parse={parse} plan={plan} />}
-
-          {isDetected && parse?.validation && <ValidationChips validation={parse.validation} />}
-
           {isDetected && !calibrated && (
             <div className="mb-5 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
               <Icon name="Ruler" className="mt-0.5 size-4 shrink-0" />
               <span>
                 Dimensions are <strong>estimated</strong> — no real measurement was
-                given, so scale is approximate. Adjust room sizes in 2D Review, or
+                given, so scale is approximate. Adjust room sizes in Room Confirmation, or
                 re-import with the longest dimension filled in for exact scale.
               </span>
             </div>
@@ -226,11 +221,9 @@ export default function UploadPage() {
 
           <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
             {/* Detection over the actual uploaded image */}
-            <div className="rounded-2xl border border-border bg-surface p-3">
+            <div className="hover-lift rounded-2xl border border-border bg-surface p-3 transition-colors">
               <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                <span className="text-xs font-medium uppercase tracking-wider text-muted">
-                  Detected geometry
-                </span>
+                <span className="text-sm font-semibold">Detected geometry</span>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
                   {selected?.url && geometry && (
                     <button
@@ -239,10 +232,10 @@ export default function UploadPage() {
                         setLasso(null);
                       }}
                       className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
+                        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all duration-150 cursor-pointer hover:scale-105",
                         lassoOn
-                          ? "border-accent/50 bg-accent/10 text-accent"
-                          : "border-border bg-transparent text-muted hover:border-border-strong",
+                          ? "border-accent/60 bg-accent/15 text-accent"
+                          : "border-border bg-transparent text-muted hover:border-border-strong hover:text-foreground",
                       )}
                     >
                       <Icon name="Lasso" className="size-3" />
@@ -310,9 +303,8 @@ export default function UploadPage() {
                     <p className="flex items-start gap-2 text-xs text-muted">
                       <Icon name="Lasso" className="mt-0.5 size-3.5 shrink-0 text-accent" />
                       Draw a loop around one room on the plan. Its walls set the
-                      boundary, the printed label fills the name + dimensions, and
-                      any furniture inside is tagged to the room — review it in the
-                      panel that appears here.
+                      boundary and the printed label fills the name + dimensions —
+                      review it in the panel that appears here.
                     </p>
                   )}
                 </div>
@@ -321,10 +313,10 @@ export default function UploadPage() {
 
             {/* Normalized plan + actions */}
             <div className="flex flex-col gap-5">
-              <div className="rounded-2xl border border-border bg-surface p-3">
+              <div className="hover-lift rounded-2xl border border-border bg-surface p-3 transition-colors">
                 <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                  <span className="text-xs font-medium uppercase tracking-wider text-muted">
-                    Reconstructed plan · {plan.planWidth} × {plan.planHeight} ft
+                  <span className="text-sm font-semibold">
+                    Reconstructed plan
                   </span>
                   <span className="hidden text-[11px] text-faint sm:inline">
                     {plan.rooms.length > 0 ? "Drag walls to adjust" : "Fills as you lasso rooms"}
@@ -350,13 +342,11 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-border bg-surface p-4">
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <Stat icon="Grid3x3" label="Walls" value={plan.walls?.length ?? 0} />
-                  <Stat icon="PanelsTopLeft" label="Rooms" value={plan.rooms.length} />
-                  <Stat icon="DoorClosed" label="Doors" value={plan.doors.length} />
-                  <Stat icon="Frame" label="Windows" value={plan.windows?.length ?? 0} />
-                </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Stat icon="Grid3x3" label="Walls" value={plan.walls?.length ?? 0} />
+                <Stat icon="PanelsTopLeft" label="Rooms" value={plan.rooms.length} />
+                <Stat icon="DoorClosed" label="Doors" value={plan.doors.length} />
+                <Stat icon="Frame" label="Windows" value={plan.windows?.length ?? 0} />
               </div>
 
               {isDetected && plan.rooms.length > 0 && <RoomList rooms={plan.rooms} />}
@@ -384,18 +374,13 @@ export default function UploadPage() {
                     Import another
                   </Button>
                 )}
-                {parse && (
-                  <span className="text-xs tabular-nums text-faint">
-                    {plan.rooms.length} of ~{parse.plan.rooms.length} detected rooms placed
-                  </span>
-                )}
                 {plan.rooms.length > 0 ? (
                   <Link href={`/projects/${id}/review`} className="ml-auto">
-                    <Button iconRight="ArrowRight">Continue to 2D Review</Button>
+                    <Button iconRight="ArrowRight">Continue to Room Confirmation</Button>
                   </Link>
                 ) : (
                   <Button className="ml-auto" iconRight="ArrowRight" disabled>
-                    Continue to 2D Review
+                    Continue to Room Confirmation
                   </Button>
                 )}
               </div>
@@ -520,7 +505,7 @@ export default function UploadPage() {
     <div className="grid h-full place-items-center px-6">
       <div className="w-full max-w-2xl">
         <div className="mb-6 text-center">
-          <h2 className="text-2xl font-semibold tracking-tight">Upload your floor plan</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Upload your floor plan</h2>
           <p className="mt-1 text-muted">
             Vasto runs OpenCV to detect walls, rooms and dimensions automatically.
           </p>
@@ -564,76 +549,6 @@ export default function UploadPage() {
           className="hidden"
           onChange={(e) => onFiles(e.target.files)}
         />
-      </div>
-    </div>
-  );
-}
-
-/** Horizontal strip mirroring the pipeline: S3 → OCR → Gemini → OpenCV → Merge. */
-function PipelineStagesStrip({ parse, plan }: { parse: ParseResult; plan: FloorPlan }) {
-  const steps: { icon: string; label: string; value: string }[] = [
-    { icon: "Upload", label: "AWS S3", value: parse.storage?.backend === "s3" ? "S3" : "local" },
-    { icon: "Eye", label: "OCR", value: `${parse.ocr?.tokens.length ?? 0} labels` },
-    { icon: "Sparkles", label: "Gemini Flash", value: `${parse.semantic?.rooms.length ?? 0} rooms` },
-    {
-      icon: "Grid3x3",
-      label: "OpenCV",
-      value: `${plan.walls?.length ?? 0}w · ${plan.rooms.length}r`,
-    },
-    { icon: "GitCompare", label: "Merge", value: `${parse.roomsNamed ?? 0} named` },
-  ];
-  return (
-    <div className="mb-5 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface p-3">
-      {steps.map((s, i) => (
-        <div key={s.label} className="flex items-center gap-2">
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2">
-            <span className="grid size-7 place-items-center rounded-lg bg-accent/10 text-accent">
-              <Icon name={s.icon} className="size-3.5" />
-            </span>
-            <div className="leading-tight">
-              <p className="text-[11px] font-medium">{s.label}</p>
-              <p className="text-[11px] tabular-nums text-muted">{s.value}</p>
-            </div>
-          </div>
-          {i < steps.length - 1 && (
-            <Icon name="ChevronRight" className="size-4 shrink-0 text-faint" />
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** Pass/warn chips for the reconstruction sanity checks (advisory, non-blocking). */
-function ValidationChips({ validation }: { validation: PlanValidation }) {
-  const passed = validation.checks.filter((c) => c.ok).length;
-  return (
-    <div className="mb-5 rounded-2xl border border-border bg-surface p-3">
-      <div className="mb-2 flex items-center justify-between px-1">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted">
-          Reconstruction checks
-        </span>
-        <span className="text-[11px] tabular-nums text-faint">
-          {passed}/{validation.checks.length} passed
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {validation.checks.map((c) => (
-          <span
-            key={c.label}
-            title={c.detail}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]",
-              c.ok
-                ? "border-success/30 bg-success/10 text-success"
-                : "border-warning/30 bg-warning/10 text-warning",
-            )}
-          >
-            <Icon name={c.ok ? "CircleCheck" : "CircleAlert"} className="size-3" />
-            <span className="font-medium">{c.label}</span>
-            <span className="opacity-70">{c.detail}</span>
-          </span>
-        ))}
       </div>
     </div>
   );
@@ -772,13 +687,13 @@ function RoomList({ rooms }: { rooms: Room[] }) {
 
 function Stat({ icon, label, value }: { icon: string; label: string; value: number }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-border bg-surface-2 px-3 py-2.5">
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent">
+    <div className="hover-lift flex items-center gap-3 rounded-2xl border border-border bg-surface px-4 py-3 transition-colors">
+      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent/10 text-accent">
         <Icon name={icon} className="size-4" />
       </span>
       <div className="min-w-0">
-        <p className="text-base font-semibold leading-none tabular-nums">{value}</p>
-        <p className="text-xs text-muted">{label}</p>
+        <p className="text-xl font-bold leading-none tabular-nums">{value}</p>
+        <p className="mt-1 text-xs text-muted">{label}</p>
       </div>
     </div>
   );
