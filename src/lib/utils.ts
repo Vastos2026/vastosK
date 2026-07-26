@@ -44,3 +44,9 @@ export function shade(hex: string, amt: number) {
   b = Math.round((t - b) * p) + b;
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
 }
+
+/** Palette assigned to rooms by index — shared by the extraction pipeline and the Room Confirmation "Add room" form so a room's colour never changes as it moves between screens. */
+export const ROOM_PALETTE = [
+  "#e6a45c", "#6da8e2", "#5cc98a", "#d4972a", "#b98ce2",
+  "#e27d9a", "#6dc7e2", "#8ac98a", "#c98a8a", "#8a9ec9",
+] as const;
