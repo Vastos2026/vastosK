@@ -25,14 +25,21 @@ export function NewProjectModal({
   lockType?: boolean;
 }) {
   const router = useRouter();
+  const projects = useVasto((s) => s.projects);
   const createProject = useVasto((s) => s.createProject);
   const [name, setName] = useState("");
   const [type, setType] = useState<PropertyType>(initialType);
   const [showPicker, setShowPicker] = useState(!lockType);
   const chosen = PROPERTY_TYPES.find((p) => p.id === type);
 
+  const trimmedName = name.trim();
+  const isDuplicate =
+    trimmedName.length > 0 &&
+    projects.some((p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase());
+
   const submit = () => {
-    const id = createProject(name.trim() || "Untitled Project", type);
+    if (!trimmedName || isDuplicate) return;
+    const id = createProject(trimmedName, type);
     onClose();
     setName("");
     setType(initialType);
@@ -56,8 +63,19 @@ export function NewProjectModal({
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
             placeholder="e.g. Prestige Lakeside Villa"
-            className="w-full rounded-lg border border-border bg-bg px-3.5 py-2.5 text-sm outline-none placeholder:text-faint focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
+            className={cn(
+              "w-full rounded-lg border bg-bg px-3.5 py-2.5 text-sm outline-none placeholder:text-faint",
+              isDuplicate
+                ? "border-danger/60 focus:border-danger focus:ring-2 focus:ring-danger/20"
+                : "border-border focus:border-accent/60 focus:ring-2 focus:ring-accent/20",
+            )}
           />
+          {isDuplicate && (
+            <p className="mt-1.5 flex items-center gap-1.5 text-xs text-danger">
+              <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+              You already have a project named &quot;{trimmedName}&quot;. Choose a different name.
+            </p>
+          )}
         </div>
 
         {!showPicker && chosen ? (
@@ -116,7 +134,7 @@ export function NewProjectModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={submit} iconRight="ArrowRight">
+        <Button onClick={submit} iconRight="ArrowRight" disabled={!trimmedName || isDuplicate}>
           Create project
         </Button>
       </div>

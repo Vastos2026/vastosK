@@ -7,7 +7,7 @@ export const PROPERTY_TYPES: {
   icon: string;
 }[] = [
   { id: "apartment", label: "Apartment", description: "Flats & multi-unit homes", icon: "Building2" },
-  { id: "villa", label: "Villa", description: "Independent houses & bungalows", icon: "Home" },
+  { id: "villa", label: "Residential Home", description: "Independent houses & bungalows", icon: "Home" },
   { id: "office", label: "Office", description: "Workspaces & cabins", icon: "Briefcase" },
   // Maps to the welcome screen's "Custom" category (config/project-types/custom.json)
   // — clinics, restaurants, retail, temples, anything that isn't an office.
