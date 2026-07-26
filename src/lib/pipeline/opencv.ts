@@ -1,5 +1,14 @@
 /**
- * OpenCV Analysis stage.
+ * DISABLED — kept aside, not deleted, per an explicit product decision (2026-07-26).
+ *
+ * Nothing in the live app calls this module. Floor-plan extraction is a
+ * single Gemini Vision call (src/lib/ai/provider.ts's extractFloorPlan) with
+ * no pixel-geometry step. This file, scripts/parse_plan.py, and
+ * scripts/detect_rooms_labeled.py are left untouched for a future decision
+ * on whether wall/door/window pixel-detection is worth reviving — do not
+ * delete or wire this back in without that decision being made first.
+ *
+ * OpenCV Analysis stage (as it worked when live).
  *
  * Spawns the Python detector (`scripts/parse_plan.py`, unchanged) which returns
  * pixel-space walls, doors, windows and room boxes. This stage knows nothing

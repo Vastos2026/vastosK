@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """
-Label-anchored room detection.
+DISABLED — kept aside, not deleted, per an explicit product decision (2026-07-26).
+
+Nothing in the live app spawns this script anymore. Floor-plan extraction is
+a single Gemini Vision call (src/lib/ai/provider.ts's extractFloorPlan); this
+file, parse_plan.py, and src/lib/pipeline/opencv.ts (their only would-be
+caller, itself disabled) are left untouched for a future decision on whether
+wall/door/window pixel-detection is worth reviving.
+
+Label-anchored room detection (as it worked when live).
 
 The plain OpenCV detector (`parse_plan.py`) segments rooms from geometry
 alone: it has no idea how many rooms exist or what they're called. This

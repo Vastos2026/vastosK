@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """
-Server-side floor-plan geometry detection with Python OpenCV.
+DISABLED — kept aside, not deleted, per an explicit product decision (2026-07-26).
+
+Nothing in the live app spawns this script anymore. Floor-plan extraction is
+a single Gemini Vision call (src/lib/ai/provider.ts's extractFloorPlan); this
+file, detect_rooms_labeled.py, and src/lib/pipeline/opencv.ts (its only
+would-be caller, itself disabled) are left untouched for a future decision on
+whether wall/door/window pixel-detection is worth reviving.
+
+Server-side floor-plan geometry detection with Python OpenCV (as it worked
+when live).
 
 Reads an image path from argv[1], runs the CV pipeline, and prints a single
 JSON object to stdout:

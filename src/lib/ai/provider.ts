@@ -124,39 +124,52 @@ export interface RawExtraction {
   readable: boolean;
 }
 
-const PLAN_EXTRACTION_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    readable: { type: "BOOLEAN" },
-    confidence: { type: "NUMBER" },
-    rooms: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          name: { type: "STRING" },
-          type: { type: "STRING" },
-          widthFt: { type: "NUMBER" },
-          heightFt: { type: "NUMBER" },
-          openings: {
-            type: "ARRAY",
-            items: {
-              type: "OBJECT",
-              properties: {
-                kind: { type: "STRING", enum: ["door", "window"] },
-                side: { type: "STRING", enum: ["north", "south", "east", "west"] },
-                connectsTo: { type: "STRING" },
+/**
+ * Builds the response schema for one extraction call. When the caller has a
+ * fixed room-type list (every project category except Custom), the "type"
+ * field is constrained to an ENUM of exactly that list — Gemini's
+ * constrained decoding then cannot return a type outside it, which is a
+ * stronger hallucination guard than prompt wording alone. Custom projects
+ * pass an empty list by design (config/project-types/custom.json), so "type"
+ * stays free-text there — there is no fixed list to constrain it to.
+ */
+function buildExtractionSchema(roomTypeHints: string[]) {
+  return {
+    type: "OBJECT",
+    properties: {
+      readable: { type: "BOOLEAN" },
+      confidence: { type: "NUMBER" },
+      rooms: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            name: { type: "STRING" },
+            type: roomTypeHints.length
+              ? { type: "STRING", enum: roomTypeHints }
+              : { type: "STRING" },
+            widthFt: { type: "NUMBER" },
+            heightFt: { type: "NUMBER" },
+            openings: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  kind: { type: "STRING", enum: ["door", "window"] },
+                  side: { type: "STRING", enum: ["north", "south", "east", "west"] },
+                  connectsTo: { type: "STRING" },
+                },
+                required: ["kind", "side"],
               },
-              required: ["kind", "side"],
             },
           },
+          required: ["name", "openings"],
         },
-        required: ["name", "openings"],
       },
     },
-  },
-  required: ["readable", "confidence", "rooms"],
-} as const;
+    required: ["readable", "confidence", "rooms"],
+  } as const;
+}
 
 interface RawExtractionResponse {
   readable?: boolean;
@@ -191,22 +204,20 @@ export async function extractFloorPlan(
   }
   const img = await downscaleForGemini(bytes);
   const hints = roomTypeHints.length
-    ? `Prefer one of these types when it fits: ${roomTypeHints.join(", ")}. If none fit, use your own best short label.`
-    : `This project type has no fixed room-type list — use your own best short label (e.g. "Bedroom", "Kitchen").`;
+    ? `"type" MUST be exactly one value from this fixed list, chosen by the room's printed name and its position in the layout: ${roomTypeHints.join(", ")}. Pick the closest match even if imperfect — never a value outside this list.`
+    : `"type" is a short room-category label (e.g. "Bedroom", "Kitchen") — this project has no fixed list, infer the best short label from the room's printed name.`;
 
-  const prompt = `You are reading an architectural floor plan image to extract its rooms.
+  const prompt = `You are reading an architectural floor plan image to extract its rooms. Be conservative: if you are not confident about a detail, omit it rather than guess.
 
-For each room you can identify, return:
-- "name": the room's label EXACTLY as printed on the plan (e.g. "KIDS", "Hall", "M. Bedroom"). Never invent a name if none is printed — use a short generic description instead (e.g. "Unlabeled room").
-- "type": a classification of what kind of room this is, based on its printed name and typical layout position. ${hints}
-- "widthFt"/"heightFt": only if a dimension is actually printed near the room (e.g. "12'3\"X9'1\""), converted to decimal feet. Omit both if nothing is legible — never estimate or guess a size.
-- "openings": every door and window you can see on this room's walls. For each: "kind" (door or window), "side" (which wall of the room it's on: north/south/east/west, using the plan's own up-is-north orientation), "connectsTo" (the name of the room on the other side of a door, or "exterior" for an outer wall or a window). Omit anything you can't confidently see.
+Per room:
+- "name": EXACTLY as printed on the plan (e.g. "KIDS", "Hall", "M. Bedroom"). Never invent one — if nothing is printed, use a short factual description (e.g. "Unlabeled room").
+- ${hints}
+- "widthFt"/"heightFt": only if a dimension is actually printed near the room (e.g. "12'3\"X9'1\""), converted to decimal feet. Omit both if nothing is legible.
+- "openings": every door/window you can see on this room's walls. "kind" (door|window), "side" (north/south/east/west of this room, plan's up-is-north), "connectsTo" (the room on the other side of a door, or "exterior" for an outer wall or a window). Omit anything not clearly visible.
 
-Also return:
-- "confidence": your own 0 to 1 confidence that this extraction is accurate and complete.
-- "readable": false if this image does not look like a floor plan you can meaningfully extract rooms from at all (e.g. it's blank, unrelated, or too unclear to read), true otherwise.
+Also: "confidence" (0-1, your own accuracy estimate) and "readable" (false only if this image isn't a floor plan you can meaningfully read at all).
 
-Return only rooms you can actually identify. Never fabricate a room, dimension, or opening that isn't legible in the image.`;
+Report only what you can actually see. Never fabricate a room, dimension, or opening.`;
 
   const parts: GeminiPart[] = [
     { inlineData: { mimeType: img.mimeType, data: img.data } },
@@ -216,16 +227,26 @@ Return only rooms you can actually identify. Never fabricate a room, dimension, 
   return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash", ctx, async () => {
     const raw = await generateJson<RawExtractionResponse>(parts, {
       temperature: 0.1,
-      responseSchema: PLAN_EXTRACTION_SCHEMA,
+      thinkingBudget: 0,
+      maxOutputTokens: 8192,
+      responseSchema: buildExtractionSchema(roomTypeHints),
     });
     if (!raw) throw new ProviderError("AiProviderError", "floor plan extraction failed");
 
+    // Belt and suspenders: the schema's enum already constrains `type` when
+    // roomTypeHints is non-empty, but a stray out-of-list value is dropped
+    // here too rather than trusted, in case a fallback model ignores the
+    // schema.
+    const validTypes = roomTypeHints.length ? new Set(roomTypeHints) : null;
     const sides = new Set(["north", "south", "east", "west"]);
     const rooms: RawExtractedRoom[] = (raw.rooms ?? [])
       .filter((r): r is typeof r & { name: string } => !!r.name?.trim())
       .map((r) => ({
         name: r.name.trim(),
-        type: r.type?.trim() || undefined,
+        type:
+          r.type?.trim() && (!validTypes || validTypes.has(r.type.trim()))
+            ? r.type.trim()
+            : undefined,
         widthFt: typeof r.widthFt === "number" && r.widthFt > 0 ? r.widthFt : undefined,
         heightFt: typeof r.heightFt === "number" && r.heightFt > 0 ? r.heightFt : undefined,
         openings: (r.openings ?? [])
