@@ -43,6 +43,7 @@ export function useExportProjectPdf(project: Project | undefined) {
       const walkthroughLinkUrl = token ? `${window.location.origin}/s/${token}` : undefined;
 
       const blob = await exportProjectPdf({
+        projectId: project.id,
         projectName: project.name,
         propertyTypeLabel,
         subcategory: project.subcategory,

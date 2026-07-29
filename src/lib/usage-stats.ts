@@ -1,5 +1,6 @@
 import "server-only";
 import { supabaseServer } from "@/lib/supabase/server-client";
+import { buildTimeWindow } from "@/lib/time-buckets";
 
 export interface DailyUsage {
   /** YYYY-MM-DD */
@@ -21,14 +22,7 @@ export async function getUsageStats(days = 30): Promise<DailyUsage[] | null> {
   const supabase = await supabaseServer();
   if (!supabase) return null;
 
-  // Bucket keys are UTC calendar days throughout (matching row.created_at,
-  // an ISO timestamp sliced to its UTC date) — using the server process's
-  // local timezone here (e.g. via setHours/setDate, which operate in local
-  // time) would shift every bucket key by the local UTC offset on any
-  // non-UTC host, silently dropping today's rows into no bucket at all.
-  const since = new Date();
-  since.setUTCHours(0, 0, 0, 0);
-  since.setUTCDate(since.getUTCDate() - (days - 1));
+  const { since, keys } = buildTimeWindow(days, "day");
 
   const { data, error } = await supabase
     .from("ai_usage_logs")
@@ -39,10 +33,7 @@ export async function getUsageStats(days = 30): Promise<DailyUsage[] | null> {
   if (error || !data) return null;
 
   const buckets = new Map<string, DailyUsage>();
-  for (let i = 0; i < days; i++) {
-    const d = new Date(since);
-    d.setUTCDate(d.getUTCDate() + i);
-    const key = d.toISOString().slice(0, 10);
+  for (const key of keys) {
     buckets.set(key, { date: key, count: 0, estimatedCost: 0 });
   }
 
@@ -79,9 +70,7 @@ export async function getGenerationStats(days = 180): Promise<DailyGenerations[]
   const supabase = await supabaseServer();
   if (!supabase) return null;
 
-  const since = new Date();
-  since.setUTCHours(0, 0, 0, 0);
-  since.setUTCDate(since.getUTCDate() - (days - 1));
+  const { since, keys } = buildTimeWindow(days, "day");
 
   const { data, error } = await supabase
     .from("generations")
@@ -92,10 +81,8 @@ export async function getGenerationStats(days = 180): Promise<DailyGenerations[]
   if (error || !data) return null;
 
   const buckets = new Map<string, { generationCount: number; projectIds: Set<string> }>();
-  for (let i = 0; i < days; i++) {
-    const d = new Date(since);
-    d.setUTCDate(d.getUTCDate() + i);
-    buckets.set(d.toISOString().slice(0, 10), { generationCount: 0, projectIds: new Set() });
+  for (const key of keys) {
+    buckets.set(key, { generationCount: 0, projectIds: new Set() });
   }
 
   for (const row of data as { created_at: string; project_id: string }[]) {

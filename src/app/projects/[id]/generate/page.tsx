@@ -5,6 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { generateRoomImage } from "@/lib/design-plan-client";
+import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
+import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { GeneratingLoader } from "@/components/ui/generating-loader";
@@ -72,18 +74,19 @@ export default function GeneratePage() {
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
     try {
+      // Omit size entirely when a dimension is still missing, rather than
+      // sending a literal "undefined x undefined ft" into the render
+      // prompt — see Room.width/height's doc comment. Same helper
+      // buildUniversalInput/design page's auto-fire loop use, so every
+      // room-image payload describes size identically.
+      const size = formatRoomSize(room.width, room.height);
       const gen = await generateRoomImage({
         projectId: id,
         universalInput,
         room: {
           name: room.name,
           type: room.type,
-          // Omit size entirely when a dimension is still missing, rather
-          // than sending a literal "undefined x undefined ft" into the
-          // render prompt — see Room.width/height's doc comment.
-          ...(room.width !== undefined && room.height !== undefined
-            ? { size: `${room.width} x ${room.height} ft` }
-            : {}),
+          ...(size ? { size } : {}),
           additional_notes: [universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes, note]
             .filter(Boolean)
             .join(". ") || undefined,
@@ -175,11 +178,7 @@ function RoomSection({
     <section id={`room-${room.id}`} className="scroll-mt-4 pt-6 first:pt-0">
       <div className="mb-2 flex items-baseline justify-between">
         <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
-        <p className="text-xs text-muted">
-          {room.width !== undefined && room.height !== undefined
-            ? `${Math.round(room.width)} × ${Math.round(room.height)} ft`
-            : "Size not available"}
-        </p>
+        <p className="text-xs text-muted">{formatDimensionsRounded(room.width, room.height)}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">

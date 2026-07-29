@@ -1,5 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { buildTimeWindow } from "@/lib/time-buckets";
 
 export interface UserRenderMonth {
   /** YYYY-MM */
@@ -35,10 +36,7 @@ export async function getConsoleRenderStats(
   admin: SupabaseClient,
   months = MONTHS_WINDOW,
 ): Promise<{ monthKeys: string[]; byUser: Map<string, UserRenderStats> } | null> {
-  const since = new Date();
-  since.setUTCDate(1);
-  since.setUTCHours(0, 0, 0, 0);
-  since.setUTCMonth(since.getUTCMonth() - (months - 1));
+  const { since, keys: monthKeys } = buildTimeWindow(months, "month");
 
   const { data, error } = await admin
     .from("generations")
@@ -47,13 +45,6 @@ export async function getConsoleRenderStats(
     .order("created_at", { ascending: true });
 
   if (error || !data) return null;
-
-  const monthKeys: string[] = [];
-  for (let i = 0; i < months; i++) {
-    const d = new Date(since);
-    d.setUTCMonth(d.getUTCMonth() + i);
-    monthKeys.push(d.toISOString().slice(0, 7));
-  }
 
   const byUser = new Map<string, UserRenderStats>();
   for (const row of data as { user_id: string | null; created_at: string }[]) {

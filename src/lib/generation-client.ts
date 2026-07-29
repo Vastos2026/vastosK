@@ -53,6 +53,8 @@ export function createShareLink(input: {
 }
 
 interface ExportProjectPdfInput {
+  /** Required so the server can verify the caller owns this project and that every key below actually belongs to it — see export-pdf/route.ts's ownership check. */
+  projectId: string;
   projectName: string;
   propertyTypeLabel: string;
   subcategory?: string;

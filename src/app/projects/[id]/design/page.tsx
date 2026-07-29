@@ -8,6 +8,7 @@ import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
+import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn, uid } from "@/lib/utils";
@@ -107,18 +108,19 @@ export default function DesignPage() {
       // from the store (generatingRoomIds + roomCards), not from this promise.
       for (const room of rooms) {
         useVasto.getState().startGenerating(id, room.id);
+        // Omit size entirely when a dimension is still missing, rather than
+        // sending a literal "undefined x undefined ft" into the render
+        // prompt — see Room.width/height's doc comment. Same helper
+        // buildUniversalInput uses, so this payload and the Design Planning
+        // call describe a room's size identically.
+        const size = formatRoomSize(room.width, room.height);
         generateRoomImage({
           projectId: id,
           universalInput,
           room: {
             name: room.name,
             type: room.type,
-            // Omit size entirely when a dimension is still missing, rather
-            // than sending a literal "undefined x undefined ft" into the
-            // render prompt — see Room.width/height's doc comment.
-            ...(room.width !== undefined && room.height !== undefined
-              ? { size: `${room.width} x ${room.height} ft` }
-              : {}),
+            ...(size ? { size } : {}),
             additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
             openings: room.openings,
           },

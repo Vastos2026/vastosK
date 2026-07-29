@@ -81,3 +81,25 @@ export async function getProjectSnapshotByShareToken(token: string): Promise<{ d
   if (error || !data) return null;
   return data as { data: Project };
 }
+
+/**
+ * Looks up a project snapshot by id, scoped to `owner` — used by routes that
+ * accept client-resolved storage keys (e.g. /api/export-pdf) and need to
+ * verify both that the caller owns this project AND that the keys they sent
+ * actually belong to it (see approved-rooms.ts's `allowedProjectStorageKeys`),
+ * rather than trusting an arbitrary key from the request body outright.
+ * Returns null if unconfigured, not found, or not owned by `owner` — callers
+ * should treat all three the same way (reject), not distinguish them.
+ */
+export async function getOwnedProjectSnapshot(appId: string, owner: string): Promise<Project | null> {
+  const db = supabaseAdmin();
+  if (!db) return null;
+  const { data, error } = await db
+    .from(TABLE)
+    .select("data, anon_owner")
+    .eq("app_id", appId)
+    .maybeSingle();
+  if (error || !data) return null;
+  if (data.anon_owner !== owner) return null;
+  return (data as { data: Project }).data;
+}

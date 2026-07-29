@@ -91,6 +91,7 @@ async function instrumented<T>(
   model: string,
   ctx: CallContext | undefined,
   fn: (setCost: (costUsd: number | null | undefined) => void) => Promise<T>,
+  provider?: "google" | "runware",
 ): Promise<T> {
   const started = Date.now();
   let costUsd: number | null | undefined;
@@ -104,6 +105,7 @@ async function instrumented<T>(
       projectId: ctx?.projectId,
       feature,
       model,
+      provider,
       success: true,
       durationMs: Date.now() - started,
       estimatedCost: costUsd,
@@ -116,6 +118,7 @@ async function instrumented<T>(
       projectId: ctx?.projectId,
       feature,
       model,
+      provider,
       success: false,
       durationMs: Date.now() - started,
       errorCategory: err.category,
@@ -380,17 +383,23 @@ export async function generateImage(
   const provider = resolveProvider(process.env.IMAGE_PROVIDER);
   const model = provider === "runware" ? process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1" : IMAGE_MODEL;
 
-  return instrumented("image", model, ctx, async (setCost) => {
-    return runOnProvider(
-      provider,
-      async () => {
-        const out = await generateImageWithRunware(prompt);
-        setCost(out.costUsd);
-        return out;
-      },
-      () => generateImageWithGemini(prompt),
-    );
-  });
+  return instrumented(
+    "image",
+    model,
+    ctx,
+    async (setCost) => {
+      return runOnProvider(
+        provider,
+        async () => {
+          const out = await generateImageWithRunware(prompt);
+          setCost(out.costUsd);
+          return out;
+        },
+        () => generateImageWithGemini(prompt),
+      );
+    },
+    provider === "runware" ? "runware" : "google",
+  );
 }
 
 /**
@@ -410,21 +419,27 @@ export async function editImage(
   const provider = resolveProvider(process.env.IMAGE_PROVIDER);
   const model = provider === "runware" ? process.env.RUNWARE_EDIT_MODEL?.trim() || "runware:102@1" : IMAGE_MODEL;
 
-  return instrumented("edit", model, ctx, async (setCost) => {
-    return runOnProvider(
-      provider,
-      async () => {
-        const out = await editImageWithRunware(baseDataUri, maskDataUri, instruction);
-        setCost(out.costUsd);
-        return out;
-      },
-      async () => {
-        const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
-        if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
-        return out;
-      },
-    );
-  });
+  return instrumented(
+    "edit",
+    model,
+    ctx,
+    async (setCost) => {
+      return runOnProvider(
+        provider,
+        async () => {
+          const out = await editImageWithRunware(baseDataUri, maskDataUri, instruction);
+          setCost(out.costUsd);
+          return out;
+        },
+        async () => {
+          const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
+          if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
+          return out;
+        },
+      );
+    },
+    provider === "runware" ? "runware" : "google",
+  );
 }
 
 export interface GeneratedVideo {
@@ -447,21 +462,27 @@ export async function generateVideo(
   const provider = resolveProvider(process.env.VIDEO_PROVIDER);
   const model = provider === "runware" ? process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7" : "veo";
 
-  return instrumented("video", model, ctx, async (setCost) => {
-    return runOnProvider(
-      provider,
-      async () => {
-        const out = await generateVideoWithRunware(imageDataUri, prompt, { durationSeconds: opts.durationSeconds });
-        setCost(out.costUsd);
-        return out;
-      },
-      async () => {
-        const out = await generateVideoFromImage(imageDataUri, prompt, opts);
-        if (!out) throw new ProviderError("AiProviderError", "video generation failed");
-        return { bytes: out.bytes, contentType: out.contentType };
-      },
-    );
-  });
+  return instrumented(
+    "video",
+    model,
+    ctx,
+    async (setCost) => {
+      return runOnProvider(
+        provider,
+        async () => {
+          const out = await generateVideoWithRunware(imageDataUri, prompt, { durationSeconds: opts.durationSeconds });
+          setCost(out.costUsd);
+          return out;
+        },
+        async () => {
+          const out = await generateVideoFromImage(imageDataUri, prompt, opts);
+          if (!out) throw new ProviderError("AiProviderError", "video generation failed");
+          return { bytes: out.bytes, contentType: out.contentType };
+        },
+      );
+    },
+    provider === "runware" ? "runware" : "google",
+  );
 }
 
 /**

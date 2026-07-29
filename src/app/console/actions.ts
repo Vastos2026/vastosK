@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth/session";
 import { supabaseAdmin } from "@/lib/supabase/server";
+import { BILLING_CYCLES } from "@/lib/billing";
 
 /**
  * Every export here is a Server Action, callable independently of the
@@ -83,6 +84,13 @@ export async function updateBilling(
   nextBillingDate: string | null,
 ) {
   const { admin } = await requireAdminClient();
+  // The console's <select> only ever offers BILLING_CYCLES, but Server
+  // Actions are callable independently of the page that renders them (same
+  // reasoning as requireRole above) — validate server-side too, rather than
+  // trusting the client sent one of the three real values.
+  if (billingCycle && !(BILLING_CYCLES as readonly string[]).includes(billingCycle)) {
+    throw new Error(`Invalid billing cycle: ${billingCycle}`);
+  }
   const { error } = await admin
     .from("profiles")
     .update({

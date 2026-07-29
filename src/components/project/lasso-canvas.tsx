@@ -239,8 +239,19 @@ export const LassoCanvas = forwardRef<
           // Landing inside an already-completed region starts a reposition
           // drag instead of a new one — this takes priority over the
           // max-regions gate below, since moving an existing region never
-          // adds a new one.
-          const hitIndex = regions.findIndex((pts) => pointInPolygon(p, pts));
+          // adds a new one. Searched back-to-front (highest index first):
+          // regions are painted in array order, so a later index is drawn ON
+          // TOP of an earlier one — where two regions overlap, the user is
+          // pointing at whichever one they can actually SEE on top, not
+          // whichever was drawn first (a forward `findIndex` would grab the
+          // bottom, invisible-at-that-point region instead — found in review).
+          let hitIndex = -1;
+          for (let i = regions.length - 1; i >= 0; i--) {
+            if (pointInPolygon(p, regions[i])) {
+              hitIndex = i;
+              break;
+            }
+          }
           if (hitIndex !== -1) {
             (e.target as HTMLElement).setPointerCapture(e.pointerId);
             setMoveDrag({ index: hitIndex, start: p, original: regions[hitIndex] });

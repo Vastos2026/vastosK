@@ -31,6 +31,20 @@ export interface DesignSelection {
   colourPalette: string;
 }
 
+/**
+ * Room-size string for a generation payload's `size` field — 1-decimal
+ * rounding, or undefined when either dimension is missing (never a
+ * fabricated size). Exported so every call site that builds a room payload
+ * (this function below, and the Design page's auto-fire loop / Generate
+ * page's `generateMore`, which build `UniversalInputRoom` payloads directly
+ * without going through `buildUniversalInput`) uses the same convention
+ * instead of each re-deriving its own guard and its own rounding.
+ */
+export function formatRoomSize(widthFt: number | undefined, heightFt: number | undefined): string | undefined {
+  if (widthFt === undefined || !(widthFt > 0) || heightFt === undefined || !(heightFt > 0)) return undefined;
+  return `${formatFt(widthFt)} x ${formatFt(heightFt)} ft`;
+}
+
 export function buildUniversalInput(
   category: string,
   subcategory: string,
@@ -59,7 +73,7 @@ export function buildUniversalInput(
         // read a printed size for (or that the user hasn't filled in yet) is
         // a real, expected state now, not a validation failure. `size` is
         // just omitted below so the room prompt doesn't state a wrong size.
-        const hasSize = r.widthFt !== undefined && r.widthFt > 0 && r.heightFt !== undefined && r.heightFt > 0;
+        const size = formatRoomSize(r.widthFt, r.heightFt);
         const notes = r.additionalNotes?.trim();
         if (notes && notes.length > NOTES_MAX_LEN) {
           throw new ProviderError(
@@ -69,7 +83,7 @@ export function buildUniversalInput(
         }
         return {
           name: r.name.trim(),
-          ...(hasSize ? { size: `${formatFt(r.widthFt as number)} x ${formatFt(r.heightFt as number)} ft` } : {}),
+          ...(size ? { size } : {}),
           ...(r.type?.trim() ? { type: r.type.trim() } : {}),
           ...(notes ? { additional_notes: notes } : {}),
           ...(r.openings?.length ? { openings: r.openings } : {}),

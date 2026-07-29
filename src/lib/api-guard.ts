@@ -4,6 +4,7 @@ import { isSameOrigin } from "@/lib/csrf";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { BILLING_CYCLES, type BillingCycle } from "@/lib/billing";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface GuardOptions {
   /** Per-user rate limit for this route; omit to skip rate limiting (e.g. a route with no AI/compute cost). */
@@ -75,6 +76,40 @@ function isBillingCycle(v: string): v is BillingCycle {
 }
 
 /**
+ * Sum of `estimated_cost` for `userId` since `since` (or all-time if null).
+ * Tries a single Postgres-side aggregate first (`.sum()`) — cheaper than
+ * fetching every row, since an active user's row count over a billing
+ * period can be sizeable (one row per image/edit/video/planning call). But
+ * PostgREST's aggregate functions are disabled by default on a fresh
+ * Supabase project (an explicit opt-in setting) — if that's the case here,
+ * the aggregate query errors and this falls back to fetching just
+ * `estimated_cost` and summing in JS, so the usage cap still actually works
+ * rather than silently no-op'ing for every user (found in review: the
+ * aggregate-only version failed open with zero visible indication).
+ * Returns null only if BOTH paths fail (network/config issue) — the caller
+ * treats that as "can't determine spend," never as "spend is zero."
+ */
+async function sumUsageSince(
+  admin: SupabaseClient,
+  userId: string,
+  since: string | null,
+): Promise<number | null> {
+  let aggQuery = admin.from("ai_usage_logs").select("total:estimated_cost.sum()").eq("user_id", userId);
+  if (since) aggQuery = aggQuery.gte("created_at", since);
+  const { data: aggData, error: aggError } = await aggQuery.single<{ total: number | null }>();
+  if (!aggError && aggData) return Number(aggData.total ?? 0);
+
+  let rowsQuery = admin.from("ai_usage_logs").select("estimated_cost").eq("user_id", userId);
+  if (since) rowsQuery = rowsQuery.gte("created_at", since);
+  const { data: rows, error: rowsError } = await rowsQuery;
+  if (rowsError || !rows) return null;
+  return (rows as { estimated_cost: number | null }[]).reduce(
+    (sum, row) => sum + Number(row.estimated_cost ?? 0),
+    0,
+  );
+}
+
+/**
  * Admin-set spend cap check (console's "Usage limit ($)" field on
  * `profiles.usage_limit_usd`) — called from `assertAllowed` when a route
  * passes `checkUsage: true`. This is a CHECK-AFTER design: it sums cost
@@ -106,27 +141,21 @@ async function checkUsageLimit(user: CurrentUser): Promise<Response | null> {
   // isn't one of the three recognized labels, there's no well-defined period
   // — fall back to summing ALL of this user's usage ever, a reasonable
   // (if more conservative) default rather than erroring or skipping the check.
+  //
+  // Deliberately NO upper bound on the query (no `.lte(created_at, periodEnd)`)
+  // — this asks "how much has the user spent since the period started, up to
+  // right now," not "up to the period's nominal end." Nothing in this app
+  // automatically advances `next_billing_date` each cycle (an admin sets it
+  // manually in the console); a query bounded by that date would silently
+  // stop counting ANY new usage the moment the stored date lapses (found in
+  // review), disabling the cap entirely until an admin happens to update it.
   let periodStart: string | null = null;
-  const periodEnd = user.nextBillingDate;
   if (user.billingCycle && isBillingCycle(user.billingCycle) && user.nextBillingDate) {
     periodStart = stepBack(new Date(user.nextBillingDate), user.billingCycle).toISOString();
   }
 
-  // A single Postgres-side sum (PostgREST's `.sum()` aggregate) instead of
-  // fetching every ai_usage_logs row for the period and adding them up in
-  // JS — this runs on every generation call, and an active user's row count
-  // over a month can be sizeable (one row per image/edit/video/planning call).
-  let query = admin
-    .from("ai_usage_logs")
-    .select("total:estimated_cost.sum()")
-    .eq("user_id", user.id);
-  if (periodStart) query = query.gte("created_at", periodStart);
-  if (periodStart && periodEnd) query = query.lte("created_at", periodEnd);
-
-  const { data, error } = await query.single<{ total: number | null }>();
-  if (error || !data) return null;
-
-  const spent = Number(data.total ?? 0);
+  const spent = await sumUsageSince(admin, user.id, periodStart);
+  if (spent === null) return null;
   if (spent >= Number(user.usageLimitUsd)) {
     return Response.json(
       { error: "Usage limit reached, please contact Vastos Admin" },

@@ -30,6 +30,9 @@ import {
 } from "pdf-lib";
 import { getObject } from "@/lib/pipeline/storage";
 import { assertAllowed } from "@/lib/api-guard";
+import { supabaseAdmin } from "@/lib/supabase/server";
+import { getOwnedProjectSnapshot } from "@/lib/supabase/projects";
+import { allowedProjectStorageKeys } from "@/lib/projects/approved-rooms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +44,14 @@ interface ExportRoom {
 }
 
 interface ExportRequest {
+  /**
+   * The project this export belongs to — required so the route can verify
+   * ownership and that every `imageKey`/`floorPlanImageKey` below actually
+   * belongs to THIS project (see the ownership check in POST below). Not
+   * used for anything else; this route still never looks up a project's
+   * cover-page metadata by id, only its storage keys for validation.
+   */
+  projectId: string;
   projectName: string;
   propertyTypeLabel: string;
   subcategory?: string;
@@ -157,6 +168,7 @@ export async function POST(request: Request) {
   }
 
   const {
+    projectId,
     projectName,
     propertyTypeLabel,
     subcategory,
@@ -169,11 +181,37 @@ export async function POST(request: Request) {
     floorPlanImageKey,
   } = body;
 
-  if (!projectName || !propertyTypeLabel || !Array.isArray(rooms)) {
+  if (!projectId || !projectName || !propertyTypeLabel || !Array.isArray(rooms)) {
     return Response.json(
-      { error: "projectName, propertyTypeLabel and rooms are required" },
+      { error: "projectId, projectName, propertyTypeLabel and rooms are required" },
       { status: 400 },
     );
+  }
+
+  // Every imageKey/floorPlanImageKey below is client-resolved (this route
+  // never looks a project up by id for its own data, see the file header) —
+  // without this check, an authenticated caller could submit ANY other
+  // project's storage key and have it embedded into their own PDF (a real
+  // cross-tenant data leak found in review). When Supabase is configured,
+  // require the caller to actually own `projectId` AND every key requested
+  // to actually belong to that project's own data. When Supabase isn't
+  // configured, there's no persistence layer at all (single local install,
+  // no other users' data to leak) — degrade to allowing it, matching this
+  // app's existing "best-effort, works without Supabase" contract.
+  if (supabaseAdmin()) {
+    const project = await getOwnedProjectSnapshot(projectId, guard.id);
+    if (!project) {
+      return Response.json({ error: "Project not found or not owned by you" }, { status: 403 });
+    }
+    const allowedKeys = allowedProjectStorageKeys(project);
+    for (const room of rooms) {
+      if (!room?.imageKey || !allowedKeys.has(room.imageKey)) {
+        return Response.json({ error: "One or more room images don't belong to this project" }, { status: 403 });
+      }
+    }
+    if (floorPlanImageKey && !allowedKeys.has(floorPlanImageKey)) {
+      return Response.json({ error: "Floor plan image doesn't belong to this project" }, { status: 403 });
+    }
   }
 
   try {
@@ -325,7 +363,12 @@ export async function POST(request: Request) {
       // Byte-sniffed, not extension-guessed — the same reasoning as the
       // floor-plan image above: the upload/render pipeline can produce bytes
       // whose actual format doesn't match the storage key's extension.
+      // Skip gracefully on an unrecognized format instead of blindly calling
+      // embedPng — that throws inside pdf-lib's PNG parser for anything that
+      // isn't actually a PNG, which previously took down the ENTIRE export
+      // over one bad room image instead of just omitting that room's page.
       const format = sniffImageFormat(bytes);
+      if (!format) continue;
       const image = format === "jpg" ? await pdfDoc.embedJpg(bytes) : await pdfDoc.embedPng(bytes);
       addImagePage(pdfDoc, fontBold, room.name || "Room", image);
     }

@@ -40,7 +40,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { sleep } from "@/lib/ai/errors";
+import { sleep, ProviderError } from "@/lib/ai/errors";
 
 const API_BASE = "https://api.runware.ai/v1";
 
@@ -82,7 +82,20 @@ interface RunwareResponse {
   errors?: { message?: string; taskUUID?: string }[];
 }
 
-/** POST one or more task objects, return the `data` array. Throws on transport/API error. */
+/**
+ * POST one or more task objects, return the `data` array.
+ *
+ * Throws a `ProviderError` with the RIGHT category, not a plain `Error` —
+ * `provider.ts`'s `runOnProvider` only preserves a caught error's category
+ * when it's already a `ProviderError`; anything else gets coerced to
+ * `AiProviderError`, which the retry policy (`ai/errors.ts`) treats as
+ * transient and retries up to `MAX_RETRIES` times. A 4xx response (bad
+ * params, unsupported dimensions/model — exactly the kind of error this
+ * file's own header comment documents hitting live) is DETERMINISTIC:
+ * retrying just fails again, 2-3x over, at real billed cost each time
+ * (found in review). Only 5xx/network-shaped failures are genuinely worth
+ * a retry.
+ */
 async function submit(tasks: Record<string, unknown>[]): Promise<RunwareTaskResult[]> {
   let res: Response;
   try {
@@ -95,14 +108,19 @@ async function submit(tasks: Record<string, unknown>[]): Promise<RunwareTaskResu
       body: JSON.stringify(tasks),
     });
   } catch (e) {
-    throw new Error(`Runware request failed: ${(e as Error).message}`);
+    throw new ProviderError("AiProviderError", `Runware request failed: ${(e as Error).message}`);
   }
   const payload = (await res.json().catch(() => null)) as RunwareResponse | null;
   if (!res.ok || !payload) {
-    throw new Error(`Runware ${res.status}: ${payload ? JSON.stringify(payload) : await res.text().catch(() => "")}`);
+    const body = payload ? JSON.stringify(payload) : await res.text().catch(() => "");
+    const category = res.status >= 400 && res.status < 500 ? "ValidationError" : "AiProviderError";
+    throw new ProviderError(category, `Runware ${res.status}: ${body}`);
   }
   if (payload.errors?.length) {
-    throw new Error(`Runware error: ${payload.errors.map((e) => e.message).join("; ")}`);
+    // A 200 OK carrying a task-level error array (e.g. "unsupportedDimensions",
+    // "unsupportedParameter") is just as deterministic as an HTTP 4xx would
+    // have been — same non-retryable category.
+    throw new ProviderError("ValidationError", `Runware error: ${payload.errors.map((e) => e.message).join("; ")}`);
   }
   return payload.data ?? [];
 }

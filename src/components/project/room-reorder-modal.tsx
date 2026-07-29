@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -62,6 +62,18 @@ export function RoomReorderModal({
     setDraggingIndex(null);
     setDragOffset({ x: 0, y: 0 });
   };
+
+  // Cached slot rects (measured once per drag, see handlePointerDown below)
+  // go stale if the viewport changes size mid-gesture — a window resize, or
+  // a mobile device rotating while a touch-drag is held (pointer capture
+  // only suppresses scroll/gestures, not orientation changes). Rather than
+  // hit-testing against now-wrong rects, just end the drag safely; the user
+  // can start a fresh one, which re-measures.
+  useEffect(() => {
+    if (draggingIndex === null) return;
+    window.addEventListener("resize", endDrag);
+    return () => window.removeEventListener("resize", endDrag);
+  }, [draggingIndex]);
 
   const handlePointerDown = (index: number) => (e: React.PointerEvent<HTMLDivElement>) => {
     dragIndex.current = index;

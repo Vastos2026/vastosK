@@ -73,8 +73,12 @@ export async function POST(request: Request) {
   }
 
   const { projectId, rooms } = body;
-  if (!projectId || !rooms?.length) {
-    return Response.json({ error: "projectId and at least one room are required" }, { status: 400 });
+  // Mirrors the Walkthrough page's UI rule (a single-room "walkthrough" isn't
+  // a real one) — enforced here too, not just client-side, since this route
+  // is reachable independently of that page (found in review: a direct call
+  // could still produce a 1-room video).
+  if (!projectId || !rooms || rooms.length < 2) {
+    return Response.json({ error: "projectId and at least 2 rooms are required" }, { status: 400 });
   }
   for (const r of rooms) {
     if (!r.imageKey || !r.imageKey.startsWith("renders/")) {

@@ -70,7 +70,16 @@ export default function WalkthroughPage() {
 
   if (!project) return null;
 
-  if (included.length === 0) {
+  // These room-count guards only block getting to a NEW walkthrough — if one
+  // already completed, its video/download/share/PDF/regenerate stay reachable
+  // even if the room selection later drops below 2 (e.g. a room got
+  // unchecked on Approve, or deleted). Without this exception, the page hid
+  // an already-generated video with no way back to it from here (found in
+  // review) — the video itself is untouched in storage, only this page's
+  // access to it was broken.
+  const hasCompletedWalkthrough = project.walkthrough?.status === "completed";
+
+  if (included.length === 0 && !hasCompletedWalkthrough) {
     return (
       <div className="grid h-full place-items-center text-center">
         <div>
@@ -84,7 +93,7 @@ export default function WalkthroughPage() {
     );
   }
 
-  if (included.length === 1) {
+  if (included.length === 1 && !hasCompletedWalkthrough) {
     return (
       <div className="grid h-full place-items-center text-center">
         <div>
@@ -99,7 +108,16 @@ export default function WalkthroughPage() {
   }
 
   const generate = async () => {
-    if (busy || effectiveOrder.length === 0) return;
+    // The page's early-return guards above only block reaching a NEW
+    // walkthrough with fewer than 2 rooms — they let an already-completed
+    // walkthrough's Regenerate button stay reachable regardless of the
+    // CURRENT room count. Re-check the minimum here too, so Regenerate can't
+    // silently produce a 1-room walkthrough if the room selection dropped
+    // below 2 after the original walkthrough was generated.
+    if (busy || effectiveOrder.length < 2) {
+      if (effectiveOrder.length < 2) setError("Add at least 2 approved rooms to build a walkthrough.");
+      return;
+    }
     setBusy(true);
     setError(null);
     // shareToken carries over across every state write below, not just the
