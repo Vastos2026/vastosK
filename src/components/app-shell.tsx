@@ -2,12 +2,24 @@
 
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
+import type { UserRole } from "@/lib/auth/session";
 
-// Auth screens (login) render full-bleed, no sidebar chrome — matches the
-// design system's "minimal chrome, one clear action" pre-login look.
-const NO_SHELL_PREFIXES = ["/login"];
+// Auth screens (login) and the public shared-walkthrough page render
+// full-bleed, no sidebar chrome. /s/[token] specifically must never show the
+// authenticated Sidebar (sign-out button, Console link, etc.) — it's opened
+// by people who were never given a Vastos login at all.
+const NO_SHELL_PREFIXES = ["/login", "/s"];
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  role,
+}: {
+  children: React.ReactNode;
+  /** Passed down from the root layout (a Server Component) so this client
+   *  component doesn't need its own auth check just to gate the Console nav
+   *  link — see src/app/layout.tsx. */
+  role: UserRole | null;
+}) {
   const pathname = usePathname();
   if (NO_SHELL_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return <>{children}</>;
@@ -15,7 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      <Sidebar />
+      <Sidebar role={role} />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
     </div>
   );

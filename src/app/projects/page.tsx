@@ -5,6 +5,7 @@ import { useVasto, useHydrated } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { ProjectCard } from "@/components/project-card";
 import { NewProjectModal } from "@/components/new-project-modal";
+import { DeleteAllProjectsButton } from "@/components/delete-all-projects-button";
 import { Icon } from "@/components/ui/icon";
 
 export default function ProjectsPage() {
@@ -19,7 +20,10 @@ export default function ProjectsPage() {
           <h1 className="text-xl font-semibold tracking-tight">Projects</h1>
           <p className="text-sm text-muted">All your interior design projects in one place.</p>
         </div>
-        <Button icon="Plus" onClick={() => setModal(true)}>New Project</Button>
+        <div className="flex items-center gap-2">
+          {hydrated && <DeleteAllProjectsButton count={projects.length} />}
+          <Button icon="Plus" onClick={() => setModal(true)}>New Project</Button>
+        </div>
       </header>
 
       <div className="scrollbar-thin flex-1 overflow-y-auto px-8 py-6">

@@ -1,4 +1,5 @@
 import type { FloorPlan } from "@/lib/types";
+import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { cn } from "@/lib/utils";
 
 /** Compact SVG preview of a parsed floor plan. */
@@ -32,33 +33,39 @@ export function PlanThumb({
         strokeWidth={0.35}
         rx={0.4}
       />
-      {plan.rooms.map((r) => (
-        <g key={r.id}>
-          <rect
-            x={r.x + pad}
-            y={r.y + pad}
-            width={r.width}
-            height={r.height}
-            fill={r.color}
-            fillOpacity={0.16}
-            stroke={r.color}
-            strokeOpacity={0.55}
-            strokeWidth={0.22}
-          />
-          {showLabels && (
-            <text
-              x={r.x + pad + r.width / 2}
-              y={r.y + pad + r.height / 2}
-              fontSize={Math.min(1.6, r.width / 6)}
-              fill="var(--color-muted)"
-              textAnchor="middle"
-              dominantBaseline="middle"
-            >
-              {r.name}
-            </text>
-          )}
-        </g>
-      ))}
+      {plan.rooms.map((r) => {
+        // Cosmetic box sizing only — falls back to a placeholder box when a
+        // room's real dimensions are unknown so the preview doesn't collapse
+        // to a zero-size rect. Never shown as a claimed size (no text here).
+        const { width, height } = layoutSize(r);
+        return (
+          <g key={r.id}>
+            <rect
+              x={r.x + pad}
+              y={r.y + pad}
+              width={width}
+              height={height}
+              fill={r.color}
+              fillOpacity={0.16}
+              stroke={r.color}
+              strokeOpacity={0.55}
+              strokeWidth={0.22}
+            />
+            {showLabels && (
+              <text
+                x={r.x + pad + width / 2}
+                y={r.y + pad + height / 2}
+                fontSize={Math.min(1.6, width / 6)}
+                fill="var(--color-muted)"
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {r.name}
+              </text>
+            )}
+          </g>
+        );
+      })}
       {/* walls — drawn over the room fills so shared/structural walls read */}
       {plan.walls?.map((w) => (
         <line

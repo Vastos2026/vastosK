@@ -1,13 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { useParams, usePathname } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { useVasto, useHydrated } from "@/lib/store";
 import { PHASES } from "@/lib/nav";
 import { PROPERTY_TYPES } from "@/lib/data";
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
 import type { Phase } from "@/lib/types";
 
@@ -70,7 +72,12 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="mx-auto">
-          <PhaseStepper projectId={params.id} current={currentPhase} disabled={!project?.floorPlan} />
+          <PhaseStepper
+            projectId={params.id}
+            current={currentPhase}
+            disabled={!project?.floorPlan}
+            floorPlanRoomCount={project?.floorPlan?.rooms?.length ?? 0}
+          />
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -90,61 +97,96 @@ function PhaseStepper({
   projectId,
   current,
   disabled,
+  floorPlanRoomCount,
 }: {
   projectId: string;
   current: Phase;
   disabled?: boolean;
+  floorPlanRoomCount: number;
 }) {
+  const router = useRouter();
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const currentIdx = PHASES.findIndex((p) => p.id === current);
+  // Re-uploading once rooms exist wipes generated work downstream, so that
+  // one tab needs a confirmation step instead of a plain link.
+  const hasRoomsToLose = floorPlanRoomCount > 0;
 
   return (
-    <nav className="flex items-center gap-1 rounded-xl border border-border bg-surface p-1">
-      {PHASES.map((phase, i) => {
-        const active = phase.id === current;
-        const done = i < currentIdx;
-        // Upload is always reachable; later phases need a parsed plan.
-        const locked = disabled && phase.id !== "upload";
+    <>
+      <nav className="flex items-center gap-1 rounded-xl border border-border bg-surface p-1">
+        {PHASES.map((phase, i) => {
+          const active = phase.id === current;
+          const done = i < currentIdx;
+          // Upload is always reachable; later phases need a parsed plan.
+          const locked = disabled && phase.id !== "upload";
+          const needsConfirm = phase.id === "upload" && hasRoomsToLose;
 
-        const content = (
-          <span
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-              active
-                ? "bg-accent/15 text-accent"
-                : locked
-                  ? "text-faint"
-                  : "text-muted hover:bg-surface-2 hover:text-foreground",
-            )}
-          >
+          const content = (
             <span
               className={cn(
-                "grid size-5 place-items-center rounded-full text-[10px]",
+                "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
                 active
-                  ? "bg-accent text-accent-foreground"
-                  : done
-                    ? "bg-success/20 text-success"
-                    : "bg-surface-3 text-faint",
+                  ? "bg-accent/15 text-accent"
+                  : locked
+                    ? "text-faint"
+                    : "text-muted hover:bg-surface-2 hover:text-foreground",
               )}
             >
-              {done ? <Icon name="Check" className="size-3" /> : i + 1}
+              <span
+                className={cn(
+                  "grid size-5 place-items-center rounded-full text-[10px]",
+                  active
+                    ? "bg-accent text-accent-foreground"
+                    : done
+                      ? "bg-success/20 text-success"
+                      : "bg-surface-3 text-faint",
+                )}
+              >
+                {done ? <Icon name="Check" className="size-3" /> : i + 1}
+              </span>
+              <span className="hidden lg:inline">{phase.label}</span>
             </span>
-            <span className="hidden lg:inline">{phase.label}</span>
-          </span>
-        );
+          );
 
-        return (
-          <div key={phase.id} className="flex items-center">
-            {locked ? (
-              <span className="cursor-not-allowed">{content}</span>
-            ) : (
-              <Link href={`/projects/${projectId}/${phase.id}`}>{content}</Link>
-            )}
-            {i < PHASES.length - 1 && (
-              <Icon name="ChevronRight" className="size-3.5 text-faint" />
-            )}
-          </div>
-        );
-      })}
-    </nav>
+          return (
+            <div key={phase.id} className="flex items-center">
+              {locked ? (
+                <span className="cursor-not-allowed">{content}</span>
+              ) : needsConfirm ? (
+                <button type="button" onClick={() => setConfirmOpen(true)} className="cursor-pointer">
+                  {content}
+                </button>
+              ) : (
+                <Link href={`/projects/${projectId}/${phase.id}`}>{content}</Link>
+              )}
+              {i < PHASES.length - 1 && (
+                <Icon name="ChevronRight" className="size-3.5 text-faint" />
+              )}
+            </div>
+          );
+        })}
+      </nav>
+
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Upload a new plan?"
+        description="This replaces your current rooms, design, and generated images."
+      >
+        <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-4">
+          <Button variant="ghost" onClick={() => setConfirmOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              router.push(`/projects/${projectId}/upload`);
+              setConfirmOpen(false);
+            }}
+          >
+            Yes, upload new plan
+          </Button>
+        </div>
+      </Modal>
+    </>
   );
 }

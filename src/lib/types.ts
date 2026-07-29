@@ -19,15 +19,16 @@ export interface Room {
   name: string;
   /** semantic room type from Gemini (bedroom | kitchen | living | …) */
   type?: string;
-  /** width × height in feet */
-  width: number;
-  height: number;
   /**
-   * True when width and/or height weren't legible on the plan and fell back
-   * to DEFAULT_ROOM_SIZE_FT instead of a real reading (see extract-plan.ts's
-   * toRoom) — lets the UI flag the dimension as a guess, not an extraction.
+   * Width x height in feet, when known. Undefined (not a fabricated default)
+   * when Gemini couldn't read a printed dimension for this room and the user
+   * hasn't filled it in yet — see extract-plan.ts's toRoom. Every consumer
+   * that displays or sends this downstream must handle the missing case
+   * explicitly rather than inventing a number (a wrong size baked into a
+   * generated room image can't be un-rendered).
    */
-  dimensionsEstimated?: boolean;
+  width?: number;
+  height?: number;
   /** top-left position on the 2D plan grid, in feet */
   x: number;
   y: number;

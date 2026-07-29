@@ -75,6 +75,7 @@ export default function DesignPage() {
         subcategory,
         rooms: rooms.map((r) => ({
           name: r.name,
+          type: r.type,
           widthFt: r.width,
           heightFt: r.height,
           // One global note (not per-room) — the Design Planning Layer decides
@@ -111,7 +112,13 @@ export default function DesignPage() {
           universalInput,
           room: {
             name: room.name,
-            size: `${room.width} x ${room.height} ft`,
+            type: room.type,
+            // Omit size entirely when a dimension is still missing, rather
+            // than sending a literal "undefined x undefined ft" into the
+            // render prompt — see Room.width/height's doc comment.
+            ...(room.width !== undefined && room.height !== undefined
+              ? { size: `${room.width} x ${room.height} ft` }
+              : {}),
             additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
             openings: room.openings,
           },

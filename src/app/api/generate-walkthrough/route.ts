@@ -25,6 +25,8 @@ import { generateVideo } from "@/lib/ai/provider";
 import { ProviderError } from "@/lib/ai/errors";
 import { getObject, putObject } from "@/lib/pipeline/storage";
 import { concatVideos, ffmpegAvailable, trimVideo } from "@/lib/render/ffmpeg";
+import { recordGeneration } from "@/lib/supabase/generations";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,6 +53,14 @@ interface Body {
 }
 
 export async function POST(request: Request) {
+  // Video generation is the most expensive AI call in the app (one Veo call
+  // per room), so this gets the tightest cap of the AI-triggering routes.
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "generate-walkthrough", limit: 5, windowMs: 60_000 },
+    checkUsage: true,
+  });
+  if (guard instanceof Response) return guard;
+
   if (!ffmpegAvailable()) {
     return Response.json({ error: "Video assembly is unavailable on this server (ffmpeg missing)" }, { status: 500 });
   }
@@ -81,7 +91,7 @@ export async function POST(request: Request) {
         imageDataUri,
         ZOOM_PROMPT,
         { durationSeconds: VEO_REQUEST_SECONDS, aspectRatio: "16:9" },
-        { projectId },
+        { projectId, userId: guard.id },
       );
       const trimmed = await trimVideo(video.bytes, CLIP_SECONDS);
       clips.push(trimmed);
@@ -90,7 +100,9 @@ export async function POST(request: Request) {
     const joined = clips.length > 1 ? await concatVideos(clips) : clips[0];
     const key = `renders/${projectId}/${randomUUID()}.mp4`;
     await putObject(key, joined, "video/mp4");
-    return Response.json({ videoUrl: `/api/render?key=${encodeURIComponent(key)}`, key });
+    const videoUrl = `/api/render?key=${encodeURIComponent(key)}`;
+    void recordGeneration({ projectId, userId: guard.id, roomKey: null, type: "video", storageUrl: videoUrl });
+    return Response.json({ videoUrl, key });
   } catch (e) {
     if (e instanceof ProviderError) {
       const status = e.category === "ValidationError" ? 400 : 502;

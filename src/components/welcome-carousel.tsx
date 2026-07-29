@@ -3,9 +3,10 @@
 /**
  * Google Flow-style looping carousel: several columns of cards drifting
  * upward at different speeds, behind the welcome greeting. Renders real
- * interior/architecture reference photos (public/carousel/) — grayscale plus
- * a dark tint so they read as moody background texture, not a bright photo
- * grid competing with the "Hello" greeting in front of them.
+ * interior/architecture reference photos (public/carousel/) in their true
+ * color, dimmed and lightly desaturated with a dark + green tint so they
+ * read as moody background texture, not a bright photo grid competing
+ * with the "Hello" greeting in front of them.
  */
 
 const IMAGES = [
@@ -56,13 +57,14 @@ function Column({ seed, duration, reverse }: { seed: number; duration: number; r
             <img
               src={`/carousel/${file}`}
               alt=""
-              className="h-full w-full object-cover grayscale"
-              style={{ filter: "grayscale(1) brightness(0.55) contrast(1.05)" }}
+              className="h-full w-full object-cover"
+              style={{ filter: "brightness(0.72) saturate(0.85) contrast(1.05)" }}
             />
             {/* Dark + faint green tint, matching the theme's mild dark-green
-                glow so photos read as moody background texture, not a bright
-                photo grid competing with the greeting in front of them. */}
-            <div className="absolute inset-0 bg-gradient-to-br from-black/40 via-[#1f4d3a]/25 to-black/60" />
+                glow so the now-colorful photos still read as moody background
+                texture, not a bright photo grid competing with the greeting
+                in front of them. */}
+            <div className="absolute inset-0 bg-gradient-to-br from-black/35 via-[#1f4d3a]/20 to-black/55" />
           </div>
         ))}
       </div>

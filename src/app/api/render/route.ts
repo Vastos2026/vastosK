@@ -8,12 +8,21 @@
  *   GET /api/render?key=renders/...
  */
 
-import { getObject } from "@/lib/pipeline/storage";
+import { getObject, servedStorageResponse } from "@/lib/pipeline/storage";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  // Requires a valid session, but not yet per-asset ownership (this route
+  // doesn't check that the requesting user's project owns this key) — that
+  // needs the real projects/generations ownership wiring, out of scope here.
+  // No same-origin/rate-limit check: a GET with no state change, and images
+  // are legitimately requested via <img src> from any same-session tab.
+  const guard = await assertAllowed(request, { checkOrigin: false });
+  if (guard instanceof Response) return guard;
+
   const key = new URL(request.url).searchParams.get("key");
   if (!key) return Response.json({ error: "key required" }, { status: 400 });
   if (!key.startsWith("renders/")) {
@@ -22,17 +31,7 @@ export async function GET(request: Request) {
 
   try {
     const bytes = await getObject(key);
-    const contentType = key.endsWith(".mp4")
-      ? "video/mp4"
-      : key.endsWith(".jpg")
-        ? "image/jpeg"
-        : "image/png";
-    return new Response(new Uint8Array(bytes), {
-      headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=31536000, immutable",
-      },
-    });
+    return servedStorageResponse(bytes, key);
   } catch {
     return Response.json({ error: "Not found" }, { status: 404 });
   }

@@ -31,6 +31,7 @@ export default function UploadPage() {
   const [selected, setSelected] = useState<Selected | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unreadable, setUnreadable] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const onFiles = useCallback((files: FileList | null) => {
@@ -41,6 +42,7 @@ export default function UploadPage() {
     setSelected({ file, name: file.name, url, isImage });
     setError(null);
     setUnreadable(false);
+    setConfirmingReset(false);
     setStage("selected");
   }, []);
 
@@ -89,6 +91,7 @@ export default function UploadPage() {
     setSelected(null);
     setError(null);
     setUnreadable(false);
+    setConfirmingReset(false);
     setStage("idle");
   }, []);
 
@@ -188,9 +191,28 @@ export default function UploadPage() {
             )}
 
             <div className="mt-4 flex items-center justify-between gap-3">
-              <Button variant="ghost" icon="ArrowLeft" onClick={reset}>
-                Choose another
-              </Button>
+              {confirmingReset ? (
+                <div className="flex flex-1 items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+                  <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+                  <span className="flex-1">This will discard the current analysis.</span>
+                  <button
+                    onClick={reset}
+                    className="cursor-pointer font-semibold underline underline-offset-2 hover:opacity-80"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    onClick={() => setConfirmingReset(false)}
+                    className="cursor-pointer text-faint hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <Button variant="ghost" icon="ArrowLeft" onClick={() => setConfirmingReset(true)}>
+                  Choose another
+                </Button>
+              )}
               <Button icon="ScanLine" onClick={runDetection}>
                 Analyze floor plan
               </Button>

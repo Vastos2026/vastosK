@@ -3,36 +3,23 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Project } from "@/lib/types";
-import { PROPERTY_TYPES } from "@/lib/data";
 import { projectHref } from "@/lib/nav";
-import { timeAgo } from "@/lib/utils";
 import { useVasto } from "@/lib/store";
 import { StatusBadge } from "./ui/badge";
-import { PlanThumb } from "./plan-thumb";
+import { FloorPlanThumbOrEmpty } from "./floor-plan-thumb-or-empty";
+import { ProjectTypeMeta } from "./project-type-meta";
 import { Icon } from "./ui/icon";
 
 export function ProjectCard({ project }: { project: Project }) {
   const deleteProject = useVasto((s) => s.deleteProject);
   const [menu, setMenu] = useState(false);
-  const propType = PROPERTY_TYPES.find((p) => p.id === project.propertyType);
   const renderCount = project.roomCards.reduce((sum, c) => sum + c.generations.length, 0);
 
   return (
     <div className="group hover-lift relative animate-fade-up rounded-2xl border border-border bg-surface">
       <Link href={projectHref(project)} className="block">
         <div className="relative aspect-[16/10] overflow-hidden rounded-t-2xl border-b border-border bg-grid bg-bg">
-          {project.floorPlan ? (
-            <div className="absolute inset-0 p-5 transition-transform duration-300 group-hover:scale-[1.03]">
-              <PlanThumb plan={project.floorPlan} />
-            </div>
-          ) : (
-            <div className="absolute inset-0 grid place-items-center text-faint">
-              <div className="flex flex-col items-center gap-2">
-                <Icon name="FileUp" className="size-7" />
-                <span className="text-xs">No floor plan yet</span>
-              </div>
-            </div>
-          )}
+          <FloorPlanThumbOrEmpty plan={project.floorPlan} />
           <div className="absolute left-3 top-3">
             <StatusBadge status={project.status} />
           </div>
@@ -48,12 +35,7 @@ export function ProjectCard({ project }: { project: Project }) {
       <div className="flex items-center justify-between gap-2 p-4">
         <Link href={projectHref(project)} className="min-w-0 flex-1">
           <h3 className="truncate font-medium leading-tight">{project.name}</h3>
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted">
-            <Icon name={propType?.icon ?? "Box"} className="size-3.5" />
-            {propType?.label}
-            <span className="text-faint">·</span>
-            Updated {timeAgo(project.updatedAt)}
-          </p>
+          <ProjectTypeMeta project={project} />
         </Link>
 
         <div className="relative">

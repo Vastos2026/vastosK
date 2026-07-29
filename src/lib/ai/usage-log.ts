@@ -10,6 +10,8 @@ export interface UsageLogEntry {
   success: boolean;
   durationMs: number;
   errorCategory?: ErrorCategory;
+  /** Real USD cost of the call, when the provider reports one (currently only Runware's `includeCost`). */
+  estimatedCost?: number | null;
 }
 
 /** Best-effort write to ai_usage_logs — never throws, never blocks the caller. */
@@ -26,6 +28,7 @@ export async function logUsage(entry: UsageLogEntry): Promise<void> {
       success: entry.success,
       duration_ms: entry.durationMs,
       error_category: entry.errorCategory ?? null,
+      estimated_cost: entry.estimatedCost ?? null,
     });
   } catch (e) {
     console.warn("[ai/usage-log] insert failed (non-fatal):", (e as Error).message);

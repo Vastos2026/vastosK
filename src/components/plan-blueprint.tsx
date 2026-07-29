@@ -2,6 +2,7 @@
 
 import { useId } from "react";
 import type { Door, FloorPlan, PlacedItem, Room, Window } from "@/lib/types";
+import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { cn } from "@/lib/utils";
 
 /**
@@ -44,13 +45,19 @@ export function PlanBlueprint({
   const inset = t / 2;
   const center = { x: box.x + box.w / 2, y: box.y + box.h / 2 };
 
-  // Interior floor rectangle for a room (the carved-out space inside its walls).
-  const interior = (r: Room) => ({
-    x: r.x + inset,
-    y: r.y + inset,
-    w: Math.max(0.2, r.width - t),
-    h: Math.max(0.2, r.height - t),
-  });
+  // Interior floor rectangle for a room (the carved-out space inside its
+  // walls). Uses layoutSize's placeholder box for a room whose real
+  // dimensions are unknown — this is pure drawing geometry, never a claimed
+  // size (the dimension LABEL below checks the room's real width/height).
+  const interior = (r: Room) => {
+    const size = layoutSize(r);
+    return {
+      x: r.x + inset,
+      y: r.y + inset,
+      w: Math.max(0.2, size.width - t),
+      h: Math.max(0.2, size.height - t),
+    };
+  };
 
   const labelled = showLabels ? labelTargets(rooms) : [];
 
@@ -65,9 +72,10 @@ export function PlanBlueprint({
             lattice. Shared edges collapse to one partition automatically. */}
         <mask id={maskId} maskUnits="userSpaceOnUse" x={vbX} y={vbY} width={vbW} height={vbH}>
           <rect x={vbX} y={vbY} width={vbW} height={vbH} fill="black" />
-          {rooms.map((r) => (
-            <rect key={`m-${r.id}`} x={r.x} y={r.y} width={r.width} height={r.height} fill="white" />
-          ))}
+          {rooms.map((r) => {
+            const size = layoutSize(r);
+            return <rect key={`m-${r.id}`} x={r.x} y={r.y} width={size.width} height={size.height} fill="white" />;
+          })}
           {rooms.map((r) => {
             const i = interior(r);
             return <rect key={`mi-${r.id}`} x={i.x} y={i.y} width={i.w} height={i.h} fill="black" />;
@@ -183,7 +191,9 @@ export function PlanBlueprint({
                 textAnchor="middle"
                 dominantBaseline="middle"
               >
-                {round(r.width)}×{round(r.height)} ft
+                {r.width !== undefined && r.height !== undefined
+                  ? `${round(r.width)}×${round(r.height)} ft`
+                  : "Size not available"}
               </text>
             )}
           </g>
@@ -276,8 +286,9 @@ function footprint(plan: FloorPlan): { x: number; y: number; w: number; h: numbe
   const xs: number[] = [];
   const ys: number[] = [];
   for (const r of plan.rooms) {
-    xs.push(r.x, r.x + r.width);
-    ys.push(r.y, r.y + r.height);
+    const size = layoutSize(r);
+    xs.push(r.x, r.x + size.width);
+    ys.push(r.y, r.y + size.height);
   }
   for (const w of plan.walls ?? []) {
     xs.push(w.x1, w.x2);
@@ -297,14 +308,20 @@ function footprint(plan: FloorPlan): { x: number; y: number; w: number; h: numbe
  * two names on top of each other).
  */
 function labelTargets(rooms: Room[]): Room[] {
-  const sorted = [...rooms].sort((a, b) => b.width * b.height - a.width * a.height);
+  const sorted = [...rooms].sort((a, b) => {
+    const sa = layoutSize(a);
+    const sb = layoutSize(b);
+    return sb.width * sb.height - sa.width * sa.height;
+  });
   const kept: Room[] = [];
   for (const r of sorted) {
-    const cx = r.x + r.width / 2;
-    const cy = r.y + r.height / 2;
-    const covered = kept.some(
-      (k) => cx > k.x && cx < k.x + k.width && cy > k.y && cy < k.y + k.height,
-    );
+    const size = layoutSize(r);
+    const cx = r.x + size.width / 2;
+    const cy = r.y + size.height / 2;
+    const covered = kept.some((k) => {
+      const ks = layoutSize(k);
+      return cx > k.x && cx < k.x + ks.width && cy > k.y && cy < k.y + ks.height;
+    });
     if (!covered) kept.push(r);
   }
   return kept;

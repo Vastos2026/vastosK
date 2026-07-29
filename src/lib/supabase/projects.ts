@@ -47,10 +47,37 @@ export async function listProjectSnapshots(owner: string): Promise<Project[]> {
   return (data ?? []).map((r) => (r as { data: Project }).data).filter(Boolean);
 }
 
-/** Best-effort delete of one project snapshot. Never throws. */
-export async function deleteProjectSnapshot(appId: string): Promise<void> {
+/**
+ * Best-effort delete of one project snapshot, scoped to `owner` — without
+ * this check, any caller who knows/guesses an `app_id` could delete another
+ * user's snapshot (this table's writes go through the service-role key,
+ * which bypasses RLS entirely, so ownership MUST be checked here in code).
+ * Never throws.
+ */
+export async function deleteProjectSnapshot(appId: string, owner: string): Promise<void> {
   const db = supabaseAdmin();
   if (!db) return;
-  const { error } = await db.from(TABLE).delete().eq("app_id", appId);
+  const { error } = await db.from(TABLE).delete().eq("app_id", appId).eq("anon_owner", owner);
   if (error) console.warn("[projects] delete failed:", error.message);
+}
+
+/**
+ * Looks up a project snapshot by its public share token (`/s/[token]`) — the
+ * one deliberately-unauthenticated read path in the app, scoped to exactly
+ * the single row matching an unguessable random token (minted by
+ * /api/share-link). Uses `supabaseAdmin()` (service-role, bypasses RLS) since
+ * this is called with no session at all. Returns null on any miss/failure —
+ * callers render a "link isn't valid" state rather than treating this as an
+ * error.
+ */
+export async function getProjectSnapshotByShareToken(token: string): Promise<{ data: Project } | null> {
+  const db = supabaseAdmin();
+  if (!db) return null;
+  const { data, error } = await db
+    .from(TABLE)
+    .select("data")
+    .eq("share_token", token)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data as { data: Project };
 }

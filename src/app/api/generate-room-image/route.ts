@@ -20,10 +20,17 @@ import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/
 import { generateImage } from "@/lib/ai/provider";
 import { ProviderError } from "@/lib/ai/errors";
 import { putObject } from "@/lib/pipeline/storage";
+import { recordGeneration } from "@/lib/supabase/generations";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+// Matches build-universal-input.ts's NOTES_MAX_LEN for the global Additional
+// Requirements field — this is the per-generation "Generate More" note, a
+// separate field that isn't validated by buildUniversalInput.
+const NOTES_MAX_LEN = 500;
 
 interface Body {
   projectId?: string;
@@ -33,6 +40,13 @@ interface Body {
 }
 
 export async function POST(request: Request) {
+  // Image generation is one paid provider call per request.
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "generate-room-image", limit: 8, windowMs: 60_000 },
+    checkUsage: true,
+  });
+  if (guard instanceof Response) return guard;
+
   let body: Body;
   try {
     body = await request.json();
@@ -47,14 +61,23 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  if (room.additional_notes && room.additional_notes.length > NOTES_MAX_LEN) {
+    const err = new ProviderError(
+      "ValidationError",
+      `additional notes exceed ${NOTES_MAX_LEN} characters`,
+    );
+    return Response.json({ error: err.message, category: err.category }, { status: 400 });
+  }
 
   try {
     const prompt = await buildRoomPrompt(universalInput, room, designSpec);
-    const image = await generateImage(prompt, { projectId });
+    const image = await generateImage(prompt, { projectId, userId: guard.id });
     const ext = image.contentType === "image/jpeg" ? "jpg" : "png";
     const key = `renders/${projectId}/${randomUUID()}.${ext}`;
     await putObject(key, image.bytes, image.contentType);
-    return Response.json({ imageUrl: `/api/render?key=${encodeURIComponent(key)}`, key, prompt });
+    const imageUrl = `/api/render?key=${encodeURIComponent(key)}`;
+    void recordGeneration({ projectId, userId: guard.id, roomKey: room.name, type: "image", storageUrl: imageUrl });
+    return Response.json({ imageUrl, key, prompt });
   } catch (e) {
     if (e instanceof ProviderError) {
       const status = e.category === "ValidationError" ? 400 : 502;

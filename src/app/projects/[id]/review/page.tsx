@@ -7,9 +7,11 @@ import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { fromFeet, ftInToFeet, feetToFtIn, toFeet } from "@/lib/units";
 import { UNITS } from "@/lib/data";
-import { ROOM_PALETTE, uid } from "@/lib/utils";
+import { ROOM_PALETTE, uid, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { Modal } from "@/components/ui/modal";
+import { Badge } from "@/components/ui/badge";
 import type { Room, Unit } from "@/lib/types";
 
 function openingCounts(room: Room) {
@@ -33,6 +35,7 @@ export default function ReviewPage() {
   const patchProject = useVasto((s) => s.patchProject);
   const [addingRoom, setAddingRoom] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [planModalOpen, setPlanModalOpen] = useState(false);
 
   if (!project) return null;
 
@@ -42,6 +45,12 @@ export default function ReviewPage() {
   const category = categoryForPropertyType(project.propertyType);
   const roomTypes = getProjectTypeConfig(category)?.roomTypes ?? [];
   const referenceImage = plan?.previewUrl;
+  // Only sum rooms with both dimensions known — a room still missing a
+  // dimension contributes 0 rather than turning the whole total into NaN.
+  const totalSqFt = rooms.reduce(
+    (sum, r) => sum + (r.width !== undefined && r.height !== undefined ? r.width * r.height : 0),
+    0,
+  );
 
   const goToDesign = () => router.push(`/projects/${id}/design`);
 
@@ -53,28 +62,82 @@ export default function ReviewPage() {
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold tracking-tight">Room Confirmation</h2>
-          <p className="mt-1 text-sm text-muted">
-            {rooms.length > 0
-              ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} found. Review and correct anything below.`
-              : "No rooms yet. Add your first one below."}
-          </p>
+        <div className="mb-6 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">Room Confirmation</h2>
+            <p className="mt-1 text-sm text-muted">
+              {rooms.length > 0
+                ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} found. Review and correct anything below.`
+                : "No rooms yet. Add your first one below."}
+            </p>
+            {rooms.length > 0 && (
+              <p className="mt-1 text-xs text-faint">
+                Only the rooms confirmed here will get an AI-generated image later, so remove anything you don&apos;t need.
+              </p>
+            )}
+          </div>
+          {rooms.length > 0 && (
+            <Badge icon="Ruler" className="hidden shrink-0 sm:inline-flex">
+              {Math.round(totalSqFt).toLocaleString()} sq ft total
+            </Badge>
+          )}
         </div>
 
         {referenceImage && (
           <div className="mb-6 flex items-center gap-3 rounded-2xl border border-border bg-surface p-3">
-            <div className="h-16 w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-grid bg-bg">
+            <button
+              type="button"
+              onClick={() => setPlanModalOpen(true)}
+              aria-label="View floor plan"
+              className="group relative h-16 w-24 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-grid bg-bg transition-colors hover:border-accent/50"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={referenceImage} alt="Uploaded floor plan" className="h-full w-full object-contain" />
+              <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
+                <Icon name="Maximize2" className="size-4 text-white" />
+              </span>
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Uploaded floor plan</p>
+              <p className="text-xs text-muted">Reference only, not used for generation.</p>
             </div>
-            <p className="text-xs text-muted">Your uploaded plan, for reference only.</p>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="Maximize2"
+              className="shrink-0"
+              aria-label="View floor plan full size"
+              onClick={() => setPlanModalOpen(true)}
+            >
+              <span className="hidden sm:inline">View full size</span>
+            </Button>
           </div>
         )}
+
+        <Modal
+          open={planModalOpen}
+          onClose={() => setPlanModalOpen(false)}
+          title="Uploaded Floor Plan"
+          className="max-w-3xl"
+        >
+          <div className="p-6 pt-4">
+            {referenceImage && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={referenceImage}
+                alt="Uploaded floor plan"
+                className="mx-auto max-h-[80vh] w-full object-contain"
+              />
+            )}
+          </div>
+        </Modal>
 
         <div className="space-y-2.5">
           {rooms.map((room, i) => {
             const { doors, windows } = openingCounts(room);
+            // Derived live, not a stored flag — so filling in a dimension
+            // below clears the warning immediately instead of it going stale.
+            const dimensionsMissing = room.width === undefined || room.height === undefined;
             return (
               <div
                 key={room.id}
@@ -89,10 +152,10 @@ export default function ReviewPage() {
                     className="input min-w-0 flex-1 font-medium"
                     aria-label={`${room.name || "Room"} name`}
                   />
-                  {room.dimensionsEstimated && (
+                  {dimensionsMissing && (
                     <span
                       className="inline-flex shrink-0 items-center text-warning"
-                      title="Dimensions weren't printed on the plan — estimated as a default 10 x 10 ft. Please verify."
+                      title="Dimensions weren't given for this room, so its size in the generated image may be inaccurate."
                     >
                       <Icon name="CircleAlert" className="size-3.5" />
                     </span>
@@ -106,42 +169,43 @@ export default function ReviewPage() {
                   />
                 </div>
 
-                <div className="mt-2.5 flex flex-wrap items-center gap-2.5 pl-6">
-                  <select
+                <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-2 pl-6">
+                  <RoomTypeField
                     value={room.type ?? ""}
-                    onChange={(e) => updateRoom(id, room.id, { type: e.target.value || undefined })}
-                    className="input w-40 shrink-0 cursor-pointer"
-                    aria-label={`${room.name || "Room"} type`}
-                  >
-                    <option value="">Unset type</option>
-                    {roomTypes.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-
-                  <DimensionInline
-                    label="W"
-                    feet={room.width}
-                    unit={unit}
-                    onChange={(v) => resizeRoom(id, room.id, { width: v })}
-                  />
-                  <DimensionInline
-                    label="H"
-                    feet={room.height}
-                    unit={unit}
-                    onChange={(v) => resizeRoom(id, room.id, { height: v })}
+                    onChange={(v) => updateRoom(id, room.id, { type: v || undefined })}
+                    roomTypes={roomTypes}
+                    emptyOptionLabel="Unset type"
+                    className="input w-40 shrink-0"
+                    ariaLabel={`${room.name || "Room"} type`}
                   />
 
-                  <OpeningCountField
-                    label="Doors"
-                    value={doors}
-                    onChange={(v) => setOpeningCount(id, room.id, "door", v)}
-                  />
-                  <OpeningCountField
-                    label="Windows"
-                    value={windows}
-                    onChange={(v) => setOpeningCount(id, room.id, "window", v)}
-                  />
+                  <div className="flex items-center gap-2.5">
+                    <DimensionInline
+                      label="W"
+                      feet={room.width}
+                      unit={unit}
+                      onChange={(v) => resizeRoom(id, room.id, { width: v })}
+                    />
+                    <DimensionInline
+                      label="H"
+                      feet={room.height}
+                      unit={unit}
+                      onChange={(v) => resizeRoom(id, room.id, { height: v })}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2.5 sm:ml-auto sm:border-l sm:border-border sm:pl-3">
+                    <OpeningCountField
+                      label="Doors"
+                      value={doors}
+                      onChange={(v) => setOpeningCount(id, room.id, "door", v)}
+                    />
+                    <OpeningCountField
+                      label="Windows"
+                      value={windows}
+                      onChange={(v) => setOpeningCount(id, room.id, "window", v)}
+                    />
+                  </div>
                 </div>
 
                 {pendingDeleteId === room.id && (
@@ -282,12 +346,13 @@ function AddRoomForm({
           placeholder="Room name"
           className="input min-w-0 flex-1"
         />
-        <select value={type} onChange={(e) => setType(e.target.value)} className="input w-36 shrink-0 cursor-pointer">
-          <option value="">Type</option>
-          {roomTypes.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+        <RoomTypeField
+          value={type}
+          onChange={setType}
+          roomTypes={roomTypes}
+          emptyOptionLabel="Type"
+          className="input w-36 shrink-0"
+        />
       </div>
       <div className="flex items-center gap-2">
         <span className="flex flex-1 items-center gap-1.5 text-xs text-muted">
@@ -327,6 +392,53 @@ function AddRoomForm({
   );
 }
 
+/**
+ * Room type field — a `<select>` constrained to the project category's fixed
+ * room-type list, or a free-text `<input>` when the category has none (e.g.
+ * Custom). Was hand-duplicated at both call sites (the room row, the Add
+ * Room form) with only the width/placeholder/aria-label differing.
+ */
+function RoomTypeField({
+  value,
+  onChange,
+  roomTypes,
+  emptyOptionLabel,
+  className,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  roomTypes: string[];
+  emptyOptionLabel: string;
+  className: string;
+  ariaLabel?: string;
+}) {
+  if (roomTypes.length > 0) {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(className, "cursor-pointer")}
+        aria-label={ariaLabel}
+      >
+        <option value="">{emptyOptionLabel}</option>
+        {roomTypes.map((t) => (
+          <option key={t} value={t}>{t}</option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="Room type"
+      className={className}
+      aria-label={ariaLabel}
+    />
+  );
+}
+
 function UnitSelect({ value, onChange }: { value: Unit; onChange: (u: Unit) => void }) {
   return (
     <label className="flex items-center gap-2 text-xs text-muted">
@@ -352,7 +464,8 @@ function DimensionInline({
   onChange,
 }: {
   label: string;
-  feet: number;
+  /** undefined when this dimension wasn't given (not printed on the plan, not filled in yet) — renders as a blank input, never a fake "10". */
+  feet: number | undefined;
   unit: Unit;
   onChange: (feet: number) => void;
 }) {
@@ -363,8 +476,9 @@ function DimensionInline({
         {label}
         <input
           type="number"
-          value={ft}
-          onChange={(e) => onChange(ftInToFeet(Number(e.target.value) || 0, inches))}
+          value={ft ?? ""}
+          placeholder="—"
+          onChange={(e) => onChange(ftInToFeet(Number(e.target.value) || 0, inches ?? 0))}
           className="input w-14"
           aria-label={`${label} feet`}
         />
@@ -373,8 +487,9 @@ function DimensionInline({
           type="number"
           min={0}
           max={11}
-          value={inches}
-          onChange={(e) => onChange(ftInToFeet(ft, Number(e.target.value) || 0))}
+          value={inches ?? ""}
+          placeholder="—"
+          onChange={(e) => onChange(ftInToFeet(ft ?? 0, Number(e.target.value) || 0))}
           className="input w-12"
           aria-label={`${label} inches`}
         />
@@ -387,7 +502,8 @@ function DimensionInline({
       {label}
       <input
         type="number"
-        value={fromFeet(feet, unit)}
+        value={fromFeet(feet, unit) ?? ""}
+        placeholder="—"
         onChange={(e) => onChange(toFeet(Number(e.target.value) || 0, unit))}
         className="input w-16"
         aria-label={label}

@@ -12,7 +12,12 @@ import { NextResponse, type NextRequest } from "next/server";
  * and API route. Never rely on this file alone — see Next's own auth guide.
  */
 
-const PUBLIC_PREFIXES = ["/login"];
+// /s/[token] (the shared-walkthrough page) and /api/s/[token]/asset (the
+// bytes it renders) are deliberately public — see those routes' own
+// comments. Without listing both here, this optimistic check would redirect
+// an unauthenticated visitor to /login before either one ever ran, which is
+// exactly the audience "Get shareable link" is meant to reach.
+const PUBLIC_PREFIXES = ["/login", "/s", "/api/s"];
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -47,9 +52,13 @@ export default async function proxy(request: NextRequest) {
     loginUrl.searchParams.set("next", pathname);
     return NextResponse.redirect(loginUrl);
   }
-  if (isAuthed && pathname === "/login") {
-    return NextResponse.redirect(new URL("/", request.url));
-  }
+
+  // Redirecting an already-authed session away from /login is deliberately
+  // NOT done here: this check is JWT-only (no profile lookup), so it can
+  // disagree with the real check in `getCurrentUser` (e.g. valid session, no
+  // matching `profiles` row) — bouncing on that disagreement would loop
+  // forever between "/" and "/login". The login page itself does this
+  // redirect using the same real check every protected route relies on.
 
   return response;
 }

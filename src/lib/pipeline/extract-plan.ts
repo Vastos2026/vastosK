@@ -10,11 +10,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { extractFloorPlan, type RawExtractedRoom } from "@/lib/ai/provider";
+import { extractFloorPlan, type CallContext, type RawExtractedRoom } from "@/lib/ai/provider";
 import { ROOM_PALETTE } from "@/lib/utils";
 import type { FloorPlan, Room } from "@/lib/types";
 import type { OpeningSide, RoomOpening } from "./assign-openings";
-import { DEFAULT_ROOM_SIZE_FT, emptyPlan } from "./empty-plan";
+import { DEFAULT_ROOM_SIZE_FT, emptyPlan, layoutSize } from "./empty-plan";
 
 export interface ExtractPlanInput {
   bytes: Buffer;
@@ -22,6 +22,7 @@ export interface ExtractPlanInput {
   fileName: string;
   /** the active project category's room-type list, e.g. from getProjectTypeConfig(category).roomTypes */
   roomTypeHints: string[];
+  ctx?: CallContext;
 }
 
 export interface ExtractPlanResult {
@@ -36,7 +37,7 @@ const GRID_GAP_FT = 2;
 const GRID_COLS = 4;
 
 export async function runPlanExtraction(input: ExtractPlanInput): Promise<ExtractPlanResult> {
-  const raw = await extractFloorPlan(input.bytes, input.mimeType, input.roomTypeHints);
+  const raw = await extractFloorPlan(input.bytes, input.mimeType, input.roomTypeHints, input.ctx);
 
   if (!raw.readable || raw.rooms.length === 0) {
     return {
@@ -47,8 +48,8 @@ export async function runPlanExtraction(input: ExtractPlanInput): Promise<Extrac
   }
 
   const rooms = packRoomsGrid(raw.rooms.map((r, i) => toRoom(r, i)));
-  const planWidth = Math.max(...rooms.map((r) => r.x + r.width), DEFAULT_ROOM_SIZE_FT);
-  const planHeight = Math.max(...rooms.map((r) => r.y + r.height), DEFAULT_ROOM_SIZE_FT);
+  const planWidth = Math.max(...rooms.map((r) => r.x + layoutSize(r).width), DEFAULT_ROOM_SIZE_FT);
+  const planHeight = Math.max(...rooms.map((r) => r.y + layoutSize(r).height), DEFAULT_ROOM_SIZE_FT);
 
   const plan: FloorPlan = {
     fileName: input.fileName,
@@ -67,19 +68,21 @@ export async function runPlanExtraction(input: ExtractPlanInput): Promise<Extrac
 }
 
 function toRoom(r: RawExtractedRoom, index: number): Room {
-  const width = r.widthFt ?? DEFAULT_ROOM_SIZE_FT;
-  const height = r.heightFt ?? DEFAULT_ROOM_SIZE_FT;
+  // No fallback here on purpose — a room whose dimensions weren't legible on
+  // the plan stays genuinely undefined rather than getting a fabricated
+  // number nothing downstream can tell apart from a real reading (the old
+  // DEFAULT_ROOM_SIZE_FT fallback did exactly that). Room Confirmation and
+  // the AI prompting layer are the ones that decide how to show/handle that.
   return {
     id: randomUUID(),
     name: r.name,
     type: r.type,
-    width,
-    height,
+    width: r.widthFt,
+    height: r.heightFt,
     x: 0,
     y: 0,
     color: ROOM_PALETTE[index % ROOM_PALETTE.length],
     openings: r.openings.map((o) => toRoomOpening(o)),
-    dimensionsEstimated: r.widthFt === undefined || r.heightFt === undefined,
   };
 }
 
@@ -108,8 +111,9 @@ function packRoomsGrid(rooms: Room[]): Room[] {
       rowHeight = 0;
     }
     const placed = { ...room, x: cursorX, y: cursorY };
-    cursorX += room.width + GRID_GAP_FT;
-    rowHeight = Math.max(rowHeight, room.height);
+    const size = layoutSize(room);
+    cursorX += size.width + GRID_GAP_FT;
+    rowHeight = Math.max(rowHeight, size.height);
     return placed;
   });
 }

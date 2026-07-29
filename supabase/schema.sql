@@ -94,6 +94,13 @@ create table if not exists projects (
   manifest      jsonb not null default '{}'::jsonb,
   style_id      text,                          -- references a style preset (app-side)
   thumbnail_url text,
+  -- Stable, unguessable link for a finished walkthrough (revamp Workstream 11)
+  -- distinct from any signed/expiring URL scheme used elsewhere — this one is
+  -- meant to be reshared by the builder with their client over time, so it's
+  -- long-lived rather than short-lived. Generated lazily (null until the first
+  -- "Get shareable link" click) via a random token, never derived from a
+  -- guessable value like the project id.
+  share_token   text unique,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -101,6 +108,8 @@ create index if not exists projects_owner_idx on projects (owner_id, updated_at 
 
 -- Bring an already-created projects table up to date (no-ops if fresh).
 alter table projects add column if not exists manifest jsonb not null default '{}'::jsonb;
+alter table projects add column if not exists share_token text;
+create unique index if not exists projects_share_token_idx on projects (share_token) where share_token is not null;
 alter table projects alter column status set default 'created';
 
 drop trigger if exists projects_updated_at on projects;
@@ -396,10 +405,28 @@ create table if not exists profiles (
   role             user_role not null default 'user',
   status           user_status not null default 'active',
   trial_ends_at    timestamptz,
+  -- Billing (admin-managed, new): the admin console's Users tab sets these two
+  -- fields directly rather than computing a recurring date from an interval +
+  -- anchor — simpler and avoids month-length/timezone edge cases. The client's
+  -- Profile page just reads next_billing_date back and displays it; nothing
+  -- in the app auto-advances it, an admin updates it each renewal.
+  billing_cycle      text,          -- e.g. 'Monthly' | 'Quarterly' | 'Yearly' — free label, not enforced
+  next_billing_date  timestamptz,   -- when the current subscription period ends
+  -- Usage cap (admin-managed, new): total USD this user may spend on AI
+  -- generation within the current billing period (billing_cycle +
+  -- next_billing_date define the period window). Null = unlimited. Checked
+  -- against the sum of ai_usage_logs.estimated_cost for the period so far —
+  -- see src/lib/api-guard.ts.
+  usage_limit_usd  numeric,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
 create index if not exists profiles_role_idx on profiles (role);
+
+-- Bring an already-created profiles table up to date (no-ops if fresh).
+alter table profiles add column if not exists billing_cycle text;
+alter table profiles add column if not exists next_billing_date timestamptz;
+alter table profiles add column if not exists usage_limit_usd numeric;
 
 -- Drop the admin-tier assignment field from the earlier 3-role design.
 -- No-op if this database never had it (fresh installs never create it).
@@ -442,36 +469,88 @@ drop policy if exists "own profile update" on profiles;
 create policy "own profile update" on profiles
   for update using (id = auth.uid()) with check (id = auth.uid());
 
+-- The RLS policy above is ROW-scoped only ("you may update your own row") —
+-- Postgres RLS can't restrict which COLUMNS a policy allows, so on its own
+-- it lets a signed-in user set role='master' (or unsuspend themselves, or
+-- grant themselves a billing plan) on their OWN row via a direct Supabase
+-- REST call, completely bypassing this app's requireRole("master") checks
+-- (found in a 2026-07-27 code review). This trigger closes that: any update
+-- NOT made by the service role (i.e. not `supabaseAdmin()`, which is the
+-- only client that ever legitimately changes these fields — see
+-- src/app/console/actions.ts) silently reverts the privileged columns back
+-- to their prior value, leaving harmless self-service fields (display_name)
+-- untouched.
+create or replace function protect_privileged_profile_columns()
+returns trigger language plpgsql as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    new.role := old.role;
+    new.status := old.status;
+    new.trial_ends_at := old.trial_ends_at;
+    new.billing_cycle := old.billing_cycle;
+    new.next_billing_date := old.next_billing_date;
+    new.usage_limit_usd := old.usage_limit_usd;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_protect_privileged_columns on profiles;
+create trigger profiles_protect_privileged_columns before update on profiles
+  for each row execute function protect_privileged_profile_columns();
+
 -- Bootstrapping the first account: create a user in the Supabase dashboard
 -- (Authentication → Users → Add user), then promote it once via SQL editor:
 --   update profiles set role = 'master' where id = '<the new user's uuid>';
 
 -- ============================================================================
--- project_snapshots — PRE-AUTH persistence bridge.
--- The app is local-first (zustand) and auth isn't wired yet, so the normalized
--- tables above (which require auth.users) can't be written to. This table mirrors
--- the whole client Project as JSONB, scoped by an anonymous device id, so projects
--- survive restarts and sync across tabs/devices. Writes go through the server
--- (service-role key, bypasses RLS); migrate into the normalized tables once auth
--- lands.
+-- project_snapshots — local-first persistence bridge (still not the
+-- normalized `projects` table above — the frontend isn't rebuilt onto that
+-- yet). Mirrors the whole client Project as JSONB so projects survive
+-- restarts and sync across tabs/devices. Writes go through the server
+-- (service-role key, bypasses RLS) via /api/projects, which now (2026-07-27)
+-- requires auth and checks ownership in code — see that route's comment.
+--
+-- `anon_owner` originally held a random per-browser localStorage id from
+-- before real auth existed; it now holds the real Supabase Auth user id
+-- (`api/projects/route.ts` writes `assertAllowed`'s `guard.id` here). Rows
+-- written under the old per-browser scheme won't match any real user id and
+-- are effectively orphaned — acceptable during early testing, not migrated.
 -- ============================================================================
 create table if not exists project_snapshots (
   app_id      text primary key,                 -- the app's "proj_…" id
-  anon_owner  text not null,                     -- localStorage device id (pre-auth)
+  anon_owner  text not null,                     -- real Supabase Auth user id (uuid, stored as text)
   name        text,
   status      text,
   data        jsonb not null,                    -- full Project (floorPlan, items, renders)
+  -- Public share token (new): lets /s/[token] resolve straight to this row's
+  -- `data` (which already holds the walkthrough video key + approved room
+  -- image keys) without needing the mostly-empty `projects` table wired up
+  -- first. Minted by /api/share-link, read by /s/[token]'s server component
+  -- via supabaseAdmin() (bypasses RLS — this is the one place a totally
+  -- unauthenticated caller is allowed to read a slice of this data, scoped
+  -- to exactly the one row matching an unguessable token).
+  share_token text unique,
   updated_at  timestamptz not null default now()
 );
 create index if not exists project_snapshots_owner_idx on project_snapshots (anon_owner, updated_at desc);
+alter table project_snapshots add column if not exists share_token text;
+create unique index if not exists project_snapshots_share_token_idx on project_snapshots (share_token) where share_token is not null;
 
 drop trigger if exists project_snapshots_updated_at on project_snapshots;
 create trigger project_snapshots_updated_at before update on project_snapshots
   for each row execute function set_updated_at();
 
--- Pre-auth access: allow anon SELECT so the browser can hydrate + subscribe via
--- Realtime; writes happen server-side with the service role. NOTE: this exposes
--- snapshots to any anon client — replace with owner-scoped RLS once auth is added.
+-- Anon SELECT stays open so the browser's Realtime subscription can work:
+-- `src/lib/supabase/browser.ts`'s client is a bare anon client with no
+-- session/cookies, so `auth.uid()` is never available to scope this policy
+-- by user identity — writes are the actual security boundary (server-side,
+-- ownership-checked, see above), reachable only server-side. This IS a real
+-- residual gap: a client that talks to Supabase's Realtime API directly
+-- (bypassing this app's own JS) could read any user's project data. Closing
+-- it fully needs `browser.ts` switched to a cookie-aware client
+-- (`@supabase/ssr`'s `createBrowserClient`) so this policy can require
+-- `anon_owner = auth.uid()::text` — flagged, not done in this pass.
 alter table project_snapshots enable row level security;
 drop policy if exists "anon read snapshots" on project_snapshots;
 create policy "anon read snapshots" on project_snapshots for select using (true);
@@ -517,7 +596,11 @@ alter table render_jobs enable row level security;
 create table if not exists ai_usage_logs (
   id                     uuid primary key default gen_random_uuid(),
   user_id                uuid references auth.users (id) on delete set null,
-  project_id             uuid references projects (id) on delete set null,
+  -- text, not uuid+FK: every real caller passes the local-first string id
+  -- ("proj_...", not a UUID) since most projects have no row in `projects`
+  -- yet — a uuid-typed FK column could never be satisfied, so every insert
+  -- with a project id silently failed (found + fixed 2026-07-27).
+  project_id             text,
   feature                text not null,   -- 'ocr' | 'semantic' | 'image' | 'edit' | 'video'
   provider               text not null default 'google',
   model                  text,
@@ -535,6 +618,20 @@ create table if not exists ai_usage_logs (
 );
 create index if not exists ai_usage_logs_user_idx on ai_usage_logs (user_id, created_at desc);
 create index if not exists ai_usage_logs_project_idx on ai_usage_logs (project_id, created_at desc);
+
+-- Migration for a database created before this fix: project_id was
+-- uuid+FK-to-projects, which no real insert could ever satisfy. No-op on a
+-- fresh database, where the `create table` above already has the right type.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_name = 'ai_usage_logs' and column_name = 'project_id' and data_type = 'uuid'
+  ) then
+    alter table ai_usage_logs drop constraint if exists ai_usage_logs_project_id_fkey;
+    alter table ai_usage_logs alter column project_id type text using project_id::text;
+  end if;
+end $$;
 
 alter table ai_usage_logs enable row level security;
 drop policy if exists "own ai_usage_logs" on ai_usage_logs;
@@ -585,15 +682,80 @@ from (values
   ('Residential', '{"persona":"Think like an experienced interior designer creating a family home: prioritise comfort, warmth and everyday liveability alongside the chosen style."}'),
   ('Apartment',   '{"persona":"Think like an interior designer working within an apartment''s real space constraints: prioritise efficient layouts and multi-purpose furniture while still honouring the chosen style."}'),
   ('Commercial',  '{"persona":"Think like a commercial interior designer working on an office or workspace: prioritise productivity, circulation and a professional client-facing impression alongside the chosen style."}'),
-  ('Custom',      '{"persona":"Think like a specialist interior designer for this exact named business type (e.g. a clinic, restaurant, retail store, temple, or any other category the user named): prioritise the functional, safety and customer-experience needs specific to that business alongside the chosen style."}')
+  ('Custom',      '{"persona":"Think like a specialist interior designer. The project brief below names the exact business type in its project.subcategory field (for example a dental clinic, a restaurant, a retail store, a temple, or any other business the client named). Treat that exact named type as your primary design driver, not a generic interior, and prioritise the functional, safety and customer-experience needs specific to that named business alongside the chosen style."}')
 ) as c(category, persona)
 where not exists (select 1 from prompt_templates where type = 'planning' and category = c.category);
+
+-- The insert above is a no-op once a 'planning'/'Custom' row already exists (e.g. on a
+-- database seeded before this wording change), so re-running this file wouldn't update
+-- an already-applied deployment. Directly update the published row's body to bring
+-- existing installs in line with the current Custom persona wording (keep this in sync
+-- with DEFAULT_PLANNING_PERSONA.Custom in src/lib/ai/prompting/templates.ts).
+update prompt_templates
+set body = '{"persona":"Think like a specialist interior designer. The project brief below names the exact business type in its project.subcategory field (for example a dental clinic, a restaurant, a retail store, a temple, or any other business the client named). Treat that exact named type as your primary design driver, not a generic interior, and prioritise the functional, safety and customer-experience needs specific to that named business alongside the chosen style."}'::jsonb
+where type = 'planning' and category = 'Custom' and published = true;
 
 insert into prompt_templates (type, category, version, body, published)
 select 'builder', null, 1,
   '{"intro":"Generate one photorealistic interior photograph of the following room.","cameraPrefix":"Camera guidance:","negativePrefix":"Do not include:"}'::jsonb,
   true
 where not exists (select 1 from prompt_templates where type = 'builder');
+
+-- ============================================================================
+-- generations — version-history table (Workstream 11). Every "Generate",
+-- "Generate more", lasso edit, and walkthrough video call inserts a new row
+-- here rather than overwriting one — distinct from `ai_usage_logs` above,
+-- which holds cost/analytics data an admin aggregates; this table holds the
+-- product-facing output artifacts a user browses/restores (same underlying
+-- events, different consumers). Written best-effort, server-side, via the
+-- service role — a write failure here must never fail the generation call
+-- itself, same "best-effort" contract as ai_usage_logs.
+-- ============================================================================
+create table if not exists generations (
+  id                      uuid primary key default gen_random_uuid(),
+  -- text, not uuid+FK to `projects`: every real caller passes the
+  -- local-first string id ("proj_...", not a UUID), which a uuid-typed FK
+  -- could never satisfy — every insert with a project id silently failed
+  -- (found + fixed 2026-07-27). RLS below is scoped by user_id instead of
+  -- the (no-longer-meaningful) projects-ownership join this used to use.
+  project_id              text not null,
+  user_id                 uuid references auth.users (id) on delete set null,
+  room_key                text,            -- room id/name, or null for a project-level (walkthrough) generation
+  type                    text not null,   -- 'image' | 'edit' | 'video'
+  storage_url             text not null,
+  pipeline_version        text,
+  system_prompt_version   text,
+  planning_prompt_version text,
+  prompt_builder_version  text,
+  design_spec_version     text,
+  model_used              text,
+  created_at              timestamptz not null default now()
+);
+create index if not exists generations_project_idx on generations (project_id, created_at desc);
+
+-- Migration for a database created before this fix. No-op on a fresh
+-- database, where the `create table` above already has the right shape.
+-- MUST run before the `user_id` index below — an existing table's
+-- `create table if not exists` above is a no-op, so `user_id` doesn't exist
+-- yet until this `add column` runs.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_name = 'generations' and column_name = 'project_id' and data_type = 'uuid'
+  ) then
+    alter table generations drop constraint if exists generations_project_id_fkey;
+    alter table generations alter column project_id type text using project_id::text;
+  end if;
+end $$;
+alter table generations add column if not exists user_id uuid references auth.users (id) on delete set null;
+
+create index if not exists generations_user_idx on generations (user_id, created_at desc);
+
+alter table generations enable row level security;
+drop policy if exists "own generations" on generations;
+create policy "own generations" on generations
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 -- ============================================================================
 -- feature_flags — lightweight on/off toggles (Workstream 7), for anything

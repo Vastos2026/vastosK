@@ -2,13 +2,17 @@
 
 /**
  * Bridges the local-first zustand store to Supabase (`/api/projects`):
- *   - on mount, hydrates projects saved under this browser's anonymous owner id;
+ *   - on mount, hydrates projects belonging to the signed-in user;
  *   - thereafter mirrors every project change up (debounced) and propagates
  *     deletes. All network calls are best-effort — the store stays authoritative,
  *     so the app is unaffected if Supabase is unconfigured or offline.
  *
- * Mounted once at the root. Pre-auth: the owner is a random id in localStorage;
- * swap for the real user id once auth is wired.
+ * Mounted once at the root, given `userId` from a Server Component
+ * (`getCurrentUser()` in layout.tsx) — no-ops entirely when signed out, since
+ * `/api/projects` now requires auth (it used to accept a client-supplied
+ * "owner" id with no auth check at all, a real vulnerability; ownership is
+ * now the real Supabase Auth user id end to end, not a pre-auth localStorage
+ * device id).
  */
 
 import { useEffect, useRef } from "react";
@@ -16,21 +20,9 @@ import { useVasto } from "./store";
 import { supabaseBrowser } from "./supabase/browser";
 import type { Project } from "./types";
 
-const OWNER_KEY = "vasto-anon-owner";
-
-function anonOwner(): string {
-  let id = localStorage.getItem(OWNER_KEY);
-  if (!id) {
-    id = `anon_${crypto.randomUUID()}`;
-    localStorage.setItem(OWNER_KEY, id);
-  }
-  return id;
-}
-
-export function ProjectSync() {
+export function ProjectSync({ userId }: { userId: string | null }) {
   const importProjects = useVasto((s) => s.importProjects);
   const ready = useRef(false);
-  const owner = useRef("");
   const lastSynced = useRef(new Map<string, string>()); // id → last-pushed updatedAt
   const knownIds = useRef(new Set<string>());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -38,14 +30,14 @@ export function ProjectSync() {
   // 1) Hydrate from Supabase once, then seed the sync baseline so we don't
   //    immediately re-push everything we just pulled.
   useEffect(() => {
-    owner.current = anonOwner();
+    if (!userId) return;
     let cancelled = false;
     (async () => {
       // What Supabase currently has, so we can tell "in sync" from "local is
       // ahead" after the merge below.
       const remoteStamp = new Map<string, string>();
       try {
-        const res = await fetch(`/api/projects?owner=${encodeURIComponent(owner.current)}`);
+        const res = await fetch("/api/projects");
         if (res.ok) {
           const { projects } = (await res.json()) as { projects?: Project[] };
           if (!cancelled && projects?.length) {
@@ -68,7 +60,7 @@ export function ProjectSync() {
               void fetch("/api/projects", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ owner: owner.current, project: p }),
+                body: JSON.stringify({ project: p }),
               }).catch(() => {});
             }
           }
@@ -80,7 +72,7 @@ export function ProjectSync() {
     return () => {
       cancelled = true;
     };
-  }, [importProjects]);
+  }, [importProjects, userId]);
 
   // 2) Mirror store changes up: debounced upsert per changed project + deletes.
   useEffect(() => {
@@ -111,7 +103,7 @@ export function ProjectSync() {
             void fetch("/api/projects", {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ owner: owner.current, project: p }),
+              body: JSON.stringify({ project: p }),
             }).catch(() => {});
           }, 800),
         );
@@ -120,13 +112,13 @@ export function ProjectSync() {
     return () => unsub();
   }, []);
 
-  // 3) Realtime: apply changes pushed from other tabs/sessions for this owner.
+  // 3) Realtime: apply changes pushed from other tabs/sessions for this user.
   //    Echoes of our own writes are no-ops (importProjects only takes strictly
   //    newer rows, and we pre-seed lastSynced to skip re-pushing them).
   useEffect(() => {
+    if (!userId) return;
     const sb = supabaseBrowser();
     if (!sb) return;
-    const ownerId = anonOwner();
     const channel = sb
       .channel("project_snapshots_sync")
       .on(
@@ -135,7 +127,7 @@ export function ProjectSync() {
           event: "*",
           schema: "public",
           table: "project_snapshots",
-          filter: `anon_owner=eq.${ownerId}`,
+          filter: `anon_owner=eq.${userId}`,
         },
         (payload) => {
           if (payload.eventType === "DELETE") {
@@ -156,7 +148,7 @@ export function ProjectSync() {
     return () => {
       void sb.removeChannel(channel);
     };
-  }, []);
+  }, [userId]);
 
   return null;
 }

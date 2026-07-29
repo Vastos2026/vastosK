@@ -1,10 +1,12 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "./ui/icon";
 import { signOut } from "@/app/login/actions";
+import type { UserRole } from "@/lib/auth/session";
 
 // Styles / Asset Library belonged to the old 3D-placement studio, out of
 // scope for the revamp — dropped from the nav (routes still exist, dormant,
@@ -14,17 +16,22 @@ const NAV = [
   { href: "/projects", label: "Projects", icon: "PanelsTopLeft" },
 ];
 
-export function Sidebar() {
+export function Sidebar({ role }: { role: UserRole | null }) {
   const pathname = usePathname();
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
+  // Console nav link only renders for master accounts — role is threaded down
+  // from the root layout's getCurrentUser() call via AppShell (see app-shell.tsx).
+  const navItems =
+    role === "master" ? [...NAV, { href: "/console", label: "Console", icon: "Settings" }] : NAV;
+
   return (
     <aside className="glass my-3 ml-3 flex w-16 shrink-0 flex-col items-center gap-1 rounded-3xl py-4 shadow-2xl shadow-black/40">
       <Link
         href="/"
-        className="group relative mb-3 grid size-10 place-items-center rounded-2xl border border-white/10 bg-white/[0.04] text-foreground transition-all duration-200 hover:scale-105 hover:border-white/25 hover:bg-white/[0.08] cursor-pointer"
+        className="group relative mb-3 grid size-10 place-items-center rounded-2xl border border-white/10 bg-white/90 shadow-sm transition-all duration-200 hover:scale-105 hover:bg-white cursor-pointer"
         aria-label="Vastos home"
         title="Vastos home"
       >
@@ -33,11 +40,14 @@ export function Sidebar() {
           className="absolute inset-0 rounded-2xl opacity-0 blur-md transition-opacity duration-300 group-hover:opacity-100"
           style={{ background: "radial-gradient(circle, rgba(31,140,100,0.5), transparent 70%)" }}
         />
-        <span className="relative font-mono text-lg font-bold leading-none">V</span>
+        {/* Logo's mark is black-on-white/transparent — a plain dark glass
+            background (this sidebar's usual chrome) would swallow the black
+            "V" entirely, hence the light chip behind it instead. */}
+        <Image src="/vastos-logo.png" alt="Vastos" fill className="relative object-contain p-2" priority />
       </Link>
 
       <nav className="flex flex-1 flex-col items-center gap-1.5">
-        {NAV.map((item) => (
+        {navItems.map((item) => (
           <Link
             key={item.href}
             href={item.href}

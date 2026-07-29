@@ -44,9 +44,11 @@ const DEFAULT_PLANNING_PERSONA: Record<string, string> = {
     "Think like a commercial interior designer working on an office or workspace: prioritise productivity, " +
     "circulation and a professional client-facing impression alongside the chosen style.",
   Custom:
-    "Think like a specialist interior designer for this exact named business type (e.g. a clinic, restaurant, " +
-    "retail store, temple, or any other category the user named): prioritise the functional, safety and " +
-    "customer-experience needs specific to that business alongside the chosen style.",
+    "Think like a specialist interior designer. The project brief below names the exact business type in its " +
+    "project.subcategory field (for example a dental clinic, a restaurant, a retail store, a temple, or any " +
+    "other business the client named). Treat that exact named type as your primary design driver, not a " +
+    "generic interior, and prioritise the functional, safety and customer-experience needs specific to that " +
+    "named business alongside the chosen style.",
 };
 
 const DEFAULT_BUILDER: BuilderTemplateBody = {
@@ -58,6 +60,20 @@ const DEFAULT_BUILDER: BuilderTemplateBody = {
 export async function getSystemTemplate(): Promise<SystemTemplateBody> {
   const row = await fetchPublished("system");
   return (row?.body as SystemTemplateBody) ?? DEFAULT_SYSTEM;
+}
+
+/**
+ * Prepends the System Rules to a prompt body. Every call site that produces
+ * a natural-language prompt (Design Planning, the Prompt Builder) goes
+ * through this instead of fetching getSystemTemplate() and splicing it in by
+ * hand — that manual-splice pattern is exactly how the Prompt Builder's
+ * image-generation prompt once silently omitted System Rules entirely (it
+ * only reached the Design Planning call). Routing both through one function
+ * means a future third prompt-producing call site can't repeat that mistake.
+ */
+export async function withSystemPreamble(body: string): Promise<string> {
+  const system = await getSystemTemplate();
+  return `${system.rules}\n\n${body}`;
 }
 
 export async function getPlanningTemplate(category: string): Promise<PlanningTemplateBody> {

@@ -12,6 +12,7 @@
 import { buildUniversalInput, type DesignSelection, type RoomSelection } from "@/lib/ai/prompting/build-universal-input";
 import { runDesignPlanning } from "@/lib/ai/prompting/design-planning";
 import { ProviderError } from "@/lib/ai/errors";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +27,10 @@ interface Body {
 }
 
 export async function POST(request: Request) {
+  // One Gemini structured-generation call per design plan.
+  const guard = await assertAllowed(request, { rateLimit: { key: "design-plan", limit: 10, windowMs: 60_000 } });
+  if (guard instanceof Response) return guard;
+
   let body: Body;
   try {
     body = await request.json();
@@ -45,7 +50,7 @@ export async function POST(request: Request) {
       rooms ?? [],
       design ?? { style: "", luxuryLevel: "Standard", colourPalette: "" },
     );
-    const designSpec = await runDesignPlanning(universalInput, { projectId });
+    const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id });
     return Response.json({ universalInput, designSpec });
   } catch (e) {
     if (e instanceof ProviderError) {

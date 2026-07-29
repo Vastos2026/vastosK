@@ -1,6 +1,6 @@
 import "server-only";
 import { generateStructured, type CallContext } from "@/lib/ai/provider";
-import { getSystemTemplate, getPlanningTemplate } from "./templates";
+import { getPlanningTemplate, withSystemPreamble } from "./templates";
 import type { DesignSpecification, UniversalInput } from "./types";
 
 const DESIGN_SPEC_SCHEMA = {
@@ -47,15 +47,10 @@ export async function runDesignPlanning(
   input: UniversalInput,
   ctx?: CallContext,
 ): Promise<DesignSpecification> {
-  const [system, planning] = await Promise.all([
-    getSystemTemplate(),
-    getPlanningTemplate(input.project.category),
-  ]);
+  const planning = await getPlanningTemplate(input.project.category);
 
   const roomNames = input.layout.rooms.map((r) => r.name).join(", ");
-  const prompt = `${system.rules}
-
-${planning.persona}
+  const body = `${planning.persona}
 
 You are planning the overall design for an interior-design project. Given the project brief below (JSON), \
 produce a single, cohesive design specification that will guide photorealistic renders of EVERY room \
@@ -71,5 +66,6 @@ room should be framed and shot; negative constraints (what must never appear); a
 per room in the brief (covering that room's furniture, layout and focal point), for EVERY room named: \
 ${roomNames}.`;
 
+  const prompt = await withSystemPreamble(body);
   return generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx);
 }

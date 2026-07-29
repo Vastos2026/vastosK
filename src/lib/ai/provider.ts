@@ -28,6 +28,12 @@ import { generateVideoFromImage } from "@/lib/render/veo-client";
 import type { DesignStyle } from "@/lib/types";
 import { ProviderError, RETRYABLE_CATEGORIES, MAX_RETRIES, backoffMs, sleep } from "./errors";
 import { logUsage } from "./usage-log";
+import {
+  runwareConfigured,
+  generateImageWithRunware,
+  editImageWithRunware,
+  generateVideoWithRunware,
+} from "@/lib/render/runware-client";
 
 export interface CallContext {
   userId?: string | null;
@@ -36,6 +42,19 @@ export interface CallContext {
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-2.5-flash-image";
+
+/**
+ * Provider toggle — flip back to Gemini any time by setting the env var to
+ * "gemini" (or unsetting RUNWARE_API_KEY, which forces the Gemini path
+ * regardless of the env var, so a half-configured Runware setup never
+ * silently breaks generation). Documented in CLAUDE.md's "Env vars" section
+ * and .env.example. Defaults to Runware — this is a deliberate temporary
+ * testing setup, not a permanent architecture decision (see context.md).
+ */
+function resolveProvider(envValue: string | undefined): "gemini" | "runware" {
+  const wanted = (envValue?.trim().toLowerCase() || "runware") as "gemini" | "runware";
+  return wanted === "runware" && runwareConfigured() ? "runware" : "gemini";
+}
 
 function classify(e: unknown): ProviderError {
   if (e instanceof ProviderError) return e;
@@ -60,16 +79,26 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw lastErr ?? new ProviderError("InternalError", "retry loop exited without a result");
 }
 
-/** Wraps a provider call: retry, time it, log it, normalize the thrown error. */
+/**
+ * Wraps a provider call: retry, time it, log it, normalize the thrown error.
+ * `fn` gets a `setCost` callback so a Runware caller can report the real
+ * per-call USD cost (`includeCost: true`'s `cost` field) into the usage log —
+ * callers that have no such number (the Gemini path) simply never call it,
+ * leaving `estimated_cost` null rather than a fabricated figure.
+ */
 async function instrumented<T>(
   feature: "planning" | "image" | "edit" | "video",
   model: string,
   ctx: CallContext | undefined,
-  fn: () => Promise<T>,
+  fn: (setCost: (costUsd: number | null | undefined) => void) => Promise<T>,
 ): Promise<T> {
   const started = Date.now();
+  let costUsd: number | null | undefined;
+  const setCost = (c: number | null | undefined) => {
+    costUsd = c;
+  };
   try {
-    const result = await withRetry(fn);
+    const result = await withRetry(() => fn(setCost));
     void logUsage({
       userId: ctx?.userId,
       projectId: ctx?.projectId,
@@ -77,6 +106,7 @@ async function instrumented<T>(
       model,
       success: true,
       durationMs: Date.now() - started,
+      estimatedCost: costUsd,
     });
     return result;
   } catch (e) {
@@ -89,8 +119,28 @@ async function instrumented<T>(
       success: false,
       durationMs: Date.now() - started,
       errorCategory: err.category,
+      estimatedCost: costUsd,
     });
     throw err;
+  }
+}
+
+/**
+ * Runs whichever provider's call is active and normalizes the thrown error —
+ * shared by generateImage/editImage/generateVideo so a Runware-side
+ * ProviderError (e.g. ValidationError) keeps its real category instead of
+ * being flattened to AiProviderError just because it crossed this boundary.
+ */
+async function runOnProvider<T>(
+  provider: "gemini" | "runware",
+  runwareFn: () => Promise<T>,
+  geminiFn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return provider === "runware" ? await runwareFn() : await geminiFn();
+  } catch (e) {
+    if (e instanceof ProviderError) throw e;
+    throw new ProviderError("AiProviderError", (e as Error).message);
   }
 }
 
@@ -276,44 +326,78 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
  * Builder hands this a fully-assembled natural-language prompt; this layer
  * never sees or constructs prompt structure itself.
  */
+/**
+ * The original Gemini text-to-image call — kept as its own function so the
+ * Runware branch can sit next to it without touching this logic. `imageConfig.
+ * aspectRatio` is a real, documented Gemini image-gen parameter (verified
+ * against Google's docs, 2026-07-28: gemini-2.5-flash-image's generateContent
+ * accepts `generationConfig.imageConfig.aspectRatio`, one of "1:1", "2:3",
+ * "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9" — it otherwise
+ * defaults to 1:1), so this is set to "16:9" to match the Runware path rather
+ * than left at the model's square default.
+ */
+async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new ProviderError("AiProviderError", "GEMINI_API_KEY is not configured");
+
+  const url = `${API_BASE}/${IMAGE_MODEL}:generateContent?key=${key}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "16:9" } },
+      }),
+    });
+  } catch (e) {
+    throw new ProviderError("AiProviderError", `request failed: ${(e as Error).message}`);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ProviderError("AiProviderError", `${IMAGE_MODEL} ${res.status}: ${body}`);
+  }
+  const payload = (await res.json().catch(() => null)) as GeminiImageResponse | null;
+  const b64 = payload?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
+  if (!b64) throw new ProviderError("AiProviderError", `${IMAGE_MODEL} returned no image part`);
+  return { bytes: Buffer.from(b64, "base64"), contentType: "image/png" };
+}
+
+/**
+ * Plain text-to-image generation for the new flow's room images — the Prompt
+ * Builder hands this a fully-assembled natural-language prompt; this layer
+ * never sees or constructs prompt structure itself.
+ *
+ * Routes to Gemini or Runware per `IMAGE_PROVIDER` (see `resolveProvider()`
+ * above) — temporary testing setup, toggle back to Gemini any time.
+ */
 export async function generateImage(
   prompt: string,
   ctx?: CallContext,
 ): Promise<GeneratedImage> {
-  const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key) throw new ProviderError("AiProviderError", "GEMINI_API_KEY is not configured");
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
+  const provider = resolveProvider(process.env.IMAGE_PROVIDER);
+  const model = provider === "runware" ? process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1" : IMAGE_MODEL;
 
-  return instrumented("image", IMAGE_MODEL, ctx, async () => {
-    const url = `${API_BASE}/${IMAGE_MODEL}:generateContent?key=${key}`;
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { responseModalities: ["IMAGE"] },
-        }),
-      });
-    } catch (e) {
-      throw new ProviderError("AiProviderError", `request failed: ${(e as Error).message}`);
-    }
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new ProviderError("AiProviderError", `${IMAGE_MODEL} ${res.status}: ${body}`);
-    }
-    const payload = (await res.json().catch(() => null)) as GeminiImageResponse | null;
-    const b64 = payload?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
-    if (!b64) throw new ProviderError("AiProviderError", `${IMAGE_MODEL} returned no image part`);
-    return { bytes: Buffer.from(b64, "base64"), contentType: "image/png" };
+  return instrumented("image", model, ctx, async (setCost) => {
+    return runOnProvider(
+      provider,
+      async () => {
+        const out = await generateImageWithRunware(prompt);
+        setCost(out.costUsd);
+        return out;
+      },
+      () => generateImageWithGemini(prompt),
+    );
   });
 }
 
 /**
  * Lasso-region edit — delegates to the existing crop/composite implementation
- * (render/gemini-image.ts), which already does exactly this for the old
- * studio flow and is reused unchanged for the new flow's step 7.
+ * (render/gemini-image.ts) for Gemini, or FLUX Fill's native masked
+ * inpainting for Runware. Routes per `IMAGE_PROVIDER` — same toggle as
+ * `generateImage`.
  */
 export async function editImage(
   baseDataUri: string,
@@ -323,10 +407,23 @@ export async function editImage(
   ctx?: CallContext,
 ): Promise<GeneratedImage> {
   if (!instruction.trim()) throw new ProviderError("ValidationError", "instruction is empty");
-  return instrumented("edit", IMAGE_MODEL, ctx, async () => {
-    const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
-    if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
-    return out;
+  const provider = resolveProvider(process.env.IMAGE_PROVIDER);
+  const model = provider === "runware" ? process.env.RUNWARE_EDIT_MODEL?.trim() || "runware:102@1" : IMAGE_MODEL;
+
+  return instrumented("edit", model, ctx, async (setCost) => {
+    return runOnProvider(
+      provider,
+      async () => {
+        const out = await editImageWithRunware(baseDataUri, maskDataUri, instruction);
+        setCost(out.costUsd);
+        return out;
+      },
+      async () => {
+        const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
+        if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
+        return out;
+      },
+    );
   });
 }
 
@@ -335,7 +432,11 @@ export interface GeneratedVideo {
   contentType: string;
 }
 
-/** Image-to-video (walkthrough clips) — delegates to render/veo-client.ts. */
+/**
+ * Image-to-video (walkthrough clips). Routes per `VIDEO_PROVIDER` —
+ * Gemini/Veo (delegates to render/veo-client.ts) or Runware/Wan 2.7
+ * (render/runware-client.ts).
+ */
 export async function generateVideo(
   imageDataUri: string,
   prompt: string,
@@ -343,10 +444,23 @@ export async function generateVideo(
   ctx?: CallContext,
 ): Promise<GeneratedVideo> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
-  return instrumented("video", "veo", ctx, async () => {
-    const out = await generateVideoFromImage(imageDataUri, prompt, opts);
-    if (!out) throw new ProviderError("AiProviderError", "video generation failed");
-    return { bytes: out.bytes, contentType: out.contentType };
+  const provider = resolveProvider(process.env.VIDEO_PROVIDER);
+  const model = provider === "runware" ? process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7" : "veo";
+
+  return instrumented("video", model, ctx, async (setCost) => {
+    return runOnProvider(
+      provider,
+      async () => {
+        const out = await generateVideoWithRunware(imageDataUri, prompt, { durationSeconds: opts.durationSeconds });
+        setCost(out.costUsd);
+        return out;
+      },
+      async () => {
+        const out = await generateVideoFromImage(imageDataUri, prompt, opts);
+        if (!out) throw new ProviderError("AiProviderError", "video generation failed");
+        return { bytes: out.bytes, contentType: out.contentType };
+      },
+    );
   });
 }
 

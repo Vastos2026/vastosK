@@ -3,6 +3,7 @@ import { signOut } from "@/app/login/actions";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { ProfileProjects } from "@/components/profile-projects";
+import { UsageChart } from "@/components/usage-chart";
 
 function initials(name: string | null, email: string | null): string {
   const source = name?.trim() || email?.trim() || "?";
@@ -22,9 +23,27 @@ function trialLabel(status: string, trialEndsAt: string | null): string | null {
   return `Trial ends in ${days} day${days === 1 ? "" : "s"}`;
 }
 
+/**
+ * Admin-set billing info (see CurrentUser.billingCycle/nextBillingDate) —
+ * same pattern as trialLabel: a small pure function computing a display
+ * string, null when there's nothing to show so the caller can render
+ * conditionally rather than showing a broken "renews never" line.
+ */
+function billingLabel(billingCycle: string | null, nextBillingDate: string | null): string | null {
+  if (!nextBillingDate) return null;
+  const formatted = new Date(nextBillingDate).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  if (billingCycle) return `${billingCycle} plan, renews ${formatted}`;
+  return `Next billing date: ${formatted}`;
+}
+
 export default async function ProfilePage() {
   const user = await requireUser();
   const trial = trialLabel(user.status, user.trialEndsAt);
+  const billing = billingLabel(user.billingCycle, user.nextBillingDate);
 
   return (
     <div className="flex h-full flex-col">
@@ -54,10 +73,17 @@ export default async function ProfilePage() {
                   {user.email}
                 </p>
               )}
-              {trial && (
-                <p className="mt-1.5 inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-xs text-muted">
-                  {trial}
-                </p>
+              {(trial || billing) && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  {[trial, billing].filter(Boolean).map((label) => (
+                    <span
+                      key={label}
+                      className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-xs text-muted"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -68,6 +94,7 @@ export default async function ProfilePage() {
           </form>
         </div>
 
+        <UsageChart />
         <ProfileProjects />
       </div>
     </div>

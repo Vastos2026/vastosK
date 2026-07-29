@@ -8,8 +8,18 @@ import { generateRoomImage } from "@/lib/design-plan-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { GeneratingLoader } from "@/components/ui/generating-loader";
+import { Badge } from "@/components/ui/badge";
+import { RoomNavRail } from "@/components/project/room-nav-rail";
 import { uid, cn } from "@/lib/utils";
-import type { Room, RoomCard } from "@/lib/types";
+import type { Room, RoomCard, RoomGeneration } from "@/lib/types";
+
+// Stable reference for the "no rooms generating" case — `?? []` in the
+// selector below would otherwise allocate a NEW array every call, which
+// breaks Zustand's useSyncExternalStore-based subscription (React requires a
+// selector's result to be referentially stable across calls with the same
+// state) and causes "getServerSnapshot should be cached to avoid an infinite
+// loop" / "Maximum update depth exceeded".
+const NO_GENERATING_IDS: string[] = [];
 
 /**
  * Room Generation Gallery (rebuilt) — one SECTION per room. Each section has
@@ -24,7 +34,7 @@ export default function GeneratePage() {
   const router = useRouter();
   const project = useProject(id);
   const addGeneration = useVasto((s) => s.addGeneration);
-  const generatingIds = useVasto((s) => s.generatingRoomIds[id] ?? []);
+  const generatingIds = useVasto((s) => s.generatingRoomIds[id] ?? NO_GENERATING_IDS);
   const startGenerating = useVasto((s) => s.startGenerating);
   const stopGenerating = useVasto((s) => s.stopGenerating);
 
@@ -57,6 +67,7 @@ export default function GeneratePage() {
   const designSpec = project.designSpec;
   const cardOf = (roomId: string) => project.roomCards.find((c) => c.roomId === roomId);
   const allHaveImages = rooms.every((r) => (cardOf(r.id)?.generations.length ?? 0) > 0);
+  const generatedCount = rooms.filter((r) => (cardOf(r.id)?.generations.length ?? 0) > 0).length;
 
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
@@ -66,7 +77,13 @@ export default function GeneratePage() {
         universalInput,
         room: {
           name: room.name,
-          size: `${room.width} x ${room.height} ft`,
+          type: room.type,
+          // Omit size entirely when a dimension is still missing, rather
+          // than sending a literal "undefined x undefined ft" into the
+          // render prompt — see Room.width/height's doc comment.
+          ...(room.width !== undefined && room.height !== undefined
+            ? { size: `${room.width} x ${room.height} ft` }
+            : {}),
           additional_notes: [universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes, note]
             .filter(Boolean)
             .join(". ") || undefined,
@@ -92,7 +109,12 @@ export default function GeneratePage() {
       <div className="mx-auto max-w-5xl px-6 py-8">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-2xl font-bold tracking-tight">Generate</h2>
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-2xl font-bold tracking-tight">Generate</h2>
+              <Badge icon="ImagePlus" className={cn(generatedCount === rooms.length && "border-success/30 bg-success/10 text-success")}>
+                {generatedCount}/{rooms.length} rooms
+              </Badge>
+            </div>
             <p className="mt-1 text-sm text-muted">
               One image per room, same design language throughout.
             </p>
@@ -109,7 +131,7 @@ export default function GeneratePage() {
           figure for accuracy.
         </p>
 
-        <div className="space-y-10">
+        <div className="divide-y divide-border">
           {rooms.map((room) => (
             <RoomSection
               key={room.id}
@@ -123,6 +145,7 @@ export default function GeneratePage() {
           ))}
         </div>
       </div>
+      <RoomNavRail rooms={rooms} />
     </div>
   );
 }
@@ -142,21 +165,42 @@ function RoomSection({
   onRetryFirst: () => Promise<void>;
   onView: () => void;
 }) {
-  const latest = card?.generations.at(-1);
+  const generations = card?.generations ?? [];
+  const latest = generations.at(-1);
+  // Older versions, most-recent-of-the-rest first, so the grid reads newest→oldest.
+  const olderVersions = generations.slice(0, -1).reverse();
   const failed = !latest && !generating;
 
   return (
-    <section>
-      <div className="mb-3 flex items-baseline justify-between">
-        <h3 className="text-lg font-semibold tracking-tight">{room.name}</h3>
+    <section id={`room-${room.id}`} className="scroll-mt-4 pt-6 first:pt-0">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
         <p className="text-xs text-muted">
-          {Math.round(room.width)} × {Math.round(room.height)} ft
-          {card && card.generations.length > 1 && ` · ${card.generations.length} versions`}
+          {room.width !== undefined && room.height !== undefined
+            ? `${Math.round(room.width)} × ${Math.round(room.height)} ft`
+            : "Size not available"}
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <HeroCard room={room} latest={latest} generating={generating && !latest} failed={failed} onRetry={onRetryFirst} onView={onView} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <HeroCard
+          room={room}
+          latest={latest}
+          showLatestTag={generations.length > 1}
+          generating={generating && !latest}
+          failed={failed}
+          onRetry={onRetryFirst}
+          onView={onView}
+        />
+        {olderVersions.map((gen, idx) => (
+          <VersionThumb
+            key={gen.id}
+            room={room}
+            generation={gen}
+            version={generations.length - 1 - idx}
+            onView={onView}
+          />
+        ))}
         <GenerateMoreCard disabled={!latest} onGenerateMore={onGenerateMore} />
       </div>
     </section>
@@ -166,6 +210,7 @@ function RoomSection({
 function HeroCard({
   room,
   latest,
+  showLatestTag,
   generating,
   failed,
   onRetry,
@@ -173,6 +218,7 @@ function HeroCard({
 }: {
   room: Room;
   latest?: RoomCard["generations"][number];
+  showLatestTag: boolean;
   generating: boolean;
   failed: boolean;
   onRetry: () => Promise<void>;
@@ -188,6 +234,11 @@ function HeroCard({
             alt={room.name}
             className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
           />
+          {showLatestTag && (
+            <span className="absolute left-2 top-2 z-10 rounded-md border border-white/10 bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-foreground/90 backdrop-blur-sm">
+              Latest
+            </span>
+          )}
           <button
             onClick={onView}
             className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition-all duration-200 hover:bg-black/50 group-hover:opacity-100 cursor-pointer"
@@ -216,6 +267,37 @@ function HeroCard({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function VersionThumb({
+  room,
+  generation,
+  version,
+  onView,
+}: {
+  room: Room;
+  generation: RoomGeneration;
+  version: number;
+  onView: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onView}
+      className="hover-lift group relative aspect-[4/3] cursor-pointer overflow-hidden rounded-2xl border border-border bg-surface"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={generation.imageUrl}
+        alt={`${room.name} version`}
+        className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.05]"
+      />
+      <span className="absolute left-2 top-2 z-10 rounded-md border border-white/10 bg-black/60 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-muted backdrop-blur-sm">
+        v{version}
+      </span>
+      <div className="absolute inset-0 bg-black/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
+    </button>
   );
 }
 
@@ -281,7 +363,7 @@ function GenerateMoreCard({
 
 function EmptyState({ icon, text, href, cta }: { icon: string; text: string; href: string; cta: string }) {
   return (
-    <div className="grid h-full place-items-center text-center">
+    <div className="bg-grid grid h-full place-items-center text-center">
       <div>
         <Icon name={icon} className="mx-auto size-8 text-faint" />
         <p className="mt-3 text-sm text-muted">{text}</p>

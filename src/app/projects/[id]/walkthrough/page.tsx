@@ -8,6 +8,10 @@ import { categoryForPropertyType, getProjectTypeConfig, orderRoomsForWalkthrough
 import { generateWalkthrough, orderRoomsWithAI } from "@/lib/generation-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { useAsyncFeedback } from "@/hooks/use-async-feedback";
+import { useShareToken } from "@/hooks/use-share-token";
+import { useExportProjectPdf } from "@/hooks/use-export-project-pdf";
+import { RoomReorderModal, type ReorderableRoom } from "@/components/project/room-reorder-modal";
 import type { Room } from "@/lib/types";
 
 /**
@@ -25,6 +29,10 @@ export default function WalkthroughPage() {
   const [order, setOrder] = useState<Room[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reorderOpen, setReorderOpen] = useState(false);
+  const share = useAsyncFeedback();
+  const { ensureShareToken } = useShareToken(project);
+  const pdfExport = useExportProjectPdf(project);
 
   const rooms = project?.floorPlan?.rooms ?? [];
   const included = rooms.filter((r) => project?.roomCards.find((c) => c.roomId === r.id)?.included);
@@ -76,22 +84,34 @@ export default function WalkthroughPage() {
     );
   }
 
-  const move = (i: number, dir: -1 | 1) => {
-    setOrder((prev) => {
-      const base = prev ?? effectiveOrder;
-      const j = i + dir;
-      if (j < 0 || j >= base.length) return base;
-      const next = [...base];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-  };
+  if (included.length === 1) {
+    return (
+      <div className="grid h-full place-items-center text-center">
+        <div>
+          <Icon name="Clapperboard" className="mx-auto size-8 text-faint" />
+          <p className="mt-3 text-sm text-muted">Add at least 2 approved rooms to build a walkthrough.</p>
+          <Link href={`/projects/${id}/approve`}>
+            <Button className="mt-4" variant="outline">Go to Approve</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const generate = async () => {
     if (busy || effectiveOrder.length === 0) return;
     setBusy(true);
     setError(null);
-    setWalkthrough(id, { status: "processing", createdAt: new Date().toISOString(), roomOrder: effectiveOrder.map((r) => r.id) });
+    // shareToken carries over across every state write below, not just the
+    // completed one — it's only ever minted via getShareLink() (on demand),
+    // and a regenerate/failure shouldn't invalidate a link already shared
+    // with the client. Captured once, up front: setWalkthrough fully
+    // replaces the walkthrough object (no merge with the previous value), so
+    // any write that omits it would silently drop an already-shared token
+    // even on a transient "processing"/"failed" state, not just on success.
+    const shareToken = project.walkthrough?.shareToken;
+    const roomOrder = effectiveOrder.map((r) => r.id);
+    setWalkthrough(id, { status: "processing", createdAt: new Date().toISOString(), shareToken, roomOrder });
     try {
       const payload = effectiveOrder.map((r) => {
         const card = project.roomCards.find((c) => c.roomId === r.id)!;
@@ -104,13 +124,13 @@ export default function WalkthroughPage() {
         createdAt: new Date().toISOString(),
         videoUrl: result.videoUrl,
         videoKey: result.key,
-        shareToken: crypto.randomUUID(),
-        roomOrder: effectiveOrder.map((r) => r.id),
+        shareToken,
+        roomOrder,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Walkthrough generation failed";
       setError(msg);
-      setWalkthrough(id, { status: "failed", createdAt: new Date().toISOString(), roomOrder: effectiveOrder.map((r) => r.id), error: msg });
+      setWalkthrough(id, { status: "failed", createdAt: new Date().toISOString(), shareToken, roomOrder, error: msg });
     } finally {
       setBusy(false);
     }
@@ -118,13 +138,42 @@ export default function WalkthroughPage() {
 
   const wt = project.walkthrough;
 
+  const getShareLink = () =>
+    share.run(async () => {
+      if (!wt) return;
+      const { token, persisted } = await ensureShareToken(wt);
+      if (!token) return "Couldn't create a share link";
+
+      await navigator.clipboard.writeText(`${window.location.origin}/s/${token}`);
+      return persisted ? "Link copied" : "Link copied (saved on this device for now)";
+    });
+
+  const reorderItems: ReorderableRoom[] = effectiveOrder.map((room) => {
+    const card = project.roomCards.find((c) => c.roomId === room.id);
+    const approved = card?.generations.find((g) => g.id === card.approvedId);
+    return { room, imageUrl: approved?.imageUrl };
+  });
+
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
-        <h2 className="text-2xl font-bold tracking-tight">Walkthrough</h2>
-        <p className="mt-1 text-sm text-muted">
-          One 3-second cinematic zoom per room, stitched in this order.
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">Walkthrough</h2>
+            <p className="mt-1 text-sm text-muted">
+              One 3-second cinematic zoom per room, stitched in this order.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            icon="GripVertical"
+            onClick={() => setReorderOpen(true)}
+            disabled={orderingBusy}
+          >
+            Reorder rooms
+          </Button>
+        </div>
         <p className="mt-2 flex items-center gap-1.5 text-xs text-faint">
           <Icon name="CircleAlert" className="size-3.5 shrink-0" />
           Sizes can appear a little larger or smaller than expected — confirm with the sq ft
@@ -144,14 +193,17 @@ export default function WalkthroughPage() {
                 </span>
                 <span className="size-2.5 shrink-0 rounded-sm" style={{ background: room.color }} />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{room.name}</span>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button size="sm" variant="ghost" icon="ChevronLeft" onClick={() => move(i, -1)} disabled={i === 0} />
-                  <Button size="sm" variant="ghost" icon="ChevronRight" onClick={() => move(i, 1)} disabled={i === effectiveOrder.length - 1} />
-                </div>
               </div>
             ))
           )}
         </div>
+
+        <RoomReorderModal
+          open={reorderOpen}
+          onClose={() => setReorderOpen(false)}
+          items={reorderItems}
+          onConfirm={(next) => setOrder(next)}
+        />
 
         {error && (
           <div className="mt-4 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
@@ -167,17 +219,22 @@ export default function WalkthroughPage() {
               <a href={wt.videoUrl} download>
                 <Button variant="outline" icon="Download">Download</Button>
               </a>
-              <Button
-                variant="outline"
-                icon="Copy"
-                onClick={() => navigator.clipboard.writeText(`${window.location.origin}${wt.videoUrl}`)}
-              >
+              <Button variant="outline" icon="Copy" onClick={getShareLink} loading={share.busy}>
                 Get shareable link
+              </Button>
+              <Button variant="outline" icon="FileUp" onClick={pdfExport.exportPdf} loading={pdfExport.busy}>
+                Export PDF
               </Button>
               <Button variant="ghost" icon="RefreshCw" onClick={generate} loading={busy}>
                 Regenerate
               </Button>
             </div>
+            {share.feedback && (
+              <p className="mt-2 text-xs text-muted">{share.feedback}</p>
+            )}
+            {pdfExport.feedback && (
+              <p className="mt-2 text-xs text-muted">{pdfExport.feedback}</p>
+            )}
           </div>
         ) : (
           <Button className="mt-6 w-full" icon="Clapperboard" loading={busy} disabled={busy || orderingBusy} onClick={generate}>

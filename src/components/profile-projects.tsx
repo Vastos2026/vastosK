@@ -1,7 +1,8 @@
 "use client";
 
 import { useVasto, useHydrated } from "@/lib/store";
-import { ProjectCard } from "@/components/project-card";
+import { ProfileProjectCard } from "@/components/profile-project-card";
+import { DeleteAllProjectsButton } from "@/components/delete-all-projects-button";
 import { Icon } from "@/components/ui/icon";
 
 /**
@@ -30,11 +31,14 @@ export function ProfileProjects() {
         </div>
       </div>
 
-      <h2 className="mt-8 mb-3 text-sm font-medium text-muted">Your projects</h2>
+      <div className="mt-8 mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-muted">Your projects</h2>
+        {hydrated && <DeleteAllProjectsButton count={projects.length} />}
+      </div>
       {!hydrated ? (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="flex flex-col gap-5">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="shimmer aspect-[16/10] rounded-2xl border border-border bg-surface" />
+            <div key={i} className="shimmer h-48 rounded-2xl border border-border bg-surface" />
           ))}
         </div>
       ) : projects.length === 0 ? (
@@ -45,9 +49,9 @@ export function ProfileProjects() {
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="flex flex-col gap-5">
           {projects.map((p) => (
-            <ProjectCard key={p.id} project={p} />
+            <ProfileProjectCard key={p.id} project={p} />
           ))}
         </div>
       )}

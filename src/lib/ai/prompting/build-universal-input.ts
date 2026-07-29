@@ -16,8 +16,11 @@ const LUXURY_LEVELS: LuxuryLevel[] = ["Standard", "Premium", "Ultra Luxury"];
 
 export interface RoomSelection {
   name: string;
-  widthFt: number;
-  heightFt: number;
+  /** the room's semantic category (e.g. "Bedroom") — see UniversalInputRoom.type */
+  type?: string;
+  /** Undefined when the room's dimensions weren't given (not printed on the plan, not filled in on Room Confirmation) — no longer rejected, see UniversalInputRoom.size. */
+  widthFt?: number;
+  heightFt?: number;
   additionalNotes?: string;
   openings?: UniversalInputOpening[];
 }
@@ -52,9 +55,11 @@ export function buildUniversalInput(
     layout: {
       rooms: rooms.map((r) => {
         if (!r.name.trim()) throw new ProviderError("ValidationError", "room name is required");
-        if (!(r.widthFt > 0) || !(r.heightFt > 0)) {
-          throw new ProviderError("ValidationError", `invalid dimensions for room "${r.name}"`);
-        }
+        // Missing dimensions are no longer rejected — a room Gemini couldn't
+        // read a printed size for (or that the user hasn't filled in yet) is
+        // a real, expected state now, not a validation failure. `size` is
+        // just omitted below so the room prompt doesn't state a wrong size.
+        const hasSize = r.widthFt !== undefined && r.widthFt > 0 && r.heightFt !== undefined && r.heightFt > 0;
         const notes = r.additionalNotes?.trim();
         if (notes && notes.length > NOTES_MAX_LEN) {
           throw new ProviderError(
@@ -64,7 +69,8 @@ export function buildUniversalInput(
         }
         return {
           name: r.name.trim(),
-          size: `${formatFt(r.widthFt)} x ${formatFt(r.heightFt)} ft`,
+          ...(hasSize ? { size: `${formatFt(r.widthFt as number)} x ${formatFt(r.heightFt as number)} ft` } : {}),
+          ...(r.type?.trim() ? { type: r.type.trim() } : {}),
           ...(notes ? { additional_notes: notes } : {}),
           ...(r.openings?.length ? { openings: r.openings } : {}),
         };

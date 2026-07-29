@@ -9,6 +9,7 @@
  */
 
 import type { Door, Room, Window } from "./types";
+import { layoutSize } from "./pipeline/empty-plan";
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
@@ -19,7 +20,10 @@ export const DEFAULT_WINDOW_LEN = 3;
 
 /** True if (x,y) lies on `room`'s perimeter within `tol` ft. */
 export function onRoomPerimeter(x: number, y: number, room: Room, tol = 0.9): boolean {
-  const { x: rx, y: ry, width: w, height: h } = room;
+  const { x: rx, y: ry } = room;
+  // Pure geometry fallback for a room whose real dimensions are unknown — see
+  // layoutSize's doc comment (pipeline/empty-plan.ts). Never a claimed size.
+  const { width: w, height: h } = layoutSize(room);
   const withinX = x >= rx - tol && x <= rx + w + tol;
   const withinY = y >= ry - tol && y <= ry + h + tol;
   const onVertical = (Math.abs(x - rx) <= tol || Math.abs(x - (rx + w)) <= tol) && withinY;

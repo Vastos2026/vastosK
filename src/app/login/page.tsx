@@ -1,64 +1,28 @@
-"use client";
+import Image from "next/image";
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/session";
+import { LoginForm } from "./login-form";
 
-import { Suspense, useActionState } from "react";
-import { useSearchParams } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { signIn, type LoginState } from "./actions";
+/**
+ * Real (non-optimistic) redirect-away-if-already-logged-in check, deliberately
+ * NOT delegated to the proxy's optimistic JWT-only check — a session can pass
+ * that check (valid JWT) while `getCurrentUser` still returns null (e.g. no
+ * matching `profiles` row), and the proxy redirecting off /login in that case
+ * would bounce straight back here, looping forever. Using the same real check
+ * everywhere means there's only one source of truth for "is this user in".
+ */
+export default async function LoginPage() {
+  const user = await getCurrentUser();
+  if (user) redirect("/");
 
-const initialState: LoginState = {};
-
-function LoginForm() {
-  const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/";
-  const [state, action, pending] = useActionState(signIn, initialState);
-
-  return (
-    <form action={action} className="flex w-full max-w-sm flex-col gap-4">
-      <input type="hidden" name="next" value={next} />
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="email" className="text-xs font-medium text-muted">
-          Username
-        </label>
-        <input
-          id="email"
-          name="email"
-          type="text"
-          autoComplete="username"
-          required
-          className="input"
-          placeholder="you@company.com"
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="password" className="text-xs font-medium text-muted">
-          Password
-        </label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          required
-          className="input"
-          placeholder="••••••••"
-        />
-      </div>
-
-      {state.error && <p className="text-sm text-danger">{state.error}</p>}
-
-      <Button type="submit" size="lg" loading={pending} className="mt-2 w-full">
-        Sign in
-      </Button>
-    </form>
-  );
-}
-
-export default function LoginPage() {
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-10 px-6">
       <div className="flex flex-col items-center gap-3 text-center">
-        <div className="grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-accent to-accent-hover text-accent-foreground shadow-lg">
-          <span className="font-mono text-2xl font-bold leading-none">V</span>
+        {/* A green gradient chip (the old text-"V" treatment) would swallow
+            the logo's own green arrow mark — a plain white chip keeps the
+            whole mark (black V + green arrow/house) legible instead. */}
+        <div className="relative size-14 rounded-2xl bg-white shadow-lg">
+          <Image src="/vastos-logo.png" alt="Vastos" fill className="object-contain p-2.5" priority />
         </div>
         <h1 className="text-2xl font-semibold text-foreground">Vastos</h1>
         <p className="max-w-xs text-sm text-muted">
@@ -66,9 +30,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      <Suspense fallback={null}>
-        <LoginForm />
-      </Suspense>
+      <LoginForm />
 
       <p className="max-w-xs text-center text-xs text-faint">
         Accounts are created by your Vastos team. Contact your admin if you don&apos;t have one.

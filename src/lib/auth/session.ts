@@ -12,6 +12,12 @@ export interface CurrentUser {
   role: UserRole;
   status: UserStatus;
   trialEndsAt: string | null;
+  /** Admin-set label, e.g. "Monthly" — see supabase/schema.sql's profiles.billing_cycle. */
+  billingCycle: string | null;
+  /** Admin-set date the current subscription period ends. */
+  nextBillingDate: string | null;
+  /** Admin-set spend cap in USD for the current billing period; null = unlimited. See src/lib/api-guard.ts's checkUsageLimit. */
+  usageLimitUsd: number | null;
 }
 
 /**
@@ -30,10 +36,18 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("display_name, role, status, trial_ends_at")
+    .select("display_name, role, status, trial_ends_at, billing_cycle, next_billing_date, usage_limit_usd")
     .eq("id", userId)
     .single();
   if (!profile) return null;
+
+  // A suspended/pending/trial-ended account keeps a perfectly valid Supabase
+  // session (auth and app-level status are separate concerns) — without this
+  // check, the console's Suspend button only ever flipped a cosmetic DB flag
+  // that nothing enforced (found in a 2026-07-27 code review). `signIn`
+  // (login/actions.ts) also checks this right after authenticating, so a
+  // blocked user gets a clear message instead of silently bouncing here.
+  if (profile.status !== "active") return null;
 
   return {
     id: userId,
@@ -42,6 +56,9 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     role: profile.role,
     status: profile.status,
     trialEndsAt: profile.trial_ends_at,
+    billingCycle: profile.billing_cycle ?? null,
+    nextBillingDate: profile.next_billing_date ?? null,
+    usageLimitUsd: profile.usage_limit_usd ?? null,
   };
 }
 

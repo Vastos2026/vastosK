@@ -21,6 +21,8 @@ interface VastoState {
 
   createProject: (name: string, propertyType: PropertyType) => string;
   deleteProject: (id: string) => void;
+  /** Wipes every project — irreversible, gated behind a confirm dialog in the UI. */
+  clearAllProjects: () => void;
   /** Merge projects pulled from Supabase; a remote project wins only if newer. */
   importProjects: (incoming: Project[]) => void;
   getProject: (id: string) => Project | undefined;
@@ -132,6 +134,12 @@ export const useVasto = create<VastoState>()(
       deleteProject: (id) =>
         set((s) => ({ projects: s.projects.filter((p) => p.id !== id) })),
 
+      /** Wipes every project. The existing ProjectSync subscriber (project-sync.tsx)
+       *  already reacts to any known id disappearing from `projects` by firing a
+       *  DELETE per id, so clearing the array here is enough to propagate to
+       *  Supabase too — no separate bulk-sync code needed. */
+      clearAllProjects: () => set({ projects: [], generatingRoomIds: {} }),
+
       importProjects: (incoming) =>
         set((s) => {
           const byId = new Map(s.projects.map((p) => [p.id, p]));
@@ -169,8 +177,18 @@ export const useVasto = create<VastoState>()(
       setFloorPlan: (id, plan) =>
         set((s) => ({
           projects: s.projects.map((p) =>
-            p.id === id ? touch({ ...p, floorPlan: plan }) : p,
+            p.id === id
+              ? touch({
+                  ...p,
+                  floorPlan: plan,
+                  roomCards: [],
+                  designSpec: undefined,
+                  universalInput: undefined,
+                  walkthrough: undefined,
+                })
+              : p,
           ),
+          generatingRoomIds: { ...s.generatingRoomIds, [id]: [] },
         })),
 
       updateRoom: (id, roomId, patch) =>
@@ -221,8 +239,13 @@ export const useVasto = create<VastoState>()(
             if (p.id !== id || !p.floorPlan) return p;
             const room = p.floorPlan.rooms.find((r) => r.id === roomId);
             if (!room) return p;
-            const width = Math.max(2, r1(size.width ?? room.width));
-            const height = Math.max(2, r1(size.height ?? room.height));
+            // Each field is edited independently (Room Confirmation calls this
+            // with only `width` or only `height`) — falling back to the OTHER
+            // field's current value when it's still undefined (dimensions
+            // never given) would turn `undefined` into `NaN` via r1(). Leave
+            // an untouched, still-missing dimension untouched instead.
+            const width = size.width !== undefined ? Math.max(2, r1(size.width)) : room.width;
+            const height = size.height !== undefined ? Math.max(2, r1(size.height)) : room.height;
             const rooms = p.floorPlan.rooms.map((r) =>
               r.id === roomId ? { ...r, width, height } : r,
             );
@@ -360,6 +383,12 @@ export const useVasto = create<VastoState>()(
         set((s) => ({
           projects: s.projects.map((p) => {
             if (p.id !== id) return p;
+            // A generation that was in flight when its room got deleted
+            // (Room Confirmation's delete) resolves after the fact — without
+            // this guard it silently recreates an orphaned roomCards entry
+            // for a room no longer in floorPlan.rooms (found in a 2026-07-27
+            // code review).
+            if (p.floorPlan && !p.floorPlan.rooms.some((r) => r.id === roomId)) return p;
             const existing = p.roomCards.find((c) => c.roomId === roomId);
             const roomCards = existing
               ? p.roomCards.map((c) =>

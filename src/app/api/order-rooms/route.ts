@@ -11,6 +11,7 @@
 
 import { generateStructured } from "@/lib/ai/provider";
 import { ProviderError } from "@/lib/ai/errors";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +29,10 @@ interface Body {
 }
 
 export async function POST(request: Request) {
+  // Cheap structured-text call (no image/video cost) — a more generous cap.
+  const guard = await assertAllowed(request, { rateLimit: { key: "order-rooms", limit: 20, windowMs: 60_000 } });
+  if (guard instanceof Response) return guard;
+
   let body: Body;
   try {
     body = await request.json();

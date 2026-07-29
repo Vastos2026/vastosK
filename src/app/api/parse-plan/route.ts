@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { runPlanExtraction } from "@/lib/pipeline/extract-plan";
 import { putObject } from "@/lib/pipeline/storage";
+import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +35,10 @@ async function normalizePlanImage(bytes: Buffer, mimeType: string): Promise<{ by
  * entry rather than treating this as an error.
  */
 export async function POST(request: Request) {
+  // Floor-plan extraction is one Gemini vision call per upload.
+  const guard = await assertAllowed(request, { rateLimit: { key: "parse-plan", limit: 10, windowMs: 60_000 } });
+  if (guard instanceof Response) return guard;
+
   try {
     const form = await request.formData();
     const file = form.get("file");
@@ -66,7 +71,17 @@ export async function POST(request: Request) {
       mimeType,
       fileName: file.name,
       roomTypeHints,
+      ctx: { userId: guard.id },
     });
+
+    // Thread the original upload's storage key onto the plan so a later PDF
+    // export (see /api/export-pdf's "Floor plan page") can embed the actual
+    // uploaded drawing, not just the extracted room boxes — extract-plan.ts
+    // doesn't know this key itself (it only handles the Gemini call), and
+    // this route already has it right here from the putObject call above.
+    if (result.readable) {
+      result.plan.meta = { ...result.plan.meta, source: result.plan.meta?.source ?? "manual", storageKey };
+    }
 
     return Response.json(result);
   } catch (e) {

@@ -1,5 +1,5 @@
 import "server-only";
-import { getBuilderTemplate } from "./templates";
+import { getBuilderTemplate, withSystemPreamble } from "./templates";
 import type { DesignSpecification, UniversalInput, UniversalInputOpening, UniversalInputRoom } from "./types";
 
 /**
@@ -10,6 +10,12 @@ import type { DesignSpecification, UniversalInput, UniversalInputOpening, Univer
  * Negative Rules. This is the only place natural-language prompt text is
  * produced anywhere in the app — the frontend and every AI stage before this
  * point only ever handle structured JSON.
+ *
+ * System Rules are prepended via withSystemPreamble (templates.ts), not
+ * fetched/spliced in here by hand — that manual pattern is exactly how this
+ * function once silently omitted System Rules entirely (they only reached
+ * the Design Planning call). Routing through the shared helper means this
+ * and design-planning.ts can't independently drift out of sync again.
  */
 export async function buildRoomPrompt(
   input: UniversalInput,
@@ -18,12 +24,29 @@ export async function buildRoomPrompt(
 ): Promise<string> {
   const builder = await getBuilderTemplate();
   const guidance = spec.roomGuidelines.find((g) => g.room === room.name)?.guidance;
+  // `name` is often unreliable on its own (a detected/user-typed label like
+  // "Ananya's Room" says nothing about what kind of room it is) — `type` is
+  // the actual semantic category (Bedroom, Kitchen, Pooja Room, ...) and, when
+  // it's set and differs from the name, is called out explicitly so the model
+  // isn't left to guess a room's purpose from a name alone.
+  const roomLabel =
+    room.type && room.type.trim() && room.type.trim().toLowerCase() !== room.name.trim().toLowerCase()
+      ? `${room.name} (a ${room.type})`
+      : room.name;
+
+  // `size` is absent when the room's dimensions weren't given (not printed on
+  // the plan, not filled in on Room Confirmation) — state the room without a
+  // size clause rather than baking a wrong number into the render prompt.
+  const roomIntro = room.size
+    ? `Room: ${roomLabel} (${room.size}) in a ${input.design.luxury_level.toLowerCase()} ` +
+      `"${input.design.style}" ${input.project.subcategory}.`
+    : `Room: ${roomLabel} in a ${input.design.luxury_level.toLowerCase()} ` +
+      `"${input.design.style}" ${input.project.subcategory}.`;
 
   const lines = [
     builder.intro,
     "",
-    `Room: ${room.name} (${room.size}) in a ${input.design.luxury_level.toLowerCase()} ` +
-      `"${input.design.style}" ${input.project.subcategory}.`,
+    roomIntro,
     `Colour palette: ${input.design.colour_palette}.`,
     "",
     `Design language: ${spec.designLanguage}`,
@@ -40,7 +63,7 @@ export async function buildRoomPrompt(
   lines.push("", `${builder.cameraPrefix} ${spec.cameraGuidelines}`);
   lines.push(`${builder.negativePrefix} ${spec.negativeConstraints}`);
 
-  return lines.join("\n");
+  return withSystemPreamble(lines.join("\n"));
 }
 
 /** Translates structured openings into natural language — only place this happens. */

@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useProject, useVasto } from "@/lib/store";
-import { emptyPlan } from "@/lib/pipeline/empty-plan";
+import { useProject } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -12,17 +11,11 @@ export default function FloorPlanPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const project = useProject(id);
-  const setFloorPlan = useVasto((s) => s.setFloorPlan);
-  const setStatus = useVasto((s) => s.setStatus);
   const [choice, setChoice] = useState<"yes" | "no" | null>(null);
 
   if (!project) return null;
 
-  const goManual = () => {
-    setFloorPlan(id, emptyPlan());
-    setStatus(id, "parsed");
-    router.push(`/projects/${id}/review`);
-  };
+  const goSketch = () => router.push(`/projects/${id}/sketch`);
 
   return (
     <div className="grid h-full place-items-center px-6">
@@ -60,8 +53,8 @@ export default function FloorPlanPage() {
         </div>
 
         {choice === "no" && (
-          <Button className="mt-6" iconRight="ArrowRight" onClick={goManual}>
-            Add rooms manually
+          <Button className="mt-6" iconRight="ArrowRight" onClick={goSketch}>
+            Sketch your floor plan
           </Button>
         )}
 

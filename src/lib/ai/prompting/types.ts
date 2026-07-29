@@ -18,8 +18,24 @@ export interface UniversalInputOpening {
 
 export interface UniversalInputRoom {
   name: string;
-  /** formatted for the schema boundary, e.g. "18 x 16 ft" — internally rooms use numeric width/height */
-  size: string;
+  /**
+   * The room's semantic category (e.g. "Bedroom", "Pooja Room", "Kitchen"),
+   * chosen on Room Confirmation from the active project category's fixed
+   * list (or free text for Custom) — distinct from `name`, which is often
+   * unreliable as a signal on its own (a detected/user-typed label like
+   * "Ananya's Room" or "Chotu's Room" says nothing about what KIND of room
+   * it is). Optional only because a room can genuinely have no type set yet
+   * (detection missed it, or the user hasn't picked one) — never omitted
+   * when a real value exists.
+   */
+  type?: string;
+  /**
+   * Formatted for the schema boundary, e.g. "18 x 16 ft" — internally rooms
+   * use numeric width/height. Omitted (not a guessed size) when a room's
+   * dimensions weren't given, so the image-generation prompt simply doesn't
+   * mention a size for that room rather than stating a wrong one.
+   */
+  size?: string;
   /** free-text, per room — e.g. "Need lots of natural light.", "Include a pooja room." */
   additional_notes?: string;
   /**

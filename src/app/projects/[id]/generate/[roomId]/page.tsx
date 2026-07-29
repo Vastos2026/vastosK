@@ -7,10 +7,9 @@ import { useProject, useVasto } from "@/lib/store";
 import { editRoomImage } from "@/lib/generation-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { LassoCanvas, type LassoRegionsHandle } from "@/components/project/lasso-canvas";
+import { Modal } from "@/components/ui/modal";
+import { LassoCanvas, REGION_COLORS, MAX_LASSO_REGIONS, type LassoRegionsHandle } from "@/components/project/lasso-canvas";
 import { cn, uid } from "@/lib/utils";
-
-const REGION_DOT = ["bg-[#e6a45c]", "bg-[#5cc9e2]"];
 
 /**
  * View & Edit (revamp Workstream 8.5, flow step 9) — full-size image, up to
@@ -28,9 +27,12 @@ export default function ViewEditPage() {
   const [prompts, setPrompts] = useState<string[]>(["", ""]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lassoError, setLassoError] = useState<string | null>(null);
+  const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 });
   const [viewedId, setViewedId] = useState<string | null>(null);
   const lassoRef = useRef<LassoRegionsHandle>(null);
+  const lassoErrorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   if (!project) return null;
   const room = project.floorPlan?.rooms.find((r) => r.id === roomId);
@@ -57,7 +59,27 @@ export default function ViewEditPage() {
     setRegionCount(0);
     setPrompts(["", ""]);
     setError(null);
+    setLassoError(null);
+    setDeleteIndex(null);
     setLassoOn((v) => !v);
+  };
+
+  const handleBlockedAttempt = () => {
+    setLassoError(`Only ${MAX_LASSO_REGIONS} regions allowed at a time.`);
+    if (lassoErrorTimeout.current) clearTimeout(lassoErrorTimeout.current);
+    lassoErrorTimeout.current = setTimeout(() => setLassoError(null), 3000);
+  };
+
+  const confirmDeleteRegion = () => {
+    if (deleteIndex === null) return;
+    lassoRef.current?.removeRegion(deleteIndex);
+    setPrompts((p) => {
+      const next = [...p];
+      next.splice(deleteIndex, 1);
+      next.push("");
+      return next;
+    });
+    setDeleteIndex(null);
   };
 
   const generate = async () => {
@@ -114,7 +136,7 @@ export default function ViewEditPage() {
           icon="Lasso"
           onClick={toggleLasso}
         >
-          {lassoOn ? "Cancel edit" : "Lasso edit"}
+          {lassoOn ? "Cancel edit" : "Selection Editing"}
         </Button>
       </div>
 
@@ -136,8 +158,9 @@ export default function ViewEditPage() {
                 ref={lassoRef}
                 enabled={lassoOn}
                 processing={busy}
-                maxRegions={2}
+                maxRegions={MAX_LASSO_REGIONS}
                 onRegionsChange={setRegionCount}
+                onBlockedAttempt={handleBlockedAttempt}
               />
             )}
           </div>
@@ -145,13 +168,28 @@ export default function ViewEditPage() {
           {lassoOn && (
             <aside className="w-72 shrink-0 overflow-y-auto">
               <p className="mb-3 text-xs text-muted">
-                Draw up to 2 regions on the image — beside the sofa, on a wall, near the TV.
+                Draw up to {MAX_LASSO_REGIONS} regions on the image — beside the sofa, on a wall, near the TV.
                 Each one gets its own number and instruction below.
               </p>
               {Array.from({ length: regionCount }).map((_, i) => (
-                <div key={i} className="mb-3 rounded-xl border border-border bg-surface p-3">
-                  <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold">
-                    <span className={cn("grid size-5 place-items-center rounded-full text-[11px] text-black", REGION_DOT[i])}>
+                <div
+                  key={i}
+                  className="relative mb-3 rounded-xl border border-info/30 bg-info/10 p-3"
+                >
+                  <button
+                    type="button"
+                    aria-label={`Delete region ${i + 1}`}
+                    disabled={busy}
+                    onClick={() => setDeleteIndex(i)}
+                    className="absolute right-2 top-2 rounded-lg p-1 text-muted hover:bg-surface-2 hover:text-danger disabled:pointer-events-none disabled:opacity-40 cursor-pointer"
+                  >
+                    <Icon name="Trash2" className="size-3.5" />
+                  </button>
+                  <div className="mb-1.5 flex items-center gap-1.5 pr-6 text-xs font-semibold">
+                    <span
+                      className="grid size-5 place-items-center rounded-full text-[11px] text-white"
+                      style={{ background: REGION_COLORS[i % REGION_COLORS.length] }}
+                    >
                       {i + 1}
                     </span>
                     Region {i + 1}
@@ -165,9 +203,10 @@ export default function ViewEditPage() {
                         return next;
                       })
                     }
+                    disabled={busy}
                     rows={2}
                     placeholder={i === 0 ? "Add a flower vase here." : "Replace this wall art."}
-                    className="input w-full resize-none text-xs"
+                    className="input w-full resize-none text-xs disabled:opacity-50"
                   />
                 </div>
               ))}
@@ -176,11 +215,12 @@ export default function ViewEditPage() {
                   No regions drawn yet.
                 </p>
               )}
-              {regionCount >= 2 && (
+              {regionCount >= MAX_LASSO_REGIONS && (
                 <p className="mb-3 text-[11px] text-faint">
-                  Maximum 2 regions per edit — generate this, then lasso-edit again for more.
+                  Maximum {MAX_LASSO_REGIONS} regions per edit. Generate this, then use Selection Editing again for more.
                 </p>
               )}
+              {lassoError && <p className="mb-3 text-[11px] text-danger">{lassoError}</p>}
               {error && <p className="mb-3 text-[11px] text-danger">{error}</p>}
               <Button className="w-full" icon="Sparkles" loading={busy} disabled={regionCount === 0} onClick={generate}>
                 Generate
@@ -212,6 +252,22 @@ export default function ViewEditPage() {
           </div>
         </div>
       )}
+
+      <Modal
+        open={deleteIndex !== null}
+        onClose={() => setDeleteIndex(null)}
+        title="Delete this region?"
+        className="max-w-sm"
+      >
+        <div className="flex items-center justify-end gap-2 px-6 py-4">
+          <Button variant="outline" size="sm" onClick={() => setDeleteIndex(null)}>
+            Cancel
+          </Button>
+          <Button variant="danger" size="sm" icon="Trash2" onClick={confirmDeleteRegion}>
+            Confirm
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }
