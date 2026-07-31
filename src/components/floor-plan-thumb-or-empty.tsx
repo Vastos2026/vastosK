@@ -18,6 +18,23 @@ export function FloorPlanThumbOrEmpty({
   padding?: string;
   iconSize?: string;
 }) {
+  // A real uploaded floor-plan photo (meta.storageKey, set by
+  // /api/parse-plan/route.ts) takes priority over the schematic drawing —
+  // manually-entered plans (no upload, see the no-floor-plan flow) have no
+  // storageKey and fall through to the PlanThumb schematic below, which
+  // doubles as this case's placeholder illustration.
+  if (plan?.meta?.storageKey) {
+    return (
+      <div className="absolute inset-0 overflow-hidden transition-transform duration-300 group-hover:scale-[1.03]">
+        {/* eslint-disable-next-line @next/next/no-img-element -- storage key is dynamic and can't use next/image's static loader config for arbitrary aspect ratios here */}
+        <img
+          src={`/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`}
+          alt=""
+          className="size-full object-cover"
+        />
+      </div>
+    );
+  }
   if (plan) {
     return (
       <div className={cn("absolute inset-0 transition-transform duration-300 group-hover:scale-[1.03]", padding)}>

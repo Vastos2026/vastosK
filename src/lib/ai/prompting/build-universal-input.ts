@@ -14,6 +14,15 @@ import type { LuxuryLevel, UniversalInput, UniversalInputOpening } from "./types
 const NOTES_MAX_LEN = 500;
 const LUXURY_LEVELS: LuxuryLevel[] = ["Standard", "Premium", "Ultra Luxury"];
 
+// Cost-amplification caps — this whole object gets JSON.stringify'd into the
+// Gemini prompt (design-planning.ts), so an unbounded room count or unbounded
+// free-text field directly amplifies token cost per request.
+const MAX_ROOMS = 60;
+const ROOM_NAME_MAX_LEN = 200;
+const CATEGORY_MAX_LEN = 100;
+const STYLE_MAX_LEN = 200;
+const COLOUR_PALETTE_MAX_LEN = 500;
+
 export interface RoomSelection {
   name: string;
   /** the room's semantic category (e.g. "Bedroom") — see UniversalInputRoom.type */
@@ -54,8 +63,17 @@ export function buildUniversalInput(
   if (!category.trim() || !subcategory.trim()) {
     throw new ProviderError("ValidationError", "project category/subcategory is required");
   }
+  if (category.trim().length > CATEGORY_MAX_LEN || subcategory.trim().length > CATEGORY_MAX_LEN) {
+    throw new ProviderError(
+      "ValidationError",
+      `category/subcategory exceed ${CATEGORY_MAX_LEN} characters`,
+    );
+  }
   if (rooms.length === 0) {
     throw new ProviderError("ValidationError", "at least one room is required");
+  }
+  if (rooms.length > MAX_ROOMS) {
+    throw new ProviderError("ValidationError", `too many rooms (max ${MAX_ROOMS})`);
   }
   if (!LUXURY_LEVELS.includes(design.luxuryLevel)) {
     throw new ProviderError("ValidationError", `invalid luxury level: ${design.luxuryLevel}`);
@@ -63,12 +81,33 @@ export function buildUniversalInput(
   if (!design.style.trim() || !design.colourPalette.trim()) {
     throw new ProviderError("ValidationError", "style and colour palette are required");
   }
+  if (design.style.trim().length > STYLE_MAX_LEN) {
+    throw new ProviderError("ValidationError", `style exceeds ${STYLE_MAX_LEN} characters`);
+  }
+  if (design.colourPalette.trim().length > COLOUR_PALETTE_MAX_LEN) {
+    throw new ProviderError(
+      "ValidationError",
+      `colour palette exceeds ${COLOUR_PALETTE_MAX_LEN} characters`,
+    );
+  }
 
   return {
     project: { category: category.trim(), subcategory: subcategory.trim() },
     layout: {
       rooms: rooms.map((r) => {
         if (!r.name.trim()) throw new ProviderError("ValidationError", "room name is required");
+        if (r.name.trim().length > ROOM_NAME_MAX_LEN) {
+          throw new ProviderError(
+            "ValidationError",
+            `room name "${r.name.trim().slice(0, 40)}..." exceeds ${ROOM_NAME_MAX_LEN} characters`,
+          );
+        }
+        if (r.type && r.type.trim().length > CATEGORY_MAX_LEN) {
+          throw new ProviderError(
+            "ValidationError",
+            `room type for "${r.name.trim()}" exceeds ${CATEGORY_MAX_LEN} characters`,
+          );
+        }
         // Missing dimensions are no longer rejected — a room Gemini couldn't
         // read a printed size for (or that the user hasn't filled in yet) is
         // a real, expected state now, not a validation failure. `size` is

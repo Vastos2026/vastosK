@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
-import type { UserRole } from "@/lib/auth/session";
+import type { UserRole } from "@/lib/auth/types";
 
 // Auth screens (login) and the public shared-walkthrough page render
 // full-bleed, no sidebar chrome. /s/[token] specifically must never show the

@@ -111,3 +111,40 @@ The live floor-plan extraction path is pure Next.js + a Gemini API call — no
 Python runtime needed, so a plain Vercel deployment works out of the box. A
 Python runtime is only required if you additionally want the dormant
 `DETECTOR`/`DETECTION_MODE` geometry-detection path (see above) available.
+
+Set the env vars below in the Vercel project's Settings → Environment
+Variables (values live in your own `.env.local` / secrets manager — never
+commit them). Everything is optional except the two marked required for a
+non-degraded deploy.
+
+| Var | Required? | Purpose |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Required for floor-plan extraction, image edits, video, and AI prompting | Google Gemini API key |
+| `GEMINI_MODEL` / `GEMINI_IMAGE_MODEL` / `GEMINI_VIDEO_MODEL` | Optional | Override the default Gemini model IDs |
+| `NEXT_PUBLIC_SUPABASE_URL` | Required for persistence/auth | Supabase project URL |
+| `SUPABASE_SECRET_KEY` | Required for persistence/auth | Supabase service-role key (server-only, bypasses RLS — never expose client-side) |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Required for persistence/auth | Supabase anon/publishable key (safe to expose client-side) |
+| `RUNWARE_API_KEY` | Optional | Switches image/video generation to Runware (FLUX.2/FLUX Fill/Wan 2.7) instead of Gemini |
+| `IMAGE_PROVIDER` / `VIDEO_PROVIDER` | Optional | `"gemini"` to force Gemini even with `RUNWARE_API_KEY` set |
+| `RUNWARE_IMAGE_MODEL` / `RUNWARE_EDIT_MODEL` / `RUNWARE_VIDEO_MODEL` / `RUNWARE_FALLBACK_IMAGE_MODEL` / `RUNWARE_IMAGE_RESOLUTION` | Optional | Runware model/resolution overrides |
+| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` | Recommended for production storage | Cloudflare R2 (preferred over S3 — no egress fees); takes priority over S3 if both are set |
+| `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `S3_BUCKET` | Optional (fallback) | Plain S3 storage; local disk is used if both R2 and S3 are unset — **do not rely on local disk on Vercel**, its filesystem is ephemeral/read-only per invocation |
+| `PYTHON_BIN` / `DETECTOR` / `DETECTION_MODE` / `DETECT_FURNITURE` | Optional, dormant | Only relevant if you wire the currently-unused Python/OpenCV geometry path back in; not needed for a standard deploy |
+| `RENDER_VERIFY` | Optional | Misc render-verification toggle |
+
+> **Function duration:** `/api/generate-walkthrough` sets `maxDuration = 300`
+> (one Veo clip per room, generated concurrently, can still take minutes for a
+> many-room project) and `/api/design-plan`/`/api/export-pdf` set 120/180s.
+> Vercel enforces its own plan-level ceiling regardless of what the route
+> requests — Hobby caps around 60s, Pro defaults to 60s unless you either
+> raise the project's function duration in Settings → Functions or enable
+> Fluid Compute (which allows up to 800s). If a route is silently killed
+> mid-run, the platform returns its own timeout page instead of the route's
+> JSON — on the client this can surface as a generic failure with no useful
+> message, rather than the specific error the route itself would have
+> returned. Confirm your plan's actual limit before relying on the longer
+> `maxDuration` values above.
+
+On Vercel specifically: since local disk storage doesn't persist between
+invocations, set the R2 (or S3) vars for any real deployment — without them,
+uploaded floor plans and generated renders will vanish between requests.

@@ -11,7 +11,6 @@ import { ROOM_PALETTE, uid, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Modal } from "@/components/ui/modal";
-import { Badge } from "@/components/ui/badge";
 import type { Room, Unit } from "@/lib/types";
 
 function openingCounts(room: Room) {
@@ -36,6 +35,7 @@ export default function ReviewPage() {
   const [addingRoom, setAddingRoom] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
 
   if (!project) return null;
 
@@ -44,13 +44,18 @@ export default function ReviewPage() {
   const unit: Unit = project.units ?? "ft-in";
   const category = categoryForPropertyType(project.propertyType);
   const roomTypes = getProjectTypeConfig(category)?.roomTypes ?? [];
-  const referenceImage = plan?.previewUrl;
-  // Only sum rooms with both dimensions known — a room still missing a
-  // dimension contributes 0 rather than turning the whole total into NaN.
-  const totalSqFt = rooms.reduce(
-    (sum, r) => sum + (r.width !== undefined && r.height !== undefined ? r.width * r.height : 0),
-    0,
-  );
+  // plan.previewUrl (a blob: URL from the browser tab that did the upload,
+  // see upload/page.tsx) only survives that one tab's lifetime — dead on any
+  // reload or later visit for a project that never got a durable
+  // meta.storageKey. imageFailed catches that (and any other load failure,
+  // e.g. a since-deleted storage key) via onError below, so the panel
+  // disappears instead of showing a permanently broken image icon.
+  const referenceImage =
+    imageFailed
+      ? undefined
+      : plan?.meta?.storageKey
+        ? `/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`
+        : plan?.previewUrl;
 
   const goToDesign = () => router.push(`/projects/${id}/design`);
 
@@ -76,11 +81,6 @@ export default function ReviewPage() {
               </p>
             )}
           </div>
-          {rooms.length > 0 && (
-            <Badge icon="Ruler" className="hidden shrink-0 sm:inline-flex">
-              {Math.round(totalSqFt).toLocaleString()} sq ft total
-            </Badge>
-          )}
         </div>
 
         {referenceImage && (
@@ -92,7 +92,12 @@ export default function ReviewPage() {
               className="group relative h-16 w-24 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-grid bg-bg transition-colors hover:border-accent/50"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={referenceImage} alt="Uploaded floor plan" className="h-full w-full object-contain" />
+              <img
+                src={referenceImage}
+                alt="Uploaded floor plan"
+                className="h-full w-full object-contain"
+                onError={() => setImageFailed(true)}
+              />
               <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
                 <Icon name="Maximize2" className="size-4 text-white" />
               </span>
@@ -127,6 +132,7 @@ export default function ReviewPage() {
                 src={referenceImage}
                 alt="Uploaded floor plan"
                 className="mx-auto max-h-[80vh] w-full object-contain"
+                onError={() => setImageFailed(true)}
               />
             )}
           </div>
@@ -138,6 +144,10 @@ export default function ReviewPage() {
             // Derived live, not a stored flag — so filling in a dimension
             // below clears the warning immediately instead of it going stale.
             const dimensionsMissing = room.width === undefined || room.height === undefined;
+            // A room with at least one generated image can't be deleted here
+            // anymore — deleting it would orphan real generated work, and
+            // re-adding a room with the same name wouldn't restore it.
+            const hasGenerations = (project.roomCards.find((c) => c.roomId === room.id)?.generations.length ?? 0) > 0;
             return (
               <div
                 key={room.id}
@@ -160,13 +170,16 @@ export default function ReviewPage() {
                       <Icon name="CircleAlert" className="size-3.5" />
                     </span>
                   )}
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    icon="Trash2"
-                    aria-label="Delete room"
-                    onClick={() => setPendingDeleteId(room.id)}
-                  />
+                  <span title={hasGenerations ? "This room already has generated images and can't be deleted" : undefined}>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      icon="Trash2"
+                      aria-label={hasGenerations ? "This room already has generated images and can't be deleted" : "Delete room"}
+                      disabled={hasGenerations}
+                      onClick={() => setPendingDeleteId(room.id)}
+                    />
+                  </span>
                 </div>
 
                 <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-2 pl-6">
@@ -479,7 +492,7 @@ function DimensionInline({
           value={ft ?? ""}
           placeholder="—"
           onChange={(e) => onChange(ftInToFeet(Number(e.target.value) || 0, inches ?? 0))}
-          className="input w-14"
+          className="input w-20 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           aria-label={`${label} feet`}
         />
         <span className="text-faint">ft</span>
@@ -490,7 +503,7 @@ function DimensionInline({
           value={inches ?? ""}
           placeholder="—"
           onChange={(e) => onChange(ftInToFeet(ft ?? 0, Number(e.target.value) || 0))}
-          className="input w-12"
+          className="input w-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           aria-label={`${label} inches`}
         />
         <span className="text-faint">in</span>

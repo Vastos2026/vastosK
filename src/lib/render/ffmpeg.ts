@@ -17,16 +17,37 @@ export function ffmpegAvailable(): boolean {
   return !!ffmpegPath;
 }
 
+// A hung ffmpeg child process would otherwise only be bounded by the route's
+// maxDuration (300s), holding the invocation open with no visibility into
+// which step stalled. Kill and reject explicitly instead.
+const FFMPEG_TIMEOUT_MS = 120_000;
+
 function run(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!ffmpegPath) return reject(new Error("ffmpeg binary not found"));
     const p = spawn(ffmpegPath, args);
     let err = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      p.kill("SIGKILL");
+      reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms: ${args.join(" ")}`));
+    }, FFMPEG_TIMEOUT_MS);
     p.stderr.on("data", (d) => (err += d.toString()));
-    p.on("error", reject);
-    p.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.slice(-300)}`)),
-    );
+    p.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+    p.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited ${code}: ${err.slice(-300)}`));
+    });
   });
 }
 
@@ -118,9 +139,17 @@ export async function trimVideo(clip: Buffer, seconds: number): Promise<Buffer> 
 
 /**
  * Concatenate mp4 clips into ONE seamless video, in order. Every input is
- * normalised to 1280×720/24fps first (Veo segments are already uniform, but the
+ * normalised to 1280×720 first (Veo segments are already uniform, but the
  * concat demuxer hard-fails on any mismatch — a $10 walkthrough must not die on
  * a stray resolution), then joined with a single re-encode.
+ *
+ * Also applies the 1.25x speed-up + motion-smoothing the user asked for
+ * (reported walkthroughs as "not smooth and fast enough") during this same
+ * per-clip normalisation pass, rather than a separate encode: `setpts=PTS/1.25`
+ * plays each clip 25% faster (shortening total runtime proportionally —
+ * confirmed acceptable), then `minterpolate` generates real in-between frames
+ * up to 48fps (motion-compensated, not just a frame-rate relabel) so the
+ * result reads as smoother motion rather than choppier fast-forward.
  */
 export async function concatVideos(clips: Buffer[]): Promise<Buffer> {
   if (!ffmpegPath) throw new Error("ffmpeg is not available");
@@ -134,7 +163,9 @@ export async function concatVideos(clips: Buffer[]): Promise<Buffer> {
       const out = path.join(dir, `n_${i}.mp4`);
       await run([
         "-i", raw,
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=24",
+        "-vf",
+        "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1," +
+          "setpts=PTS/1.25,minterpolate=fps=48:mi_mode=mci:mc_mode=aobmc:vsbmc=1",
         "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast",
         "-y", out,
       ]);
@@ -150,6 +181,46 @@ export async function concatVideos(clips: Buffer[]): Promise<Buffer> {
       "-y", outMp4,
     ]);
     return await readFile(outMp4);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const MUSIC_PATH = path.join(process.cwd(), "public", "audio", "walkthrough-sound.mp3");
+
+/**
+ * Mixes the fixed background-music track into a finished (silent) walkthrough
+ * video, fading it in at the start and out at the end. `concatVideos` strips
+ * audio from every clip before joining them (`-an`), so this is the only
+ * place a walkthrough ever gains an audio track. The music file is looped
+ * (`-stream_loop -1` on the audio input) so a long, many-room walkthrough
+ * never runs out of source audio even though the track itself is a fixed
+ * length, then trimmed to the video's exact duration via `-shortest` so the
+ * output is never longer than the video. Fade duration is capped relative to
+ * the video's own length (never more than a quarter of it) so a short
+ * 2-room walkthrough (6s) doesn't get swallowed by an overlong fade.
+ */
+export async function addBackgroundMusic(video: Buffer): Promise<Buffer> {
+  if (!ffmpegPath) throw new Error("ffmpeg is not available");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "veo-music-"));
+  try {
+    const videoPath = path.join(dir, "video.mp4");
+    await writeFile(videoPath, video);
+    const duration = await probeDuration(videoPath);
+    const fadeSeconds = Math.max(0.5, Math.min(2, duration / 4));
+    const fadeOutStart = Math.max(0, duration - fadeSeconds);
+    const outPath = path.join(dir, "with-music.mp4");
+    await run([
+      "-i", videoPath,
+      "-stream_loop", "-1", "-i", MUSIC_PATH,
+      "-filter_complex",
+      `[1:a]atrim=0:${duration.toFixed(2)},afade=t=in:st=0:d=${fadeSeconds.toFixed(2)},afade=t=out:st=${fadeOutStart.toFixed(2)}:d=${fadeSeconds.toFixed(2)}[aout]`,
+      "-map", "0:v", "-map", "[aout]",
+      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+      "-shortest", "-movflags", "+faststart",
+      "-y", outPath,
+    ]);
+    return await readFile(outPath);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

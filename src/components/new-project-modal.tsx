@@ -28,9 +28,18 @@ export function NewProjectModal({
   const projects = useVasto((s) => s.projects);
   const createProject = useVasto((s) => s.createProject);
   const [name, setName] = useState("");
-  const [type, setType] = useState<PropertyType>(initialType);
+  // No silent default when the picker is shown unprompted (lockType false,
+  // e.g. the Projects page's "+ New Project" button): pre-selecting
+  // "apartment" here meant a user who typed a name and hit Create without
+  // explicitly clicking a property-type card got an Apartment project while
+  // believing they'd chosen whichever card they'd looked at — found in
+  // review after a report of "I picked Residential Home but got 1BHK/2BHK
+  // options". When lockType is true (the welcome screen's category cards),
+  // initialType IS the user's own explicit prior click, so pre-filling it
+  // here is correct, not a silent default.
+  const [type, setType] = useState<PropertyType | null>(lockType ? initialType : null);
   const [showPicker, setShowPicker] = useState(!lockType);
-  const chosen = PROPERTY_TYPES.find((p) => p.id === type);
+  const chosen = type ? PROPERTY_TYPES.find((p) => p.id === type) : undefined;
 
   const trimmedName = name.trim();
   const isDuplicate =
@@ -38,11 +47,11 @@ export function NewProjectModal({
     projects.some((p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase());
 
   const submit = () => {
-    if (!trimmedName || isDuplicate) return;
+    if (!trimmedName || isDuplicate || !type) return;
     const id = createProject(trimmedName, type);
     onClose();
     setName("");
-    setType(initialType);
+    setType(lockType ? initialType : null);
     setShowPicker(!lockType);
     router.push(`/projects/${id}/floor-plan`);
   };
@@ -134,7 +143,7 @@ export function NewProjectModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={submit} iconRight="ArrowRight" disabled={!trimmedName || isDuplicate}>
+        <Button onClick={submit} iconRight="ArrowRight" disabled={!trimmedName || isDuplicate || !type}>
           Create project
         </Button>
       </div>

@@ -13,12 +13,30 @@
  * "owner" id with no auth check at all, a real vulnerability; ownership is
  * now the real Supabase Auth user id end to end, not a pre-auth localStorage
  * device id).
+ *
+ * **Local-cache ownership guard**: `useVasto`'s persisted store lives under
+ * one global localStorage key (`vasto-store-v1`, store.ts), not scoped per
+ * user — and `importProjects` only ever ADDS/merges, it never removes a
+ * local project that isn't in the server's response. So on a shared
+ * browser/device, if user B signs in after user A previously used the app
+ * there, user A's projects were still sitting in the store: they rendered
+ * immediately in the Projects list under B's session (a real cross-tenant
+ * leak, not just a display glitch), and got pushed to Supabase via this
+ * file's own upsert loop below UNDER B's real auth id — silently
+ * re-attributing ownership of A's `project_snapshots` rows to B. Fixed by
+ * remembering which user's data currently occupies the local cache
+ * (`LOCAL_CACHE_OWNER_KEY`, a plain localStorage marker, deliberately outside
+ * the zustand persisted blob so it doesn't need a store version bump) and
+ * wiping the store first whenever that marker doesn't match the signed-in
+ * `userId`.
  */
 
 import { useEffect, useRef } from "react";
 import { useVasto } from "./store";
 import { supabaseBrowser } from "./supabase/browser";
 import type { Project } from "./types";
+
+const LOCAL_CACHE_OWNER_KEY = "vasto-local-cache-owner";
 
 export function ProjectSync({ userId }: { userId: string | null }) {
   const importProjects = useVasto((s) => s.importProjects);
@@ -33,6 +51,20 @@ export function ProjectSync({ userId }: { userId: string | null }) {
     if (!userId) return;
     let cancelled = false;
     (async () => {
+      // A different (or no-longer-signed-in) user's projects may still be
+      // sitting in the local store from a prior session on this browser —
+      // wipe them before pulling/pushing anything under the CURRENT user's
+      // id, so neither the UI nor Supabase ever mixes two accounts' data.
+      try {
+        const cachedOwner = localStorage.getItem(LOCAL_CACHE_OWNER_KEY);
+        if (cachedOwner && cachedOwner !== userId) {
+          useVasto.getState().clearAllProjects();
+        }
+        localStorage.setItem(LOCAL_CACHE_OWNER_KEY, userId);
+      } catch {
+        /* localStorage unavailable (private mode, etc.) — nothing to guard */
+      }
+
       // What Supabase currently has, so we can tell "in sync" from "local is
       // ahead" after the merge below.
       const remoteStamp = new Map<string, string>();

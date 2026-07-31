@@ -28,8 +28,13 @@ export interface BuilderTemplateBody {
 
 const DEFAULT_SYSTEM: SystemTemplateBody = {
   rules:
-    "Photorealistic interior-design magazine photograph. Realistic materials, lighting, shadows and " +
-    "reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and " +
+    "Photorealistic interior-design natural magazine photograph, shot on a full-frame camera with a wide-angle " +
+    "real-estate lens. Tack-sharp focus and fine surface detail (wood grain, fabric weave, stone texture) " +
+    "throughout, not smoothed or plastic-looking. Soft natural daylight spilling in through windows/openings " +
+    "as the dominant light source, with realistic falloff and gentle, physically plausible shadows rather " +
+    "than flat studio lighting. Realistic materials, reflections and imperfections. Every piece of furniture " +
+    "and fixture must be structurally real and buildable, no floating, warped or physically impossible " +
+    "geometry. No people, no text or watermarks, no visible logos. Render exactly the furniture and " +
     "fixtures implied by the brief below — do not invent unrelated objects.",
 };
 

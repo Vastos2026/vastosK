@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Modal } from "@/components/ui/modal";
 import { LassoCanvas, REGION_COLORS, MAX_LASSO_REGIONS, type LassoRegionsHandle } from "@/components/project/lasso-canvas";
-import { cn, uid } from "@/lib/utils";
+import { cn, uid, slugifyRoomName } from "@/lib/utils";
 
 /**
  * View & Edit (revamp Workstream 8.5, flow step 9) — full-size image, up to
@@ -130,14 +130,26 @@ export default function ViewEditPage() {
         >
           <Icon name="ArrowLeft" className="size-4" /> {room.name}
         </Link>
-        <Button
-          size="sm"
-          variant={lassoOn ? "primary" : "outline"}
-          icon="Lasso"
-          onClick={toggleLasso}
-        >
-          {lassoOn ? "Cancel edit" : "Selection Editing"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <a
+            href={current.imageUrl}
+            download={`${slugifyRoomName(room.name)}.png`}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-foreground cursor-pointer"
+            aria-label="Save image to your device"
+            title="Save image"
+          >
+            <Icon name="Download" className="size-4" />
+            Save
+          </a>
+          <Button
+            size="sm"
+            variant={lassoOn ? "primary" : "outline"}
+            icon="Lasso"
+            onClick={toggleLasso}
+          >
+            {lassoOn ? "Cancel edit" : "Selection Editing"}
+          </Button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
@@ -168,7 +180,7 @@ export default function ViewEditPage() {
           {lassoOn && (
             <aside className="w-72 shrink-0 overflow-y-auto">
               <p className="mb-3 text-xs text-muted">
-                Draw up to {MAX_LASSO_REGIONS} regions on the image — beside the sofa, on a wall, near the TV.
+                Draw up to {MAX_LASSO_REGIONS} regions on the image. Beside the sofa, on a wall, near the TV.
                 Each one gets its own number and instruction below.
               </p>
               {Array.from({ length: regionCount }).map((_, i) => (
@@ -226,7 +238,7 @@ export default function ViewEditPage() {
                 Generate
               </Button>
               <p className="mt-2 text-[11px] text-faint">
-                Only the numbered regions change — everything else in the photo stays identical.
+                Only the numbered regions change. Everything else in the photo stays identical.
               </p>
             </aside>
           )}

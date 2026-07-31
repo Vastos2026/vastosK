@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Google Flow-style looping carousel: several columns of cards drifting
  * upward at different speeds, behind the welcome greeting. Renders real

@@ -22,11 +22,13 @@
 
 import { randomUUID } from "node:crypto";
 import { generateVideo } from "@/lib/ai/provider";
-import { ProviderError } from "@/lib/ai/errors";
+import { toErrorResponse } from "@/lib/ai/errors";
 import { getObject, putObject } from "@/lib/pipeline/storage";
-import { concatVideos, ffmpegAvailable, trimVideo } from "@/lib/render/ffmpeg";
+import { addBackgroundMusic, concatVideos, ffmpegAvailable, trimVideo } from "@/lib/render/ffmpeg";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
+import { requireOwnedProject } from "@/lib/supabase/projects";
+import { allowedProjectStorageKeys } from "@/lib/projects/approved-rooms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,35 +88,60 @@ export async function POST(request: Request) {
     }
   }
 
-  try {
-    const clips: Buffer[] = [];
-    for (const room of rooms) {
-      const imageBytes = await getObject(room.imageKey!);
-      const imageDataUri = `data:image/png;base64,${imageBytes.toString("base64")}`;
-      const video = await generateVideo(
-        imageDataUri,
-        ZOOM_PROMPT,
-        { durationSeconds: VEO_REQUEST_SECONDS, aspectRatio: "16:9" },
-        { projectId, userId: guard.id },
-      );
-      const trimmed = await trimVideo(video.bytes, CLIP_SECONDS);
-      clips.push(trimmed);
+  // Every imageKey above is client-supplied and only checked for a
+  // `renders/` prefix — without this check, an authenticated caller could
+  // submit ANY other project's real image keys and have them read + run
+  // through paid Veo generation under an attacker-controlled `projectId`
+  // (a cross-tenant data/cost leak found in review). Mirrors export-pdf's
+  // ownership check: when Supabase is configured, require the caller to
+  // actually own `projectId` AND every room's imageKey to belong to that
+  // project's own APPROVED room generations (the narrower
+  // `allowedProjectStorageKeys`, not the broader `allProjectStorageKeys` —
+  // this route's whole purpose is one clip per approved room image, so
+  // validating against anything broader would let an unapproved/stale
+  // image sneak in). When Supabase isn't configured, there's no
+  // persistence layer at all (no other users' data to leak) — degrade to
+  // allowing it, matching this app's existing "best-effort, works without
+  // Supabase" contract.
+  const owned = await requireOwnedProject(guard.id, projectId);
+  if (owned instanceof Response) return owned;
+  if (owned) {
+    const allowedKeys = allowedProjectStorageKeys(owned);
+    for (const r of rooms) {
+      if (!allowedKeys.has(r.imageKey!)) {
+        return Response.json({ error: "One or more room images don't belong to this project" }, { status: 403 });
+      }
     }
+  }
+
+  try {
+    // Independent per-room clips — generated concurrently instead of one at a
+    // time, since Veo generation is by far the slowest step and each room's
+    // request doesn't depend on any other's. Order is preserved (Promise.all
+    // resolves in input order) so concatVideos still joins rooms correctly.
+    const clips = await Promise.all(
+      rooms.map(async (room) => {
+        const imageBytes = await getObject(room.imageKey!);
+        const imageDataUri = `data:image/png;base64,${imageBytes.toString("base64")}`;
+        const video = await generateVideo(
+          imageDataUri,
+          ZOOM_PROMPT,
+          { durationSeconds: VEO_REQUEST_SECONDS, aspectRatio: "16:9" },
+          { projectId, userId: guard.id },
+        );
+        return trimVideo(video.bytes, CLIP_SECONDS);
+      }),
+    );
 
     const joined = clips.length > 1 ? await concatVideos(clips) : clips[0];
+    const withMusic = await addBackgroundMusic(joined);
     const key = `renders/${projectId}/${randomUUID()}.mp4`;
-    await putObject(key, joined, "video/mp4");
+    await putObject(key, withMusic, "video/mp4");
     const videoUrl = `/api/render?key=${encodeURIComponent(key)}`;
     void recordGeneration({ projectId, userId: guard.id, roomKey: null, type: "video", storageUrl: videoUrl });
     return Response.json({ videoUrl, key });
   } catch (e) {
-    if (e instanceof ProviderError) {
-      const status = e.category === "ValidationError" ? 400 : 502;
-      return Response.json({ error: e.message, category: e.category }, { status });
-    }
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Walkthrough generation failed" },
-      { status: 500 },
-    );
+    const { status, body } = toErrorResponse(e, "Walkthrough generation");
+    return Response.json(body, { status });
   }
 }

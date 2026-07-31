@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "./ui/icon";
 import { signOut } from "@/app/login/actions";
-import type { UserRole } from "@/lib/auth/session";
+import type { UserRole } from "@/lib/auth/types";
 
 // Styles / Asset Library belonged to the old 3D-placement studio, out of
 // scope for the revamp — dropped from the nav (routes still exist, dormant,
@@ -28,7 +28,7 @@ export function Sidebar({ role }: { role: UserRole | null }) {
     role === "master" ? [...NAV, { href: "/console", label: "Console", icon: "Settings" }] : NAV;
 
   return (
-    <aside className="glass my-3 ml-3 flex w-16 shrink-0 flex-col items-center gap-1 rounded-3xl py-4 shadow-2xl shadow-black/40">
+    <aside className="glass relative z-30 my-3 ml-3 flex w-16 shrink-0 flex-col items-center gap-1 rounded-3xl py-4 shadow-2xl shadow-black/40">
       <Link
         href="/"
         className="group relative mb-3 grid size-10 place-items-center rounded-2xl border border-white/10 bg-white/90 shadow-sm transition-all duration-200 hover:scale-105 hover:bg-white cursor-pointer"
@@ -43,7 +43,7 @@ export function Sidebar({ role }: { role: UserRole | null }) {
         {/* Logo's mark is black-on-white/transparent — a plain dark glass
             background (this sidebar's usual chrome) would swallow the black
             "V" entirely, hence the light chip behind it instead. */}
-        <Image src="/vastos-logo.png" alt="Vastos" fill className="relative object-contain p-2" priority />
+        <Image src="/vastos-logo.png" alt="Vastos" fill sizes="40px" className="relative object-contain p-2" priority />
       </Link>
 
       <nav className="flex flex-1 flex-col items-center gap-1.5">

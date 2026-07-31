@@ -38,3 +38,27 @@ export function allowedProjectStorageKeys(project: Project): Set<string> {
   for (const { imageKey } of resolveApprovedRooms(project)) keys.add(imageKey);
   return keys;
 }
+
+/**
+ * Every storage key this project's own data has EVER referenced — the floor
+ * plan upload, every generation of every room (not just the approved one),
+ * and the walkthrough video. Broader than `allowedProjectStorageKeys` on
+ * purpose: routes that operate on "whatever the client is currently looking
+ * at" (GET /api/render serving any gallery thumbnail/version, or
+ * POST /api/edit-room-image editing the specific version the user has open,
+ * which isn't necessarily the room's approved one) need to recognize any
+ * key the project has ever produced, not just its final picks. Routes whose
+ * own semantics are genuinely "approved rooms only" (export-pdf,
+ * generate-walkthrough) should keep using `allowedProjectStorageKeys`
+ * instead — using this broader set there would let a caller smuggle in an
+ * unapproved/stale image under the guise of "it's still technically mine."
+ */
+export function allProjectStorageKeys(project: Project): Set<string> {
+  const keys = new Set<string>();
+  if (project.floorPlan?.meta?.storageKey) keys.add(project.floorPlan.meta.storageKey);
+  for (const card of project.roomCards) {
+    for (const generation of card.generations) keys.add(generation.imageKey);
+  }
+  if (project.walkthrough?.videoKey) keys.add(project.walkthrough.videoKey);
+  return keys;
+}

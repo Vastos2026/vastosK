@@ -1,5 +1,5 @@
 /**
- * Nano Banana (Gemini 2.5 Flash Image) — instruction-driven image editing for
+ * Nano Banana 2 (Gemini 3.1 Flash Image) — instruction-driven image editing for
  * the lasso "selective edit". It's genuinely good at *adding* objects from a
  * sparse instruction ("add an AC there"), which masked FLUX inpainting struggles
  * with.
@@ -19,8 +19,8 @@ import type { DesignStyle } from "@/lib/types";
 import { generateJson } from "@/lib/pipeline/gemini-client";
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-// "Nano Banana". Overridable so the slug can be pinned without a code change.
-const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-2.5-flash-image";
+// "Nano Banana 2". Overridable so the slug can be pinned without a code change.
+const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
 
 export interface EditedImage {
   bytes: Buffer;
@@ -32,13 +32,13 @@ export function geminiImageConfigured(): boolean {
 }
 
 /** Strip a `data:<mime>;base64,` prefix → raw base64 + mime. */
-function parseDataUri(uri: string): { data: string; mime: string } {
+export function parseDataUri(uri: string): { data: string; mime: string } {
   const m = uri.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if (m) return { mime: m[1], data: m[2] };
   return { mime: "image/png", data: uri };
 }
 
-const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+export const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -127,22 +127,39 @@ async function callImageModel(
   return null;
 }
 
+export interface CropEditPlan {
+  /** The full original image, for compositing the result back into later. */
+  baseBuf: Buffer;
+  /** The cropped region to hand to whichever image model does the actual edit. */
+  cropDataUri: string;
+  /** The (downscaled) user-uploaded reference image, if one was given. */
+  refDataUri: string | null;
+  /** Fully-assembled instruction text, provider-agnostic. */
+  prompt: string;
+  bx: number;
+  by: number;
+  bw: number;
+  bh: number;
+}
+
 /**
- * Edit the lasso region of `baseDataUri` per `instruction` using Nano Banana,
- * compositing the change back through `maskDataUri` so only that area changes.
+ * Provider-agnostic crop-edit planning: finds the lasso's bounding box (with
+ * a generous adaptive pad — the lasso is a HINT of where to look, not a hard
+ * boundary), crops it, and assembles the edit instruction text. Pulled out of
+ * `editImageWithGemini` so `runware-client.ts`'s Nano-Banana-via-Runware path
+ * can reuse the exact same math instead of re-deriving it — this part of the
+ * pipeline never talks to Google directly, only `sharp`. Returns null when
+ * the mask has no selected (white) pixels, or the resulting crop is
+ * degenerate — callers should skip the edit call entirely in that case.
  */
-export async function editImageWithGemini(
+export async function planCropEdit(
   baseDataUri: string,
   maskDataUri: string,
   instruction: string,
   style: DesignStyle,
   /** optional reference image (data URI) the user uploaded to guide the change */
   reference?: string,
-  signal?: AbortSignal,
-): Promise<EditedImage | null> {
-  const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key) return null;
-
+): Promise<CropEditPlan | null> {
   const base = parseDataUri(baseDataUri);
   const mask = parseDataUri(maskDataUri);
   const baseBuf = Buffer.from(base.data, "base64");
@@ -238,10 +255,46 @@ Make the change photorealistic and consistent with the surrounding room — matc
 camera angle, perspective, lighting, scale, shadows and reflections, in a "${style.name}" interior style.
 Return the full edited image at the same dimensions.`;
 
+  return {
+    baseBuf,
+    cropDataUri: `data:image/png;base64,${cropBuf.toString("base64")}`,
+    refDataUri: ref ? `data:${ref.mime};base64,${ref.data}` : null,
+    prompt,
+    bx,
+    by,
+    bw,
+    bh,
+  };
+}
+
+/**
+ * Edit the lasso region of `baseDataUri` per `instruction` using Nano Banana
+ * (direct Google API), compositing the change back through `maskDataUri` so
+ * only that area changes. Thin wrapper around `planCropEdit` — see that
+ * function for the actual crop/pad/prompt logic, which is shared with the
+ * Runware Nano-Banana path in `runware-client.ts`.
+ */
+export async function editImageWithGemini(
+  baseDataUri: string,
+  maskDataUri: string,
+  instruction: string,
+  style: DesignStyle,
+  /** optional reference image (data URI) the user uploaded to guide the change */
+  reference?: string,
+  signal?: AbortSignal,
+): Promise<EditedImage | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return null;
+
+  const plan = await planCropEdit(baseDataUri, maskDataUri, instruction, style, reference);
+  if (!plan) return null;
+  const crop = parseDataUri(plan.cropDataUri);
+  const ref = plan.refDataUri ? parseDataUri(plan.refDataUri) : null;
+
   const editedBuf = await callImageModel(
     [
-      { text: prompt },
-      { inlineData: { mimeType: "image/png", data: cropBuf.toString("base64") } },
+      { text: plan.prompt },
+      { inlineData: { mimeType: crop.mime, data: crop.data } },
       ...(ref ? [{ inlineData: { mimeType: ref.mime, data: ref.data } }] : []),
     ],
     "nano-banana",
@@ -251,7 +304,7 @@ Return the full edited image at the same dimensions.`;
 
   // Composite the edited crop back into the base over the WHOLE crop region.
   try {
-    return await compositeCrop(baseBuf, editedBuf, bx, by, bw, bh);
+    return await compositeCrop(plan.baseBuf, editedBuf, plan.bx, plan.by, plan.bw, plan.bh);
   } catch (e) {
     console.warn("[nano-banana] composite failed:", (e as Error).message);
     return null;
@@ -268,7 +321,7 @@ Return the full edited image at the same dimensions.`;
  * back is a no-op everywhere except the actual edit. Far background outside the
  * crop stays byte-identical; the feathered border hides the seam.
  */
-async function compositeCrop(
+export async function compositeCrop(
   baseBuf: Buffer,
   editedBuf: Buffer,
   bx: number,

@@ -33,24 +33,6 @@ export async function setUserStatus(userId: string, status: "active" | "suspende
   revalidatePath("/console");
 }
 
-/** Pushes trial_ends_at forward `days` days from now. Simple by design — no
- *  recurring-interval math, matches the same "admin sets it directly" spirit
- *  as billing_cycle/next_billing_date. `days` is admin-entered (console UI),
- *  so it's validated here rather than trusted from the client. */
-export async function extendTrial(userId: string, days: number) {
-  const { admin } = await requireAdminClient();
-  if (!Number.isFinite(days) || days <= 0) {
-    throw new Error("Days must be a positive number.");
-  }
-  const nextTrialEnd = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-  const { error } = await admin
-    .from("profiles")
-    .update({ trial_ends_at: nextTrialEnd })
-    .eq("id", userId);
-  if (error) throw new Error(error.message);
-  revalidatePath("/console");
-}
-
 export async function deleteUserAccount(userId: string) {
   const { admin, caller } = await requireAdminClient();
   if (userId === caller.id) {
@@ -78,6 +60,14 @@ export async function updateDisplayName(userId: string, displayName: string) {
   revalidatePath("/console");
 }
 
+/**
+ * `nextBillingDate` here is a one-time ANCHOR, not something re-entered each
+ * renewal — `computeCurrentBillingDate` (src/lib/billing.ts) rolls it forward
+ * automatically everywhere it's read. Must be strictly in the future: an
+ * admin can't anchor a billing cycle to a date that's already passed (e.g.
+ * picking "Jul 4" when today is "Jul 6") — they'd pick the next real future
+ * occurrence instead (e.g. "Aug 4"), per explicit product decision.
+ */
 export async function updateBilling(
   userId: string,
   billingCycle: string | null,
@@ -91,12 +81,40 @@ export async function updateBilling(
   if (billingCycle && !(BILLING_CYCLES as readonly string[]).includes(billingCycle)) {
     throw new Error(`Invalid billing cycle: ${billingCycle}`);
   }
+  if (nextBillingDate && new Date(nextBillingDate).getTime() <= Date.now()) {
+    throw new Error("Billing date must be after today.");
+  }
   const { error } = await admin
     .from("profiles")
     .update({
       billing_cycle: billingCycle || null,
       next_billing_date: nextBillingDate || null,
     })
+    .eq("id", userId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/console");
+}
+
+/**
+ * Sets (or clears, with `stopAt: null`) a future date at which this user's
+ * account stops working entirely — checked on every request (see
+ * src/lib/auth/session.ts's getCurrentUser/requireUser), not a cron job, so
+ * it takes effect on that user's very next request once the date passes,
+ * without needing any background process. Distinct from Suspend (immediate,
+ * manual, reversible any time) — this is a scheduled, future-dated stop, for
+ * "this client's contract ends on X" rather than "block them right now."
+ */
+export async function updateScheduledStop(userId: string, stopAt: string | null) {
+  const { admin, caller } = await requireAdminClient();
+  if (userId === caller.id) {
+    throw new Error("You can't schedule a stop on your own account — ask another master account to do it.");
+  }
+  if (stopAt && new Date(stopAt).getTime() <= Date.now()) {
+    throw new Error("Scheduled stop date must be in the future — use Suspend for an immediate stop.");
+  }
+  const { error } = await admin
+    .from("profiles")
+    .update({ scheduled_stop_at: stopAt || null })
     .eq("id", userId);
   if (error) throw new Error(error.message);
   revalidatePath("/console");

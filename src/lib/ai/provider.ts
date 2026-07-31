@@ -31,9 +31,12 @@ import { logUsage } from "./usage-log";
 import {
   runwareConfigured,
   generateImageWithRunware,
-  editImageWithRunware,
+  generateImageWithRunwareGemini,
+  editImageWithRunwareGemini,
   generateVideoWithRunware,
 } from "@/lib/render/runware-client";
+import { getProviderPrimary, type ProviderCapability } from "@/lib/settings/provider-settings";
+import { currentModelSlugs } from "@/lib/ai/model-labels";
 
 export interface CallContext {
   userId?: string | null;
@@ -41,17 +44,36 @@ export interface CallContext {
 }
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-2.5-flash-image";
+// Gemini 3.1 Flash Image ("Nano Banana 2") — same model Runware's google:4@3
+// tier calls. This account's own Google Cloud free-tier quota for it was
+// hard 0 as of 2026-07-31 (unfunded billing, not a code issue) — the
+// direct-AI-Studio path is only the true last resort anyway (reached when
+// every Runware tier is also unreachable), so it stays pinned to this model
+// rather than degrading to 2.5 for an account-funding gap that isn't this
+// code's problem to work around.
+const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
 
 /**
- * Provider toggle — flip back to Gemini any time by setting the env var to
- * "gemini" (or unsetting RUNWARE_API_KEY, which forces the Gemini path
- * regardless of the env var, so a half-configured Runware setup never
- * silently breaks generation). Documented in CLAUDE.md's "Env vars" section
- * and .env.example. Defaults to Runware — this is a deliberate temporary
- * testing setup, not a permanent architecture decision (see context.md).
+ * Provider selection for image_gen/image_edit: admin-configurable via the
+ * console's Analytics page (provider_settings table, src/lib/settings/
+ * provider-settings.ts), falling back to the legacy env-var toggle when
+ * Supabase isn't configured or has no setting yet. Unsetting RUNWARE_API_KEY
+ * still forces Gemini regardless of the stored/env choice, so a
+ * half-configured Runware setup never silently breaks generation.
  */
-function resolveProvider(envValue: string | undefined): "gemini" | "runware" {
+async function resolveProvider(capability: ProviderCapability, envValue: string | undefined): Promise<"gemini" | "runware"> {
+  if (!runwareConfigured()) return "gemini";
+  const envOverride = envValue?.trim().toLowerCase();
+  if (envOverride === "gemini") return "gemini";
+  if (envOverride === "runware") return "runware";
+  return getProviderPrimary(capability);
+}
+
+/**
+ * Video provider — env-var only, no admin UI (see provider_settings' header
+ * comment: video is deliberately fixed to a single display with no toggle).
+ */
+function resolveVideoProvider(envValue: string | undefined): "gemini" | "runware" {
   const wanted = (envValue?.trim().toLowerCase() || "runware") as "gemini" | "runware";
   return wanted === "runware" && runwareConfigured() ? "runware" : "gemini";
 }
@@ -84,28 +106,43 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
  * `fn` gets a `setCost` callback so a Runware caller can report the real
  * per-call USD cost (`includeCost: true`'s `cost` field) into the usage log —
  * callers that have no such number (the Gemini path) simply never call it,
- * leaving `estimated_cost` null rather than a fabricated figure.
+ * leaving `estimated_cost` null rather than a fabricated figure. `fn` also
+ * gets `setUsed`, for callers that try MULTIPLE backends in a chain
+ * (`runChain` below) — it overrides the `model`/`provider` actually logged
+ * once the chain settles on whichever tier succeeded, instead of always
+ * logging the first-choice tier even when a fallback is what actually ran.
+ * Callers with only one backend (planning/video) never call it, so `model`/
+ * `provider` passed in here are still what gets logged for them, unchanged.
  */
 async function instrumented<T>(
   feature: "planning" | "image" | "edit" | "video",
   model: string,
   ctx: CallContext | undefined,
-  fn: (setCost: (costUsd: number | null | undefined) => void) => Promise<T>,
+  fn: (
+    setCost: (costUsd: number | null | undefined) => void,
+    setUsed: (model: string, provider: "google" | "runware") => void,
+  ) => Promise<T>,
   provider?: "google" | "runware",
 ): Promise<T> {
   const started = Date.now();
   let costUsd: number | null | undefined;
+  let usedModel = model;
+  let usedProvider = provider;
   const setCost = (c: number | null | undefined) => {
     costUsd = c;
   };
+  const setUsed = (m: string, p: "google" | "runware") => {
+    usedModel = m;
+    usedProvider = p;
+  };
   try {
-    const result = await withRetry(() => fn(setCost));
+    const result = await withRetry(() => fn(setCost, setUsed));
     void logUsage({
       userId: ctx?.userId,
       projectId: ctx?.projectId,
       feature,
-      model,
-      provider,
+      model: usedModel,
+      provider: usedProvider,
       success: true,
       durationMs: Date.now() - started,
       estimatedCost: costUsd,
@@ -117,8 +154,8 @@ async function instrumented<T>(
       userId: ctx?.userId,
       projectId: ctx?.projectId,
       feature,
-      model,
-      provider,
+      model: usedModel,
+      provider: usedProvider,
       success: false,
       durationMs: Date.now() - started,
       errorCategory: err.category,
@@ -126,6 +163,48 @@ async function instrumented<T>(
     });
     throw err;
   }
+}
+
+interface ChainStep<T> {
+  model: string;
+  provider: "google" | "runware";
+  run: () => Promise<T>;
+}
+
+/**
+ * Tries each step in order, falling through to the next on ANY failure
+ * (including a `ValidationError` — a deterministic failure on Runware's
+ * FLUX/Nano-Banana doesn't imply the completely separate Google direct-API
+ * path would fail the same way, unlike `withRetry`'s same-provider retry,
+ * which correctly stops on `ValidationError`). Returns the first success;
+ * throws the LAST step's error if every step fails. Used for the
+ * FLUX → Nano Banana 2 → Google-direct fallback chain (`generateImage`/
+ * `editImage` below) — `generateVideo`/`generateStructured` have only one
+ * active backend each and don't need this, see `runOnProvider`.
+ */
+async function runChain<T>(
+  steps: ChainStep<T>[],
+  setUsed: (model: string, provider: "google" | "runware") => void,
+): Promise<T> {
+  let lastErr: unknown;
+  for (const step of steps) {
+    try {
+      const result = await step.run();
+      setUsed(step.model, step.provider);
+      return result;
+    } catch (e) {
+      lastErr = e;
+      console.warn(
+        `[ai-provider-chain] ${step.provider}:${step.model} failed, trying next tier:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+  if (lastErr instanceof ProviderError) throw lastErr;
+  throw new ProviderError(
+    "AiProviderError",
+    lastErr instanceof Error ? lastErr.message : "all providers in the chain failed",
+  );
 }
 
 /**
@@ -333,11 +412,13 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
  * The original Gemini text-to-image call — kept as its own function so the
  * Runware branch can sit next to it without touching this logic. `imageConfig.
  * aspectRatio` is a real, documented Gemini image-gen parameter (verified
- * against Google's docs, 2026-07-28: gemini-2.5-flash-image's generateContent
- * accepts `generationConfig.imageConfig.aspectRatio`, one of "1:1", "2:3",
+ * against Google's docs, 2026-07-28, against the then-current gemini-2.5-flash-image:
+ * `generationConfig.imageConfig.aspectRatio` accepts one of "1:1", "2:3",
  * "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9" — it otherwise
  * defaults to 1:1), so this is set to "16:9" to match the Runware path rather
- * than left at the model's square default.
+ * than left at the model's square default. Not re-verified against
+ * gemini-3.1-flash-image specifically since bumping IMAGE_MODEL (2026-07-31) —
+ * same request shape, flag if aspect ratio ever looks wrong after this bump.
  */
 async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> {
   const key = process.env.GEMINI_API_KEY?.trim();
@@ -372,41 +453,84 @@ async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> 
  * Builder hands this a fully-assembled natural-language prompt; this layer
  * never sees or constructs prompt structure itself.
  *
- * Routes to Gemini or Runware per `IMAGE_PROVIDER` (see `resolveProvider()`
- * above) — temporary testing setup, toggle back to Gemini any time.
+ * Fallback chain (2026-07-31, per explicit user request): the admin's
+ * "primary provider" choice (console's Analytics page) picks which model
+ * starts the chain — FLUX.2 [dev] for "runware", or Runware's own
+ * Gemini-hosted image model (Nano Banana 2) for "gemini" — but EITHER way,
+ * as long as Runware is actually configured, both Runware tiers run before
+ * ever reaching Google. Direct Google Gemini API is now a true last resort,
+ * only reached when Runware itself is unreachable (unconfigured, or every
+ * Runware tier failed) — previously, choosing "gemini" skipped Runware
+ * entirely and went straight to the direct Google API even though Runware
+ * hosts the same Gemini model. Each tier only runs if the previous one
+ * throws — see `runChain`.
  */
 export async function generateImage(
   prompt: string,
   ctx?: CallContext,
 ): Promise<GeneratedImage> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
-  const provider = resolveProvider(process.env.IMAGE_PROVIDER);
-  const model = provider === "runware" ? process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1" : IMAGE_MODEL;
+  const primary = await resolveProvider("image_gen", process.env.IMAGE_PROVIDER);
+  const runwareAvailable = runwareConfigured();
+  const slugs = currentModelSlugs();
+  const fallbackModel = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
+  const defaultModel =
+    primary === "runware" ? slugs.imageGen.runware : runwareAvailable ? fallbackModel : IMAGE_MODEL;
 
   return instrumented(
     "image",
-    model,
+    defaultModel,
     ctx,
-    async (setCost) => {
-      return runOnProvider(
-        provider,
-        async () => {
-          const out = await generateImageWithRunware(prompt);
+    async (setCost, setUsed) => {
+      const steps: ChainStep<GeneratedImage>[] = [];
+      const runwareGeminiStep: ChainStep<GeneratedImage> = {
+        model: fallbackModel,
+        provider: "runware",
+        run: async () => {
+          const out = await generateImageWithRunwareGemini(prompt);
           setCost(out.costUsd);
           return out;
         },
-        () => generateImageWithGemini(prompt),
-      );
+      };
+      if (primary === "runware") {
+        steps.push({
+          model: slugs.imageGen.runware,
+          provider: "runware",
+          run: async () => {
+            const out = await generateImageWithRunware(prompt);
+            setCost(out.costUsd);
+            return out;
+          },
+        });
+        steps.push(runwareGeminiStep);
+      } else if (runwareAvailable) {
+        // Admin picked "Gemini" — use Runware's own Gemini-hosted model
+        // first, not the direct Google API (that's the last-resort step below).
+        steps.push(runwareGeminiStep);
+      }
+      steps.push({
+        model: IMAGE_MODEL,
+        provider: "google",
+        run: () => generateImageWithGemini(prompt),
+      });
+      return runChain(steps, setUsed);
     },
-    provider === "runware" ? "runware" : "google",
+    primary === "runware" || runwareAvailable ? "runware" : "google",
   );
 }
 
 /**
- * Lasso-region edit — delegates to the existing crop/composite implementation
- * (render/gemini-image.ts) for Gemini, or FLUX Fill's native masked
- * inpainting for Runware. Routes per `IMAGE_PROVIDER` — same toggle as
- * `generateImage`.
+ * Lasso-region edit. Fallback chain (2026-07-31, updated per explicit user
+ * request — see `generateImage`'s header comment for the full reasoning):
+ * Runware Nano Banana Pro (when "runware" is primary) → Runware Nano Banana 2
+ * → direct Google Gemini API, as a true last resort only reached when
+ * Runware is unconfigured or every Runware tier failed. Choosing "gemini" as
+ * primary now starts at Runware's own Gemini-hosted edit model (Nano Banana
+ * 2) instead of skipping Runware straight to the direct Google API. All
+ * tiers use the SAME crop + generous-pad + composite-back approach
+ * (`gemini-image.ts`'s `planCropEdit`/`compositeCrop`, reused by
+ * `runware-client.ts`'s `editImageWithRunwareGemini`) since none of these
+ * models has a native mask parameter.
  */
 export async function editImage(
   baseDataUri: string,
@@ -416,29 +540,56 @@ export async function editImage(
   ctx?: CallContext,
 ): Promise<GeneratedImage> {
   if (!instruction.trim()) throw new ProviderError("ValidationError", "instruction is empty");
-  const provider = resolveProvider(process.env.IMAGE_PROVIDER);
-  const model = provider === "runware" ? process.env.RUNWARE_EDIT_MODEL?.trim() || "runware:102@1" : IMAGE_MODEL;
+  const primary = await resolveProvider("image_edit", process.env.IMAGE_PROVIDER);
+  const runwareAvailable = runwareConfigured();
+  const slugs = currentModelSlugs();
+  const fallbackModel = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
+  const defaultModel =
+    primary === "runware" ? slugs.imageEdit.runware : runwareAvailable ? fallbackModel : IMAGE_MODEL;
 
   return instrumented(
     "edit",
-    model,
+    defaultModel,
     ctx,
-    async (setCost) => {
-      return runOnProvider(
-        provider,
-        async () => {
-          const out = await editImageWithRunware(baseDataUri, maskDataUri, instruction);
+    async (setCost, setUsed) => {
+      const steps: ChainStep<GeneratedImage>[] = [];
+      const runwareFallbackStep: ChainStep<GeneratedImage> = {
+        model: fallbackModel,
+        provider: "runware",
+        run: async () => {
+          const out = await editImageWithRunwareGemini(baseDataUri, maskDataUri, instruction, style, "fallback");
           setCost(out.costUsd);
           return out;
         },
-        async () => {
+      };
+      if (primary === "runware") {
+        steps.push({
+          model: slugs.imageEdit.runware,
+          provider: "runware",
+          run: async () => {
+            const out = await editImageWithRunwareGemini(baseDataUri, maskDataUri, instruction, style, "primary");
+            setCost(out.costUsd);
+            return out;
+          },
+        });
+        steps.push(runwareFallbackStep);
+      } else if (runwareAvailable) {
+        // Admin picked "Gemini" — use Runware's own Gemini-hosted edit model
+        // first, not the direct Google API (that's the last-resort step below).
+        steps.push(runwareFallbackStep);
+      }
+      steps.push({
+        model: IMAGE_MODEL,
+        provider: "google",
+        run: async () => {
           const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
           if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
           return out;
         },
-      );
+      });
+      return runChain(steps, setUsed);
     },
-    provider === "runware" ? "runware" : "google",
+    primary === "runware" || runwareAvailable ? "runware" : "google",
   );
 }
 
@@ -459,8 +610,8 @@ export async function generateVideo(
   ctx?: CallContext,
 ): Promise<GeneratedVideo> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
-  const provider = resolveProvider(process.env.VIDEO_PROVIDER);
-  const model = provider === "runware" ? process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7" : "veo";
+  const provider = resolveVideoProvider(process.env.VIDEO_PROVIDER);
+  const model = provider === "runware" ? currentModelSlugs().video.runware : "veo";
 
   return instrumented(
     "video",

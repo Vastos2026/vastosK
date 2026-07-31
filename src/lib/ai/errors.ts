@@ -43,3 +43,36 @@ export function backoffMs(attempt: number): number {
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Converts a caught error into a safe `{status, body}` pair for an API
+ * route to return to the client, always logging the real error server-side
+ * first. A `ValidationError`'s message is deterministic and describes what
+ * was wrong with the caller's OWN request (e.g. "at most 2 regions per
+ * edit") — safe and useful to show verbatim. Every other category
+ * (`AiProviderError`/`StorageError`/`TimeoutError`/`InternalError`, or a
+ * plain non-`ProviderError` exception) can carry a raw upstream HTTP
+ * response body, an absolute server file path, a cloud account id, or other
+ * internals the underlying client/library embeds in its own error message
+ * (found in review: `generate-walkthrough`, `parse-plan`, `export-pdf`,
+ * `order-rooms`, `generate-room-image`, `edit-room-image`, and `design-plan`
+ * were all returning `e.message` straight to the browser) — those get a
+ * generic, context-labelled message on the client side while the real
+ * detail is still logged for debugging. `category` is kept either way since
+ * the frontend uses it (not the message text) to decide whether to offer a
+ * "try again" action.
+ */
+export function toErrorResponse(
+  e: unknown,
+  context: string,
+): { status: number; body: { error: string; category?: ErrorCategory } } {
+  if (e instanceof ProviderError) {
+    console.error(`[${context}]`, e.category, e.message);
+    if (e.category === "ValidationError") {
+      return { status: 400, body: { error: e.message, category: e.category } };
+    }
+    return { status: 502, body: { error: `${context} failed`, category: e.category } };
+  }
+  console.error(`[${context}]`, e);
+  return { status: 500, body: { error: `${context} failed` } };
+}

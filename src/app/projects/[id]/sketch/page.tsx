@@ -1,5 +1,17 @@
 "use client";
 
+/**
+ * DISABLED — kept aside, not deleted, per an explicit product decision (2026-07-30).
+ *
+ * Nothing in the live app links to this route anymore. The "No, I don't have
+ * a floor plan" choice (src/app/projects/[id]/floor-plan/page.tsx) now goes
+ * straight to Room Confirmation's manual "Add room" form via `emptyPlan()`
+ * instead (same pattern as the Upload page's own "enter rooms manually"
+ * fallback) — the user asked for the simpler form-filling flow back instead
+ * of this draw-boundary/calibrate/cut-lines tool. Left in place, unlinked,
+ * for a future decision on whether to revive it.
+ */
+
 import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";

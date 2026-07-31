@@ -7,28 +7,29 @@ import { Icon } from "@/components/ui/icon";
 import { UserStatusBadge } from "@/components/ui/badge";
 import {
   setUserStatus,
-  extendTrial,
   deleteUserAccount,
   updateBilling,
   updateDisplayName,
   updateUsageLimit,
+  updateScheduledStop,
 } from "./actions";
 import type { ConsoleUserRow } from "./types";
-import { BILLING_CYCLES } from "@/lib/billing";
-
-const DEFAULT_TRIAL_DAYS = 14;
-
-function toDateInputValue(iso: string | null): string {
-  return iso ? iso.slice(0, 10) : "";
-}
+import { BILLING_CYCLES, computeCurrentBillingDate, isBillingCycle } from "@/lib/billing";
+import { istDateInputToIso, isoToISTDateInput } from "@/lib/ist-date";
 
 function toUsageLimitInputValue(limit: number | null): string {
   return limit === null || limit === undefined ? "" : String(limit);
 }
 
+// Explicit locale + options, not the runtime default: `toLocaleDateString()`
+// with no arguments formats differently between Node (SSR) and the browser
+// (CSR) even when both "are" the same locale — Node's bundled ICU data and a
+// browser's full ICU implementation don't always agree on things like
+// leading zeros, which is a real hydration mismatch (found live: server
+// rendered "31/7/2026", client rendered "31/07/2026" for the same instant).
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
-  return new Date(iso).toLocaleDateString();
+  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolean }) {
@@ -38,25 +39,41 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingSuspend, setConfirmingSuspend] = useState(false);
   const [billingCycle, setBillingCycle] = useState(user.billingCycle ?? "");
-  const [nextBillingDate, setNextBillingDate] = useState(toDateInputValue(user.nextBillingDate));
+  const [nextBillingDate, setNextBillingDate] = useState(isoToISTDateInput(user.nextBillingDate));
   const [displayName, setDisplayName] = useState(user.displayName ?? "");
-  const [trialDays, setTrialDays] = useState(String(DEFAULT_TRIAL_DAYS));
   const [usageLimit, setUsageLimit] = useState(toUsageLimitInputValue(user.usageLimitUsd));
+  const [scheduledStop, setScheduledStop] = useState(isoToISTDateInput(user.scheduledStopAt));
+  // Transient "Saved" confirmations, keyed by field — item 1's real fix: the
+  // save mechanism itself already worked, but nothing told the admin their
+  // change actually landed, which reads as "did this even save?" every time.
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
 
   const billingDirty =
     billingCycle !== (user.billingCycle ?? "") ||
-    nextBillingDate !== toDateInputValue(user.nextBillingDate);
+    nextBillingDate !== isoToISTDateInput(user.nextBillingDate);
   const displayNameDirty = displayName.trim() !== (user.displayName ?? "").trim() && displayName.trim() !== "";
   const usageLimitDirty = usageLimit.trim() !== toUsageLimitInputValue(user.usageLimitUsd);
-  const trialDaysValue = Number(trialDays);
-  const trialDaysValid = Number.isFinite(trialDaysValue) && trialDaysValue > 0;
+  const scheduledStopDirty = scheduledStop !== isoToISTDateInput(user.scheduledStopAt);
 
-  function run(task: () => Promise<void>) {
+  // The billing input holds the ANCHOR date; this is the currently-active
+  // "next billing date" rolled forward from it — shown read-only next to the
+  // input so an admin can see the auto-advance working without needing to
+  // re-enter anything every renewal.
+  const liveBillingDate =
+    user.nextBillingDate && user.billingCycle && isBillingCycle(user.billingCycle)
+      ? computeCurrentBillingDate(user.nextBillingDate, user.billingCycle)
+      : null;
+
+  function run(task: () => Promise<void>, savedKey?: string) {
     setError(null);
     startTransition(async () => {
       try {
         await task();
         router.refresh();
+        if (savedKey) {
+          setSaved((s) => ({ ...s, [savedKey]: true }));
+          setTimeout(() => setSaved((s) => ({ ...s, [savedKey]: false })), 2000);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Something went wrong.");
       }
@@ -102,25 +119,6 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
               Suspend
             </Button>
           )}
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              min={1}
-              value={trialDays}
-              onChange={(e) => setTrialDays(e.target.value)}
-              aria-label="Trial extension in days"
-              className="input h-8 w-14 px-2 text-center text-xs"
-            />
-            <Button
-              size="sm"
-              variant="secondary"
-              icon="Clock"
-              disabled={pending || !trialDaysValid}
-              onClick={() => run(() => extendTrial(user.id, trialDaysValue))}
-            >
-              Extend trial
-            </Button>
-          </div>
           <Button
             size="icon"
             variant="ghost"
@@ -133,8 +131,11 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
         </div>
       </div>
 
-      {formatDate(user.trialEndsAt) && (
-        <p className="mt-2 pl-0 text-xs text-faint">Trial ends {formatDate(user.trialEndsAt)}</p>
+      {formatDate(user.scheduledStopAt) && (
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-warning">
+          <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+          Scheduled to stop on {formatDate(user.scheduledStopAt)}
+        </p>
       )}
 
       <div className="mt-3 flex flex-wrap items-end gap-2.5 border-t border-border pt-3">
@@ -148,15 +149,19 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
             className="input w-48"
           />
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          icon="Check"
-          disabled={pending || !displayNameDirty}
-          onClick={() => run(() => updateDisplayName(user.id, displayName))}
-        >
-          Save name
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            icon="Check"
+            disabled={pending || !displayNameDirty}
+            onClick={() => run(() => updateDisplayName(user.id, displayName), "name")}
+          >
+            Save name
+          </Button>
+          {saved.name && <span className="text-xs text-success">Saved</span>}
+        </div>
+
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted">Billing cycle</label>
           <select
@@ -171,7 +176,7 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
           </select>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-muted">Next billing date</label>
+          <label className="text-xs text-muted">Billing anchor date</label>
           <input
             type="date"
             value={nextBillingDate}
@@ -179,23 +184,27 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
             className="input w-40"
           />
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          icon="Check"
-          disabled={pending || !billingDirty}
-          onClick={() =>
-            run(() =>
-              updateBilling(
-                user.id,
-                billingCycle || null,
-                nextBillingDate ? new Date(nextBillingDate).toISOString() : null,
-              ),
-            )
-          }
-        >
-          Save billing
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            icon="Check"
+            disabled={pending || !billingDirty}
+            onClick={() =>
+              run(() =>
+                updateBilling(
+                  user.id,
+                  billingCycle || null,
+                  nextBillingDate ? istDateInputToIso(nextBillingDate) : null,
+                ),
+              "billing")
+            }
+          >
+            Save billing
+          </Button>
+          {saved.billing && <span className="text-xs text-success">Saved</span>}
+        </div>
+
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted">Usage limit ($)</label>
           <input
@@ -208,20 +217,59 @@ export function UserRow({ user, isSelf }: { user: ConsoleUserRow; isSelf: boolea
             className="input w-28"
           />
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          icon="Check"
-          disabled={pending || !usageLimitDirty}
-          onClick={() =>
-            run(() =>
-              updateUsageLimit(user.id, usageLimit.trim() === "" ? null : Number(usageLimit)),
-            )
-          }
-        >
-          Save limit
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            icon="Check"
+            disabled={pending || !usageLimitDirty}
+            onClick={() =>
+              run(() =>
+                updateUsageLimit(user.id, usageLimit.trim() === "" ? null : Number(usageLimit)),
+              "limit")
+            }
+          >
+            Save limit
+          </Button>
+          {saved.limit && <span className="text-xs text-success">Saved</span>}
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-muted">Scheduled stop</label>
+          <input
+            type="date"
+            value={scheduledStop}
+            onChange={(e) => setScheduledStop(e.target.value)}
+            className="input w-40"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            icon="Check"
+            disabled={pending || !scheduledStopDirty || isSelf}
+            title={isSelf ? "You can't schedule a stop on your own account" : undefined}
+            onClick={() =>
+              run(() =>
+                updateScheduledStop(
+                  user.id,
+                  scheduledStop ? istDateInputToIso(scheduledStop) : null,
+                ),
+              "stop")
+            }
+          >
+            {scheduledStop ? "Save stop date" : "Clear stop"}
+          </Button>
+          {saved.stop && <span className="text-xs text-success">Saved</span>}
+        </div>
       </div>
+
+      {liveBillingDate && (
+        <p className="mt-2 text-[11px] text-faint">
+          Currently active next billing date: {liveBillingDate.toISOString().slice(0, 10)} — advances on its own each cycle.
+        </p>
+      )}
 
       {error && (
         <p className="mt-2 flex items-center gap-1.5 text-xs text-danger">

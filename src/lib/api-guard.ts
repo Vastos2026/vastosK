@@ -3,7 +3,7 @@ import { getCurrentUser, type CurrentUser } from "@/lib/auth/session";
 import { isSameOrigin } from "@/lib/csrf";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { BILLING_CYCLES, type BillingCycle } from "@/lib/billing";
+import { computeCurrentBillingDate, isBillingCycle, stepBackOneCycle } from "@/lib/billing";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface GuardOptions {
@@ -52,27 +52,6 @@ export async function assertAllowed(
   }
 
   return user;
-}
-
-/**
- * One interval of a billing cycle, subtracted from a Date (UTC), clamped to
- * the target month's last real day. `Date.setUTCMonth` alone overflows past
- * month-end (e.g. Mar 31 minus 1 month naively lands on Mar 3, not Feb 28,
- * because Feb 31 doesn't exist and JS rolls the overflow into the next
- * month) — found via a code review, this would have silently undercounted a
- * few days of usage every cycle for any user whose billing date falls on the
- * 29th-31st. Returns the clamped Date, or null for an unrecognized cycle
- * label (caller falls back to summing all-time usage).
- */
-function stepBack(d: Date, cycle: BillingCycle): Date {
-  const monthsBack = cycle === "Monthly" ? 1 : cycle === "Quarterly" ? 3 : 12; // "Yearly"
-  const targetMonth = d.getUTCMonth() - monthsBack;
-  const daysInTargetMonth = new Date(Date.UTC(d.getUTCFullYear(), targetMonth + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(d.getUTCFullYear(), targetMonth, Math.min(d.getUTCDate(), daysInTargetMonth)));
-}
-
-function isBillingCycle(v: string): v is BillingCycle {
-  return (BILLING_CYCLES as readonly string[]).includes(v);
 }
 
 /**
@@ -136,22 +115,22 @@ async function checkUsageLimit(user: CurrentUser): Promise<Response | null> {
   const admin = supabaseAdmin();
   if (!admin) return null;
 
-  // Current period's start = next_billing_date (the period's END) minus one
-  // interval of billing_cycle. If either field is missing, or billing_cycle
-  // isn't one of the three recognized labels, there's no well-defined period
-  // — fall back to summing ALL of this user's usage ever, a reasonable
-  // (if more conservative) default rather than erroring or skipping the check.
+  // Current period's start = the LIVE, rolled-forward billing date (never a
+  // stale stored one — computeCurrentBillingDate rolls next_billing_date's
+  // anchor forward by whole cycles until it's the genuinely upcoming date)
+  // minus one interval of billing_cycle. If either field is missing, or
+  // billing_cycle isn't one of the three recognized labels, there's no
+  // well-defined period — fall back to summing ALL of this user's usage
+  // ever, a reasonable (if more conservative) default rather than erroring
+  // or skipping the check.
   //
   // Deliberately NO upper bound on the query (no `.lte(created_at, periodEnd)`)
   // — this asks "how much has the user spent since the period started, up to
-  // right now," not "up to the period's nominal end." Nothing in this app
-  // automatically advances `next_billing_date` each cycle (an admin sets it
-  // manually in the console); a query bounded by that date would silently
-  // stop counting ANY new usage the moment the stored date lapses (found in
-  // review), disabling the cap entirely until an admin happens to update it.
+  // right now," not "up to the period's nominal end."
   let periodStart: string | null = null;
   if (user.billingCycle && isBillingCycle(user.billingCycle) && user.nextBillingDate) {
-    periodStart = stepBack(new Date(user.nextBillingDate), user.billingCycle).toISOString();
+    const currentBillingDate = computeCurrentBillingDate(user.nextBillingDate, user.billingCycle);
+    periodStart = stepBackOneCycle(currentBillingDate, user.billingCycle).toISOString();
   }
 
   const spent = await sumUsageSince(admin, user.id, periodStart);

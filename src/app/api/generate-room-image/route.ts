@@ -18,10 +18,11 @@ import { randomUUID } from "node:crypto";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
 import { generateImage } from "@/lib/ai/provider";
-import { ProviderError } from "@/lib/ai/errors";
+import { ProviderError, toErrorResponse } from "@/lib/ai/errors";
 import { putObject } from "@/lib/pipeline/storage";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
+import { requireOwnedProject } from "@/lib/supabase/projects";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +70,13 @@ export async function POST(request: Request) {
     return Response.json({ error: err.message, category: err.category }, { status: 400 });
   }
 
+  // Without this check, an authenticated caller could pass ANY other
+  // project's id (or a made-up one) and have a billed image generated and
+  // stored under it, plus a `generations` row recorded against it — a
+  // cross-tenant data leak.
+  const owned = await requireOwnedProject(guard.id, projectId);
+  if (owned instanceof Response) return owned;
+
   try {
     const prompt = await buildRoomPrompt(universalInput, room, designSpec);
     const image = await generateImage(prompt, { projectId, userId: guard.id });
@@ -79,13 +87,7 @@ export async function POST(request: Request) {
     void recordGeneration({ projectId, userId: guard.id, roomKey: room.name, type: "image", storageUrl: imageUrl });
     return Response.json({ imageUrl, key, prompt });
   } catch (e) {
-    if (e instanceof ProviderError) {
-      const status = e.category === "ValidationError" ? 400 : 502;
-      return Response.json({ error: e.message, category: e.category }, { status });
-    }
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Room image generation failed" },
-      { status: 500 },
-    );
+    const { status, body } = toErrorResponse(e, "Room image generation");
+    return Response.json(body, { status });
   }
 }

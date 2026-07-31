@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
+import { useHydrated } from "@/lib/store";
 import { Icon } from "./icon";
 
 export function Modal({
@@ -19,6 +21,12 @@ export function Modal({
   children: React.ReactNode;
   className?: string;
 }) {
+  // Portals must not render on the server (no document there) and must wait
+  // for the client to mount before touching document.body, to avoid an
+  // SSR/CSR hydration mismatch — same mount-gate already used for this
+  // exact reason elsewhere in the app (store.ts's persisted-state hydration).
+  const mounted = useHydrated();
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -30,9 +38,14 @@ export function Modal({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
+  // Rendered via a portal straight into document.body — a Modal invoked from
+  // deep inside any component (e.g. a `.hover-lift` card, whose `:hover`
+  // state sets a `transform` and would otherwise become this element's
+  // `position: fixed` containing block instead of the viewport) always gets
+  // genuine full-viewport positioning, immune to any ancestor's CSS.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-up"
@@ -63,6 +76,7 @@ export function Modal({
         )}
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -34,6 +34,7 @@ export function ProfileProjectCard({ project }: { project: Project }) {
   const renderCount = generations.length + (walkthroughCompleted ? 1 : 0);
 
   const [showWalkthrough, setShowWalkthrough] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const pdfExport = useExportProjectPdf(project);
 
   // Clicks inside this card can open the walkthrough modal or trigger a PDF
@@ -77,13 +78,19 @@ export function ProfileProjectCard({ project }: { project: Project }) {
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap content-start gap-2">
                 {generations.map((g) => (
-                  <div
+                  <button
                     key={g.id}
-                    className="relative size-16 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2 sm:size-20"
+                    type="button"
+                    onClick={(e) => {
+                      stopLinkNav(e);
+                      setLightboxImage(g.imageUrl);
+                    }}
+                    className="relative size-16 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-surface-2 sm:size-20"
+                    aria-label="View render"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={g.imageUrl} alt="" className="size-full object-cover" />
-                  </div>
+                  </button>
                 ))}
                 {wt?.videoUrl && (
                   <button
@@ -140,6 +147,26 @@ export function ProfileProjectCard({ project }: { project: Project }) {
           >
             <div className="p-5">
               <video src={wt.videoUrl} controls autoPlay className="w-full rounded-xl border border-border" />
+            </div>
+          </Modal>
+        </div>
+      )}
+
+      {lightboxImage && (
+        <div onClick={stopLinkNav}>
+          <Modal open={!!lightboxImage} onClose={() => setLightboxImage(null)} className="max-w-2xl">
+            <div className="p-5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={lightboxImage}
+                alt="Render"
+                className="max-h-[70vh] w-full rounded-xl border border-border object-contain"
+              />
+              <div className="mt-4 flex justify-end">
+                <Link href={projectHref(project)}>
+                  <Button icon="ArrowRight">Go to project</Button>
+                </Link>
+              </div>
             </div>
           </Modal>
         </div>

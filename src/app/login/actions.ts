@@ -2,6 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server-client";
+import { BLOCK_MESSAGES } from "@/lib/auth/session";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export interface LoginState {
   error?: string;
@@ -19,6 +21,10 @@ export async function signIn(_prev: LoginState, formData: FormData): Promise<Log
 
   if (!email || !password) {
     return { error: "Enter your username and password." };
+  }
+
+  if (!checkRateLimit(`login:${email.toLowerCase()}`, 10, 60_000)) {
+    return { error: "Too many attempts, please wait a moment and try again." };
   }
 
   const supabase = await supabaseServer();
@@ -45,20 +51,20 @@ export async function signIn(_prev: LoginState, formData: FormData): Promise<Log
   // (src/lib/auth/session.ts) would otherwise produce with no explanation.
   const { data: profile } = await supabase
     .from("profiles")
-    .select("status")
+    .select("status, scheduled_stop_at")
     .eq("id", data.user.id)
     .single();
+  if (profile?.scheduled_stop_at && new Date(profile.scheduled_stop_at).getTime() <= Date.now()) {
+    await supabase.auth.signOut();
+    return { error: BLOCK_MESSAGES.stopped };
+  }
   if (profile && profile.status !== "active") {
     await supabase.auth.signOut();
-    const messages: Record<string, string> = {
-      suspended: "Your account has been suspended. Contact your Vastos admin.",
-      pending_approval: "Your account is pending approval. Contact your Vastos admin.",
-      trial_ended: "Your trial has ended. Contact your Vastos admin.",
-    };
-    return { error: messages[profile.status] ?? "Your account can't sign in right now. Contact your Vastos admin." };
+    return { error: BLOCK_MESSAGES[profile.status] ?? "Your account can't sign in right now. Contact your Vastos admin." };
   }
 
-  redirect(next.startsWith("/") ? next : "/");
+  const isSafeRedirect = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\");
+  redirect(isSafeRedirect ? next : "/");
 }
 
 export async function signOut() {

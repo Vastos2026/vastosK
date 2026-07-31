@@ -2,12 +2,20 @@ import sharp from "sharp";
 import { runPlanExtraction } from "@/lib/pipeline/extract-plan";
 import { putObject } from "@/lib/pipeline/storage";
 import { assertAllowed } from "@/lib/api-guard";
+import { toErrorResponse } from "@/lib/ai/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const MIN_LONG_SIDE = 1400;
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** Strip path separators/traversal sequences and cap length before using a client-supplied filename in a storage key. */
+function sanitizeFileName(name: string): string {
+  const cleaned = name.replace(/[\\/]/g, "_").replace(/\.\./g, "_");
+  return cleaned.slice(-100) || "upload";
+}
 
 /** Upscale small plan uploads so printed text/dimensions are legible to Gemini vision — deterministic, no invented detail, just legibility. */
 async function normalizePlanImage(bytes: Buffer, mimeType: string): Promise<{ bytes: Buffer; mimeType: string }> {
@@ -36,7 +44,10 @@ async function normalizePlanImage(bytes: Buffer, mimeType: string): Promise<{ by
  */
 export async function POST(request: Request) {
   // Floor-plan extraction is one Gemini vision call per upload.
-  const guard = await assertAllowed(request, { rateLimit: { key: "parse-plan", limit: 10, windowMs: 60_000 } });
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "parse-plan", limit: 10, windowMs: 60_000 },
+    checkUsage: true,
+  });
   if (guard instanceof Response) return guard;
 
   try {
@@ -51,6 +62,9 @@ export async function POST(request: Request) {
         { status: 415 },
       );
     }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return Response.json({ error: "File too large (max 20MB)" }, { status: 400 });
+    }
 
     const roomTypeHintsParam = form.get("roomTypeHints");
     const roomTypeHints =
@@ -63,7 +77,7 @@ export async function POST(request: Request) {
       file.type,
     );
 
-    const storageKey = `plans/${crypto.randomUUID()}/${file.name}`;
+    const storageKey = `plans/${crypto.randomUUID()}/${sanitizeFileName(file.name)}`;
     await putObject(storageKey, bytes, mimeType);
 
     const result = await runPlanExtraction({
@@ -85,7 +99,7 @@ export async function POST(request: Request) {
 
     return Response.json(result);
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Extraction failed";
-    return Response.json({ error: message }, { status: 500 });
+    const { status, body } = toErrorResponse(e, "Extraction");
+    return Response.json(body, { status });
   }
 }

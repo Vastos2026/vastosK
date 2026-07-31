@@ -48,6 +48,21 @@ export default async function proxy(request: NextRequest) {
   const isAuthed = !!data?.claims;
 
   if (!isAuthed && !isPublic) {
+    // A Server Action POST (console/actions.ts, analytics/actions.ts) that
+    // arrives here after its session already expired must NOT get a plain
+    // redirect: Next's client-side action handler only accepts an RSC/action
+    // response or a `next-action`-aware redirect signal, and silently
+    // rejects anything else with an opaque "An unexpected response was
+    // received from the server." (see server-action-reducer.js's isRscResponse
+    // check) — the browser never even shows *why* it failed. A 401 with a
+    // `text/plain` body is the one non-RSC shape that handler special-cases:
+    // it reads the body text and surfaces it as the actual thrown error.
+    if (request.headers.has("next-action")) {
+      return new NextResponse("Your session has expired. Please sign in again.", {
+        status: 401,
+        headers: { "content-type": "text/plain" },
+      });
+    }
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("next", pathname);
     return NextResponse.redirect(loginUrl);

@@ -8,7 +8,7 @@ export function cn(...inputs: ClassValue[]) {
 
 /** Short id generator for client-created mock entities. */
 export function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 /** Relative time like "2h ago" from an ISO string. */
@@ -43,6 +43,11 @@ export function shade(hex: string, amt: number) {
   g = Math.round((t - g) * p) + g;
   b = Math.round((t - b) * p) + b;
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+}
+
+/** Slugify a room name for use in a download filename, e.g. "Living Room" -> "living-room". */
+export function slugifyRoomName(name: string): string {
+  return name.replace(/\s+/g, "-").toLowerCase();
 }
 
 /** Palette assigned to rooms by index — shared by the extraction pipeline and the Room Confirmation "Add room" form so a room's colour never changes as it moves between screens. */

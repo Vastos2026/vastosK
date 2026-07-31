@@ -28,7 +28,7 @@ export default function ProjectsPage() {
 
       <div className="scrollbar-thin flex-1 overflow-y-auto px-8 py-6">
         {!hydrated ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="shimmer aspect-[16/10] rounded-2xl border border-border bg-surface" />
             ))}
@@ -42,7 +42,7 @@ export default function ProjectsPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {projects.map((p) => (
               <ProjectCard key={p.id} project={p} />
             ))}

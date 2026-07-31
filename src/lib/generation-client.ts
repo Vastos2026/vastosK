@@ -47,7 +47,6 @@ export function generateWalkthrough(input: {
 
 export function createShareLink(input: {
   projectId: string;
-  existingToken?: string;
 }): Promise<{ token: string | null; persisted: boolean }> {
   return postJson("/api/share-link", input);
 }

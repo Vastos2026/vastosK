@@ -10,8 +10,6 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1068.0",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.108.1",
     "clsx": "^2.1.1",
@@ -21,9 +19,9 @@
     "pdf-lib": "^1.17.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "recharts": "^3.10.1",
     "sharp": "^0.35.1",
     "tailwind-merge": "^3.6.0",
-    "three": "^0.184.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -31,7 +29,6 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/three": "^0.184.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",

@@ -25,7 +25,7 @@ export function useShareToken(project: Project | undefined) {
   ): Promise<{ token: string | undefined; persisted: boolean }> => {
     if (!project) return { token: undefined, persisted: false };
     if (wt.shareToken) return { token: wt.shareToken, persisted: true };
-    const result = await createShareLink({ projectId: project.id, existingToken: wt.shareToken });
+    const result = await createShareLink({ projectId: project.id });
     const token = result.token ?? undefined;
     if (token) setWalkthrough(project.id, { ...wt, shareToken: token });
     return { token, persisted: result.persisted };

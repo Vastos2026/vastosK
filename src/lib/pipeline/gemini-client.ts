@@ -116,7 +116,7 @@ async function callModel<T>(
   key: string,
   maxAttempts: number,
 ): Promise<ModelResult<T>> {
-  const url = `${API_BASE}/${model}:generateContent?key=${key}`;
+  const url = `${API_BASE}/${model}:generateContent`;
 
   // Only the Gemini 2.5 generation accepts `thinkingBudget` (a token count).
   // Gemini 3.x — including what `gemini-flash-latest` resolves to today —
@@ -155,7 +155,7 @@ async function callModel<T>(
     try {
       res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         signal: opts.signal,
         body,
       });

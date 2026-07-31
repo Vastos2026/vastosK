@@ -1,22 +1,43 @@
 -- ============================================================================
--- Vastos — database schema (full production flow)
+-- Vastos — database schema
 --
---   Floor Plan ─▶ OCR ─▶ Gemini Flash ─▶ OpenCV ─▶ Merge
---      (upload)   (text)  (rooms+dims)  (geometry) (semantics+geometry)
---        │
---        ▼  3D House (Three.js) ─▶ Furniture (Gemini) ─▶ 3D Scene
---        ▼  Screenshot ─▶ Prompt (Gemini) ─▶ FLUX Pro ─▶ Photorealistic render
---        ▼  Lasso edit ─▶ Gemini refine ─▶ Nano Banana ─▶ Final render
+-- CURRENT live architecture (see CLAUDE.md for the full writeup):
+--   Floor plan upload ─▶ one Gemini Vision call (rooms/types/dims/openings)
+--     ─▶ Room Confirmation ─▶ Design Planning (one Gemini call) ─▶ per-room
+--     image generation (Runware FLUX.2 primary, Nano Banana 2/Google Gemini
+--     fallback chain) ─▶ lasso edit (Nano Banana Pro/2 via Runware, crop +
+--     composite) ─▶ Approve ─▶ Walkthrough (Veo image-to-video clips,
+--     concatenated + background music mixed in via ffmpeg).
 --
--- Stage → storage map:
---   Floor Plan / OCR / Gemini / OpenCV / Merge .... parse_jobs (+ floor_plans = final)
---   3D House + 3D Scene ............................ scenes
---   Furniture suggestions ......................... placed_items (ghost = AI)
---   Screenshot capture ............................ scenes.capture_url / renders.capture_url
---   Prompt gen + FLUX Pro + render ................ renders
---   Lasso edit / refine / Nano Banana / final ..... render_versions
+-- The app is LOCAL-FIRST: the live source of truth for a project's data is
+-- the browser's Zustand store (`src/lib/store.ts`), best-effort mirrored to
+-- `project_snapshots` below (JSONB blob per project, scoped by the real
+-- Supabase Auth user id). The normalized `projects`/`parse_jobs`/
+-- `floor_plans`/`placed_items`/`scenes`/`renders`/`render_versions` tables
+-- below describe an OLDER, now-RETIRED pipeline (staged OCR/OpenCV/Gemini
+-- extraction feeding a Three.js 3D furniture-placement studio and a FLUX Pro
+-- render pipeline) that the live app no longer calls into at all — kept in
+-- this file (not dropped) only because dropping tables is a one-way,
+-- higher-risk migration than leaving unused ones in place; a genuinely fresh
+-- install does not need them for anything the live app does today.
+-- `render_jobs` is ALSO legacy for the same reason (verified 2026-07-30: no
+-- file under src/ references it or the "use-video-reconcile" hook its own
+-- comment describes — that hook doesn't exist in this codebase, a sign this
+-- table predates the Workstream 8.5 rendering-pipeline rebuild too). Tables
+-- actually read/written by the live app: `project_snapshots`, `profiles`,
+-- `generations`, `ai_usage_logs`, `prompt_templates`, `feature_flags`.
 --
--- Idempotent: safe to paste into the Supabase SQL Editor and re-run.
+-- Idempotent: safe to paste into the Supabase SQL Editor and re-run, and
+-- safe to run top-to-bottom on a BRAND NEW Supabase project — every table
+-- is created in dependency order (a table's foreign-key targets are always
+-- created earlier in this file), every `alter table` migration shim below
+-- is a genuine no-op on a fresh database (the same shape is already present
+-- from the `create table` statement directly above it), and every enum/type
+-- creation is wrapped to tolerate re-running. Verified by reading through
+-- the full file's creation order end to end (2026-07-30) — no schema change
+-- accumulated across this project's sessions was ever left as a
+-- Supabase-SQL-editor-only, undocumented step; anything applied by hand
+-- during development is reflected here too.
 -- ============================================================================
 
 -- Extensions ----------------------------------------------------------------
@@ -76,6 +97,14 @@ begin
   new.updated_at = now();
   return new;
 end $$;
+
+-- ============================================================================
+-- LEGACY / DORMANT — projects through render_versions below are the retired
+-- pipeline's normalized tables (see the file header). Not written or read by
+-- the live app (which uses `project_snapshots` further down instead). Left
+-- in place, not dropped; skip this whole section if you're just trying to
+-- understand how the CURRENT app persists data.
+-- ============================================================================
 
 -- ============================================================================
 -- projects  — the root entity
@@ -195,14 +224,6 @@ create table if not exists floor_plans (
 );
 create index if not exists floor_plans_project_idx on floor_plans (project_id);
 
--- Bring an already-created floor_plans table up to date (no-ops if present).
-alter table floor_plans add column if not exists parse_job_id   uuid references parse_jobs (id) on delete set null;
-alter table floor_plans add column if not exists storage_backend text;
-alter table floor_plans add column if not exists calibrated      boolean;
-alter table floor_plans add column if not exists rooms_named     int;
-alter table floor_plans add column if not exists ocr             jsonb;
-alter table floor_plans add column if not exists semantics       jsonb;
-
 drop trigger if exists floor_plans_updated_at on floor_plans;
 create trigger floor_plans_updated_at before update on floor_plans
   for each row execute function set_updated_at();
@@ -273,11 +294,6 @@ create table if not exists renders (
 );
 create index if not exists renders_project_idx on renders (project_id, created_at desc);
 
-alter table renders add column if not exists scene_id    uuid references scenes (id) on delete set null;
-alter table renders add column if not exists capture_url text;
-alter table renders add column if not exists model       text not null default 'flux-pro';
-alter table renders add column if not exists seed        bigint;
-
 drop trigger if exists renders_updated_at on renders;
 create trigger renders_updated_at before update on renders
   for each row execute function set_updated_at();
@@ -303,10 +319,6 @@ create table if not exists render_versions (
   created_at  timestamptz not null default now()
 );
 create index if not exists render_versions_render_idx on render_versions (render_id, created_at);
-
-alter table render_versions add column if not exists kind   text not null default 'initial';
-alter table render_versions add column if not exists prompt text;
-alter table render_versions add column if not exists model  text;
 
 -- ============================================================================
 -- Row-Level Security — every table is scoped to the project owner.
@@ -379,6 +391,12 @@ exception when duplicate_object then null; end $$;
 -- user/admin/master down to user/master: recreate the enum without 'admin'
 -- (reassigning any existing 'admin' rows to 'user' first). No-op on a fresh
 -- database, where the `create type` above already defines the 2-value shape.
+-- FRAGILE: this block references `profiles` before that table is created
+-- further down this file — safe today only because the outer `if exists`
+-- guard is always false on a database that never had 'admin' in the enum
+-- (i.e. every fresh install), so the body never actually runs. Do not move
+-- this block out of that guard, and do not move it above without also
+-- moving `create table profiles` earlier.
 do $$
 begin
   if exists (
@@ -396,6 +414,10 @@ begin
 end $$;
 
 do $$ begin
+  -- 'trial_ended' is a legacy value, never produced or checked by the app
+  -- anymore (trial tracking was removed entirely, per explicit product
+  -- decision) — left in the enum since dropping an enum value is a riskier
+  -- migration than just never using it again.
   create type user_status as enum ('active', 'trial_ended', 'suspended', 'pending_approval');
 exception when duplicate_object then null; end $$;
 
@@ -404,29 +426,43 @@ create table if not exists profiles (
   display_name     text,
   role             user_role not null default 'user',
   status           user_status not null default 'active',
-  trial_ends_at    timestamptz,
-  -- Billing (admin-managed, new): the admin console's Users tab sets these two
-  -- fields directly rather than computing a recurring date from an interval +
-  -- anchor — simpler and avoids month-length/timezone edge cases. The client's
-  -- Profile page just reads next_billing_date back and displays it; nothing
-  -- in the app auto-advances it, an admin updates it each renewal.
+  -- Billing (admin-managed): billing_cycle + next_billing_date together
+  -- define a recurring schedule — next_billing_date is a ONE-TIME ANCHOR the
+  -- admin sets once (must be strictly in the future, see console/actions.ts's
+  -- updateBilling), not something re-entered every renewal. Every reader
+  -- (profile page's reminder, the console's display, the usage-limit period
+  -- calc) rolls it forward through src/lib/billing.ts's
+  -- computeCurrentBillingDate to get the genuinely-active next billing date —
+  -- nothing in the database itself auto-advances the stored value, and
+  -- nothing needs to.
   billing_cycle      text,          -- e.g. 'Monthly' | 'Quarterly' | 'Yearly' — free label, not enforced
-  next_billing_date  timestamptz,   -- when the current subscription period ends
+  next_billing_date  timestamptz,   -- the billing anchor date (see above)
   -- Usage cap (admin-managed, new): total USD this user may spend on AI
   -- generation within the current billing period (billing_cycle +
   -- next_billing_date define the period window). Null = unlimited. Checked
   -- against the sum of ai_usage_logs.estimated_cost for the period so far —
   -- see src/lib/api-guard.ts.
   usage_limit_usd  numeric,
+  -- Scheduled stop (admin-managed, new): a future date this account stops
+  -- working entirely — checked on every request (src/lib/auth/session.ts),
+  -- not a cron job, so it takes effect on the account's very next request
+  -- once the date passes. Null = no scheduled stop. Distinct from `status =
+  -- 'suspended'`, which is immediate and manual.
+  scheduled_stop_at  timestamptz,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
 create index if not exists profiles_role_idx on profiles (role);
+-- Console's user list orders by created_at desc (src/app/console/page.tsx).
+create index if not exists profiles_created_at_idx on profiles (created_at desc);
 
 -- Bring an already-created profiles table up to date (no-ops if fresh).
 alter table profiles add column if not exists billing_cycle text;
 alter table profiles add column if not exists next_billing_date timestamptz;
 alter table profiles add column if not exists usage_limit_usd numeric;
+alter table profiles add column if not exists scheduled_stop_at timestamptz;
+-- Trial tracking removed entirely (product decision) — drop the column.
+alter table profiles drop column if exists trial_ends_at;
 
 -- Drop the admin-tier assignment field from the earlier 3-role design.
 -- No-op if this database never had it (fresh installs never create it).
@@ -486,10 +522,10 @@ begin
   if auth.role() is distinct from 'service_role' then
     new.role := old.role;
     new.status := old.status;
-    new.trial_ends_at := old.trial_ends_at;
     new.billing_cycle := old.billing_cycle;
     new.next_billing_date := old.next_billing_date;
     new.usage_limit_usd := old.usage_limit_usd;
+    new.scheduled_stop_at := old.scheduled_stop_at;
   end if;
   return new;
 end;
@@ -560,12 +596,13 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- ============================================================================
--- render_jobs — durable registry for long-running render jobs (the ~100s Veo
--- walkthrough). The mp4 + stills land in S3 either way; this row maps the
--- client's job id to those keys so a page reset, local-store sync race, or
--- dev-server restart can't orphan a PAID generation. The client reclaims stuck
--- "processing" walkthrough records from here on mount (use-video-reconcile).
--- Server-only access (service role bypasses RLS); no anon policies on purpose.
+-- LEGACY / DORMANT — render_jobs was a durable registry for the OLD render
+-- pipeline's long-running jobs. Verified 2026-07-30: nothing under src/
+-- references this table or the "use-video-reconcile" hook this comment
+-- block originally described (that hook doesn't exist in this codebase).
+-- The CURRENT walkthrough flow (`/api/generate-walkthrough`) runs
+-- synchronously and stores its result directly via `generations` instead.
+-- Kept, not dropped, same reasoning as the other legacy tables above.
 -- ============================================================================
 create table if not exists render_jobs (
   id              text primary key,                    -- client-generated render id ("rnd_…")
@@ -622,12 +659,18 @@ create index if not exists ai_usage_logs_project_idx on ai_usage_logs (project_i
 -- Migration for a database created before this fix: project_id was
 -- uuid+FK-to-projects, which no real insert could ever satisfy. No-op on a
 -- fresh database, where the `create table` above already has the right type.
+-- Drops "own ai_usage_logs" first defensively (see the identical, confirmed
+-- failure on `generations` below: ALTER COLUMN TYPE fails outright if any
+-- policy's USING/CHECK clause depends on the column, even indirectly) —
+-- a no-op if this table's policy never referenced project_id, harmless
+-- either way since it's recreated unconditionally right after.
 do $$
 begin
   if exists (
     select 1 from information_schema.columns
     where table_name = 'ai_usage_logs' and column_name = 'project_id' and data_type = 'uuid'
   ) then
+    drop policy if exists "own ai_usage_logs" on ai_usage_logs;
     alter table ai_usage_logs drop constraint if exists ai_usage_logs_project_id_fkey;
     alter table ai_usage_logs alter column project_id type text using project_id::text;
   end if;
@@ -738,12 +781,21 @@ create index if not exists generations_project_idx on generations (project_id, c
 -- MUST run before the `user_id` index below — an existing table's
 -- `create table if not exists` above is a no-op, so `user_id` doesn't exist
 -- yet until this `add column` runs.
+--
+-- Drops "own generations" first: a database old enough to still have a
+-- uuid-typed project_id also predates the RLS rescope to user_id (see the
+-- policy below) and still has the OLD policy, whose USING clause reads
+-- project_id directly — Postgres refuses to ALTER COLUMN TYPE on a column a
+-- policy depends on ("cannot alter type of a column used in a policy
+-- definition"). Safe to drop unconditionally here: it's recreated
+-- unconditionally right after this block regardless of which branch ran.
 do $$
 begin
   if exists (
     select 1 from information_schema.columns
     where table_name = 'generations' and column_name = 'project_id' and data_type = 'uuid'
   ) then
+    drop policy if exists "own generations" on generations;
     alter table generations drop constraint if exists generations_project_id_fkey;
     alter table generations alter column project_id type text using project_id::text;
   end if;
@@ -776,6 +828,33 @@ create trigger feature_flags_updated_at before update on feature_flags
   for each row execute function set_updated_at();
 
 alter table feature_flags enable row level security;
+
+-- ============================================================================
+-- provider_settings — single-row, admin-configurable choice of which AI
+-- provider is primary for image generation and image editing (each
+-- independently switchable between 'runware' (FLUX.2 / Nano Banana Pro) and
+-- 'gemini' (direct Google Gemini API) from the console's Analytics page,
+-- src/lib/settings/provider-settings.ts). Whichever isn't primary becomes the
+-- fallback the existing 3-tier chain in src/lib/ai/provider.ts falls through
+-- to. Video is deliberately NOT here — it stays a fixed Wan/Runware display
+-- with no admin toggle, governed by the VIDEO_PROVIDER env var as before.
+-- Server-only access (service role), same pattern as feature_flags; a
+-- missing row or an unconfigured Supabase project falls back to the
+-- env-var-derived default in code, never breaks a generation call.
+-- ============================================================================
+create table if not exists provider_settings (
+  id                  text primary key default 'default',
+  image_gen_primary   text not null default 'runware',  -- 'runware' | 'gemini'
+  image_edit_primary  text not null default 'runware',
+  updated_at          timestamptz not null default now(),
+  updated_by          uuid references auth.users (id) on delete set null
+);
+
+drop trigger if exists provider_settings_updated_at on provider_settings;
+create trigger provider_settings_updated_at before update on provider_settings
+  for each row execute function set_updated_at();
+
+alter table provider_settings enable row level security;
 
 -- ============================================================================
 -- Realtime — push live progress to the browser (pipeline + render status).

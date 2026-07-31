@@ -22,6 +22,7 @@
 
 import {
   deleteProjectSnapshot,
+  getSnapshotOwner,
   listProjectSnapshots,
   upsertProjectSnapshot,
 } from "@/lib/supabase/projects";
@@ -39,7 +40,9 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
-  const guard = await assertAllowed(request);
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "projects-put", limit: 30, windowMs: 60_000 },
+  });
   if (guard instanceof Response) return guard;
 
   let body: { project?: Project };
@@ -51,12 +54,18 @@ export async function PUT(request: Request) {
   if (!body.project?.id) {
     return Response.json({ error: "project is required" }, { status: 400 });
   }
+  const existingOwner = await getSnapshotOwner(body.project.id);
+  if (existingOwner && existingOwner !== guard.id) {
+    return Response.json({ error: "Project id already in use by another account" }, { status: 403 });
+  }
   await upsertProjectSnapshot(guard.id, body.project);
   return Response.json({ ok: true });
 }
 
 export async function DELETE(request: Request) {
-  const guard = await assertAllowed(request);
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "projects-delete", limit: 10, windowMs: 60_000 },
+  });
   if (guard instanceof Response) return guard;
 
   const id = new URL(request.url).searchParams.get("id");

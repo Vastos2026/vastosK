@@ -23,7 +23,7 @@ export function DeleteAllProjectsButton({ count }: { count: number }) {
         open={open}
         onClose={() => setOpen(false)}
         title="Delete all projects?"
-        description={`This permanently deletes all ${count} project${count === 1 ? "" : "s"} — floor plans, designs, and every generated image and video. This can't be undone.`}
+        description={`This permanently deletes all ${count} project${count === 1 ? "" : "s"}: floor plans, designs, and every generated image and video. This can't be undone.`}
       >
         <div className="flex items-center justify-end gap-2 px-6 py-5">
           <Button variant="ghost" onClick={() => setOpen(false)}>

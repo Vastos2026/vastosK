@@ -68,8 +68,15 @@ async function r2Client(): Promise<S3Client> {
   return _r2Client;
 }
 
-/** Flatten an object key (which contains "/") into a safe local filename. */
-const localPath = (key: string) => join(LOCAL_DIR, key.split("/").join("_"));
+/**
+ * Flatten an object key (which contains "/") into a safe local filename.
+ * Both "/" and "\" are flattened (Windows honors "\" as a path separator
+ * too, so leaving it alone would let a key escape LOCAL_DIR via path.join's
+ * normalization), and any ".." sequence is stripped so no key can traverse
+ * out of LOCAL_DIR regardless of separator style.
+ */
+const localPath = (key: string) =>
+  join(LOCAL_DIR, key.replace(/[\\/]/g, "_").replace(/\.\./g, "_"));
 
 export async function putObject(
   key: string,
@@ -133,6 +140,7 @@ export function servedStorageResponse(bytes: Buffer, key: string): Response {
     headers: {
       "Content-Type": contentType,
       "Cache-Control": "public, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }

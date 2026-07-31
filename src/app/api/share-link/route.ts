@@ -5,8 +5,17 @@
  * `/api/render?key=...` storage URL — meant to be reshared by the builder
  * with their client over time, not treated as a signed/expiring URL.
  *
- *   POST /api/share-link  { projectId, existingToken?: string }
+ *   POST /api/share-link  { projectId }
  *     → { token: string | null, persisted: boolean }
+ *
+ * `projectId` must be owned by the caller (`requireOwnedProject`, checked
+ * before any `project_snapshots` read or write below) — without that, any
+ * authenticated caller could pass another user's project id and either read
+ * back its existing share token or mint/persist a new one onto it, exposing
+ * that project unauthenticated via `/s/<token>`. The token itself is always
+ * minted server-side (`generateToken`, `randomBytes(24)`); this route does
+ * not accept a client-supplied token, since that would let a caller set a
+ * low-entropy, guessable token directly onto a project row.
  *
  * Writes `share_token` onto `project_snapshots` (keyed by `app_id`), NOT the
  * mostly-empty `projects` table — this app is still entirely local-first
@@ -29,12 +38,11 @@
 
 import { randomBytes } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/server";
+import { requireOwnedProject } from "@/lib/supabase/projects";
 import { assertAllowed } from "@/lib/api-guard";
 
 interface Body {
   projectId?: string;
-  /** Client's locally-cached token, if it already generated one before. */
-  existingToken?: string;
 }
 
 function generateToken(): string {
@@ -52,17 +60,25 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, existingToken } = body;
+  const { projectId } = body;
   if (!projectId) {
     return Response.json({ error: "projectId is required" }, { status: 400 });
   }
 
+  // Without this check, any authenticated caller could pass ANY other
+  // project's id and either read back its existing share token (exposing
+  // that project unauthenticated via /s/<token>) or mint and persist a new
+  // one onto it, making a private project public at a URL the attacker
+  // chose — a cross-tenant data leak. `requireOwnedProject` returns `null`
+  // when Supabase isn't configured (no persistence layer, nothing to check).
+  const owned = await requireOwnedProject(guard.id, projectId);
+  if (owned instanceof Response) return owned;
+
   const db = supabaseAdmin();
   if (!db) {
-    // Supabase isn't configured at all — nothing to persist against. Hand
-    // back the client's cached token (or mint one) so the feature still
-    // works locally.
-    const token = existingToken || generateToken();
+    // Supabase isn't configured at all — nothing to persist against. Mint a
+    // token so the feature still works locally.
+    const token = generateToken();
     return Response.json({ token, persisted: false });
   }
 
@@ -83,7 +99,7 @@ export async function POST(request: Request) {
       return Response.json({ token: existingRow.share_token, persisted: true });
     }
 
-    const token = existingToken || generateToken();
+    const token = generateToken();
 
     // Not an `upsert`: if no `project_snapshots` row exists yet for this id
     // (e.g. the project hasn't synced up via /api/projects yet), we can't
@@ -137,7 +153,7 @@ export async function POST(request: Request) {
   } catch (e) {
     // Never fail the whole feature just because persistence didn't work.
     console.warn("[share-link] unexpected failure (non-fatal):", (e as Error).message);
-    const token = existingToken || generateToken();
+    const token = generateToken();
     return Response.json({ token, persisted: false });
   }
 }

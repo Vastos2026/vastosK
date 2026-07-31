@@ -11,16 +11,65 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
-import type { Phase } from "@/lib/types";
+import type { Phase, Project } from "@/lib/types";
+
+/**
+ * A phase is "done" based on whether the project actually HAS that phase's
+ * output, not on whether the current page is past it — the old
+ * `i < currentIdx` comparison made a completed phase's tick disappear the
+ * moment you navigated backward to look at an earlier step, only to
+ * reappear once you scrolled back past it (reported bug, 2026-07-30).
+ */
+function computeDoneMap(project?: Project): Record<Phase, boolean> {
+  return {
+    upload: !!project?.floorPlan,
+    review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
+    design: !!project?.designSpec,
+    generate: (project?.roomCards ?? []).some((c) => c.generations.length > 0),
+    approve: (project?.roomCards ?? []).some((c) => !!c.approvedId),
+    walkthrough: project?.walkthrough?.status === "completed",
+  };
+}
 
 export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
+  const router = useRouter();
   const hydrated = useHydrated();
   const project = useVasto((s) => s.projects.find((p) => p.id === params.id));
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   // Match the phase whose segment appears in the path.
   const currentPhase = (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload") as Phase;
+
+  // Route segments after the project id: ["floor-plan"] / ["upload"] /
+  // ["generate", roomId] / etc — used for the back-step arrow, which needs
+  // to distinguish routes PHASES doesn't know about (floor-plan isn't a
+  // tracked phase; generate/[roomId] is a sub-route of "generate").
+  const segments = pathname.split("/").filter(Boolean);
+  const step = segments[2];
+  const subSegment = segments[3];
+  const hasRoomsToLose = (project?.floorPlan?.rooms?.length ?? 0) > 0;
+
+  const backHref = (() => {
+    if (step === "floor-plan") return "/";
+    if (step === "upload") return `/projects/${params.id}/floor-plan`;
+    if (step === "review") return `/projects/${params.id}/upload`;
+    if (step === "generate" && subSegment) return `/projects/${params.id}/generate`;
+    const idx = PHASES.findIndex((p) => p.id === step);
+    return idx > 0 ? `/projects/${params.id}/${PHASES[idx - 1].id}` : "/";
+  })();
+
+  const onBackClick = () => {
+    // Going back from Review effectively re-enters Upload, which wipes
+    // downstream work once rooms exist — same confirmation the phase-pill's
+    // own Upload jump already shows, reused here rather than duplicated.
+    if (step === "review" && hasRoomsToLose) {
+      setConfirmOpen(true);
+      return;
+    }
+    router.push(backHref);
+  };
 
   if (hydrated && !project) {
     return (
@@ -45,14 +94,17 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border px-5 py-3">
-        <Link
-          href="/"
-          className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground"
-          aria-label="Back to dashboard"
-        >
-          <Icon name="ArrowLeft" className="size-5" />
-        </Link>
+      <header className="relative z-20 flex items-center gap-4 border-b border-border px-5 py-3">
+        <div className="flex shrink-0 items-center gap-1">
+          <Link
+            href="/"
+            className="grid size-9 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground"
+            aria-label="Back to dashboard"
+            title="Dashboard"
+          >
+            <Icon name="Home" className="size-4" />
+          </Link>
+        </div>
 
         <div className="flex min-w-0 items-center gap-3">
           <div className="min-w-0">
@@ -76,7 +128,9 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
             projectId={params.id}
             current={currentPhase}
             disabled={!project?.floorPlan}
-            floorPlanRoomCount={project?.floorPlan?.rooms?.length ?? 0}
+            hasRoomsToLose={hasRoomsToLose}
+            doneMap={computeDoneMap(project)}
+            onNeedsConfirm={() => setConfirmOpen(true)}
           />
         </div>
 
@@ -88,84 +142,18 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1">{children}</div>
-    </div>
-  );
-}
-
-function PhaseStepper({
-  projectId,
-  current,
-  disabled,
-  floorPlanRoomCount,
-}: {
-  projectId: string;
-  current: Phase;
-  disabled?: boolean;
-  floorPlanRoomCount: number;
-}) {
-  const router = useRouter();
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const currentIdx = PHASES.findIndex((p) => p.id === current);
-  // Re-uploading once rooms exist wipes generated work downstream, so that
-  // one tab needs a confirmation step instead of a plain link.
-  const hasRoomsToLose = floorPlanRoomCount > 0;
-
-  return (
-    <>
-      <nav className="flex items-center gap-1 rounded-xl border border-border bg-surface p-1">
-        {PHASES.map((phase, i) => {
-          const active = phase.id === current;
-          const done = i < currentIdx;
-          // Upload is always reachable; later phases need a parsed plan.
-          const locked = disabled && phase.id !== "upload";
-          const needsConfirm = phase.id === "upload" && hasRoomsToLose;
-
-          const content = (
-            <span
-              className={cn(
-                "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-                active
-                  ? "bg-accent/15 text-accent"
-                  : locked
-                    ? "text-faint"
-                    : "text-muted hover:bg-surface-2 hover:text-foreground",
-              )}
-            >
-              <span
-                className={cn(
-                  "grid size-5 place-items-center rounded-full text-[10px]",
-                  active
-                    ? "bg-accent text-accent-foreground"
-                    : done
-                      ? "bg-success/20 text-success"
-                      : "bg-surface-3 text-faint",
-                )}
-              >
-                {done ? <Icon name="Check" className="size-3" /> : i + 1}
-              </span>
-              <span className="hidden lg:inline">{phase.label}</span>
-            </span>
-          );
-
-          return (
-            <div key={phase.id} className="flex items-center">
-              {locked ? (
-                <span className="cursor-not-allowed">{content}</span>
-              ) : needsConfirm ? (
-                <button type="button" onClick={() => setConfirmOpen(true)} className="cursor-pointer">
-                  {content}
-                </button>
-              ) : (
-                <Link href={`/projects/${projectId}/${phase.id}`}>{content}</Link>
-              )}
-              {i < PHASES.length - 1 && (
-                <Icon name="ChevronRight" className="size-3.5 text-faint" />
-              )}
-            </div>
-          );
-        })}
-      </nav>
+      <div className="relative min-h-0 flex-1">
+        <button
+          type="button"
+          onClick={onBackClick}
+          className="absolute left-4 top-4 z-10 grid size-9 place-items-center rounded-lg border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground cursor-pointer"
+          aria-label="Back one step"
+          title="Back"
+        >
+          <Icon name="ArrowLeft" className="size-5" />
+        </button>
+        {children}
+      </div>
 
       <Modal
         open={confirmOpen}
@@ -179,7 +167,7 @@ function PhaseStepper({
           </Button>
           <Button
             onClick={() => {
-              router.push(`/projects/${projectId}/upload`);
+              router.push(`/projects/${params.id}/upload`);
               setConfirmOpen(false);
             }}
           >
@@ -187,6 +175,80 @@ function PhaseStepper({
           </Button>
         </div>
       </Modal>
-    </>
+    </div>
+  );
+}
+
+function PhaseStepper({
+  projectId,
+  current,
+  disabled,
+  hasRoomsToLose,
+  doneMap,
+  onNeedsConfirm,
+}: {
+  projectId: string;
+  current: Phase;
+  disabled?: boolean;
+  hasRoomsToLose: boolean;
+  doneMap: Record<Phase, boolean>;
+  onNeedsConfirm: () => void;
+}) {
+  return (
+    <nav className="flex items-center gap-1 rounded-xl border border-border bg-surface p-1">
+      {PHASES.map((phase, i) => {
+        const active = phase.id === current;
+        const done = !active && doneMap[phase.id];
+        // Upload is always reachable; later phases need a parsed plan.
+        const locked = disabled && phase.id !== "upload";
+        // Re-uploading once rooms exist wipes generated work downstream, so
+        // that one tab needs a confirmation step instead of a plain link.
+        const needsConfirm = phase.id === "upload" && hasRoomsToLose;
+
+        const content = (
+          <span
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+              active
+                ? "bg-accent/15 text-accent"
+                : locked
+                  ? "text-faint"
+                  : "text-muted hover:bg-surface-2 hover:text-foreground",
+            )}
+          >
+            <span
+              className={cn(
+                "grid size-5 place-items-center rounded-full text-[10px]",
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : done
+                    ? "bg-success/20 text-success"
+                    : "bg-surface-3 text-faint",
+              )}
+            >
+              {done ? <Icon name="Check" className="size-3" /> : i + 1}
+            </span>
+            <span className="hidden lg:inline">{phase.label}</span>
+          </span>
+        );
+
+        return (
+          <div key={phase.id} className="flex items-center">
+            {locked ? (
+              <span className="cursor-not-allowed">{content}</span>
+            ) : needsConfirm ? (
+              <button type="button" onClick={onNeedsConfirm} className="cursor-pointer">
+                {content}
+              </button>
+            ) : (
+              <Link href={`/projects/${projectId}/${phase.id}`}>{content}</Link>
+            )}
+            {i < PHASES.length - 1 && (
+              <Icon name="ChevronRight" className="size-3.5 text-faint" />
+            )}
+          </div>
+        );
+      })}
+    </nav>
   );
 }

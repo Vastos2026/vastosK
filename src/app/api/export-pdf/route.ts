@@ -111,8 +111,8 @@ function loadLogoBytes(): Promise<Buffer | null> {
 
 /**
  * Adds a full page titled `title` with `image` scaled to fit and centered —
- * the floor-plan page and each room page laid out identically, so this was
- * pulled into one helper instead of two copies of the same scale/center math.
+ * used for the floor-plan page, which (unlike room pages) always gets a
+ * whole page to itself.
  */
 function addImagePage(pdfDoc: PDFDocument, fontBold: PDFFont, title: string, image: PDFImage) {
   const page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
@@ -129,6 +129,63 @@ function addImagePage(pdfDoc: PDFDocument, fontBold: PDFFont, title: string, ima
   const w = image.width * scale;
   const h = image.height * scale;
   page.drawImage(image, { x: (PAGE_WIDTH - w) / 2, y: 70, width: w, height: h });
+}
+
+/**
+ * Adds one page holding 1-2 room slots, stacked, each with its own title
+ * directly above its image (tight gap, not the old whole-page-per-room
+ * layout's large title-to-image whitespace). Two rooms share the page height
+ * evenly; a lone trailing room (odd room count) gets a slot the same height
+ * as if it had a partner, rather than stretching to fill the whole page —
+ * keeps every room's image a consistent size across the export.
+ */
+function addRoomImagesPage(
+  pdfDoc: PDFDocument,
+  fontBold: PDFFont,
+  slots: { title: string; image: PDFImage }[],
+) {
+  const page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+  const titleSize = 14;
+  const titleToImageGap = 14;
+  const slotGap = 18;
+  const slotHeight = (PAGE_HEIGHT - MARGIN * 2 - slotGap) / 2;
+
+  slots.forEach((slot, i) => {
+    const slotTop = PAGE_HEIGHT - MARGIN - i * (slotHeight + slotGap);
+    page.drawText(slot.title.toUpperCase(), {
+      x: MARGIN,
+      y: slotTop - titleSize,
+      size: titleSize,
+      font: fontBold,
+      color: rgb(0.1, 0.1, 0.1),
+    });
+    const imageTop = slotTop - titleSize - titleToImageGap;
+    const imageAreaHeight = imageTop - (slotTop - slotHeight);
+    const maxWidth = PAGE_WIDTH - MARGIN * 2;
+    const scale = Math.min(maxWidth / slot.image.width, imageAreaHeight / slot.image.height, 1);
+    const w = slot.image.width * scale;
+    const h = slot.image.height * scale;
+    page.drawImage(slot.image, { x: (PAGE_WIDTH - w) / 2, y: imageTop - h, width: w, height: h });
+  });
+}
+
+/** Draws `text` horizontally centered on the page, shrinking the font size until it fits within the margins if needed. */
+function drawCentered(
+  page: PDFPage,
+  text: string,
+  y: number,
+  size: number,
+  font: PDFFont,
+  color: ReturnType<typeof rgb>,
+): number {
+  const maxWidth = PAGE_WIDTH - MARGIN * 2;
+  let fitSize = size;
+  while (fitSize > 9 && font.widthOfTextAtSize(text, fitSize) > maxWidth) {
+    fitSize -= 1;
+  }
+  const width = font.widthOfTextAtSize(text, fitSize);
+  page.drawText(text, { x: (PAGE_WIDTH - width) / 2, y, size: fitSize, font, color });
+  return fitSize;
 }
 
 /** Adds a clickable URI link annotation covering the given rect on the page. */
@@ -219,78 +276,45 @@ export async function POST(request: Request) {
     const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // --- Cover page ---
+    // --- Cover page — everything centered and bold, not a left-aligned
+    // corner block, per explicit feedback that the left-corner layout read
+    // as an afterthought rather than a cover.
     const cover = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    let y = PAGE_HEIGHT - MARGIN;
+    let y = PAGE_HEIGHT - MARGIN - 60;
 
     y = await drawLogoHeader(pdfDoc, cover, fontRegular, y, await loadLogoBytes());
-    y -= 30;
+    y -= 46;
 
-    cover.drawText(projectName, {
-      x: MARGIN,
-      y,
-      size: 28,
-      font: fontBold,
-      color: rgb(0.1, 0.1, 0.1),
-      maxWidth: PAGE_WIDTH - MARGIN * 2,
-    });
-    y -= 42;
+    drawCentered(cover, projectName, y, 32, fontBold, rgb(0.1, 0.1, 0.1));
+    y -= 46;
 
     const subtitle = [propertyTypeLabel, subcategory].filter(Boolean).join(" · ");
     if (subtitle) {
-      cover.drawText(subtitle, {
-        x: MARGIN,
-        y,
-        size: 13,
-        font: fontRegular,
-        color: rgb(0.35, 0.35, 0.35),
-      });
-      y -= 40;
+      drawCentered(cover, subtitle, y, 14, fontBold, rgb(0.35, 0.35, 0.35));
+      y -= 44;
     }
 
     if (styleLabel) {
-      cover.drawText(`Style: ${styleLabel}`, {
-        x: MARGIN,
-        y,
-        size: 12,
-        font: fontRegular,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      y -= 22;
+      drawCentered(cover, `Style: ${styleLabel}`, y, 13, fontBold, rgb(0.15, 0.15, 0.15));
+      y -= 24;
     }
     if (luxuryLevel) {
-      cover.drawText(`Luxury level: ${luxuryLevel}`, {
-        x: MARGIN,
-        y,
-        size: 12,
-        font: fontRegular,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      y -= 22;
+      drawCentered(cover, `Luxury level: ${luxuryLevel}`, y, 13, fontBold, rgb(0.15, 0.15, 0.15));
+      y -= 24;
     }
     // Room count — sensible extra context beyond what the cover already
     // showed, cheap to compute (just the resolved rooms list's length).
-    cover.drawText(`Rooms: ${rooms.length}`, {
-      x: MARGIN,
-      y,
-      size: 12,
-      font: fontRegular,
-      color: rgb(0.2, 0.2, 0.2),
-    });
-    y -= 22;
+    drawCentered(cover, `Rooms: ${rooms.length}`, y, 13, fontBold, rgb(0.15, 0.15, 0.15));
+    y -= 24;
     if (colourPaletteLabel) {
-      cover.drawText(`Colour palette: ${colourPaletteLabel}`, {
-        x: MARGIN,
-        y,
-        size: 12,
-        font: fontRegular,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      y -= 26;
+      drawCentered(cover, `Colour palette: ${colourPaletteLabel}`, y, 13, fontBold, rgb(0.15, 0.15, 0.15));
+      y -= 30;
 
       if (colourSwatch?.length) {
         const swatchSize = 22;
-        let swatchX = MARGIN;
+        const swatchGap = 8;
+        const totalWidth = colourSwatch.length * swatchSize + (colourSwatch.length - 1) * swatchGap;
+        let swatchX = (PAGE_WIDTH - totalWidth) / 2;
         for (const hex of colourSwatch) {
           const color = hexToRgb(hex);
           if (!color) continue;
@@ -301,7 +325,7 @@ export async function POST(request: Request) {
             height: swatchSize,
             color,
           });
-          swatchX += swatchSize + 8;
+          swatchX += swatchSize + swatchGap;
         }
         y -= swatchSize + 16;
       }
@@ -312,13 +336,7 @@ export async function POST(request: Request) {
       month: "long",
       day: "numeric",
     });
-    cover.drawText(`Exported ${exportedDate}`, {
-      x: MARGIN,
-      y: MARGIN,
-      size: 10,
-      font: fontRegular,
-      color: rgb(0.55, 0.55, 0.55),
-    });
+    drawCentered(cover, `Exported ${exportedDate}`, MARGIN, 10, fontRegular, rgb(0.55, 0.55, 0.55));
 
     // --- Fetch the floor plan (if any) and every room's image concurrently ---
     // These are independent storage reads with no data dependency on each
@@ -354,7 +372,9 @@ export async function POST(request: Request) {
       // same "don't fail the whole export over one asset" contract as rooms below.
     }
 
-    // --- One page per approved + included room ---
+    // --- Room pages, 2 per page (was 1 whole page per room, leaving a lot
+    // of unused whitespace under each title) ---
+    const roomSlots: { title: string; image: PDFImage }[] = [];
     for (let i = 0; i < rooms.length; i++) {
       const room = rooms[i];
       const bytes = roomBytes[i];
@@ -370,7 +390,10 @@ export async function POST(request: Request) {
       const format = sniffImageFormat(bytes);
       if (!format) continue;
       const image = format === "jpg" ? await pdfDoc.embedJpg(bytes) : await pdfDoc.embedPng(bytes);
-      addImagePage(pdfDoc, fontBold, room.name || "Room", image);
+      roomSlots.push({ title: room.name || "Room", image });
+    }
+    for (let i = 0; i < roomSlots.length; i += 2) {
+      addRoomImagesPage(pdfDoc, fontBold, roomSlots.slice(i, i + 2));
     }
 
     // --- Walkthrough link page ---
@@ -417,10 +440,8 @@ export async function POST(request: Request) {
       },
     });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : "PDF export failed" },
-      { status: 500 },
-    );
+    console.error("[export-pdf]", e);
+    return Response.json({ error: "PDF export failed" }, { status: 500 });
   }
 }
 
@@ -439,23 +460,37 @@ async function drawLogoHeader(
   logoBytes: Buffer | null,
 ): Promise<number> {
   const logoHeight = 32;
-  let textX = MARGIN;
+  const tagline = "Generated by Vastos";
+  const taglineSize = 11;
+  const taglineWidth = fontRegular.widthOfTextAtSize(tagline, taglineSize);
+  let logoWidth = 0;
+  let logo = null as Awaited<ReturnType<typeof pdfDoc.embedPng>> | null;
 
   if (logoBytes) {
     try {
-      const logo = await pdfDoc.embedPng(logoBytes);
-      const logoWidth = logoHeight * (logo.width / logo.height);
-      page.drawImage(logo, { x: MARGIN, y: topY - logoHeight, width: logoWidth, height: logoHeight });
-      textX = MARGIN + logoWidth + 12;
+      logo = await pdfDoc.embedPng(logoBytes);
+      logoWidth = logoHeight * (logo.width / logo.height);
     } catch {
       // Logo failed to embed (corrupt file, etc.) — fall back to text-only.
+      logo = null;
     }
   }
 
-  page.drawText("Generated by Vastos", {
-    x: textX,
+  // Logo + tagline drawn as one centered unit, not left-aligned, matching
+  // the rest of the cover page's centered treatment.
+  const gap = logo ? 12 : 0;
+  const totalWidth = logoWidth + gap + taglineWidth;
+  let cursorX = (PAGE_WIDTH - totalWidth) / 2;
+
+  if (logo) {
+    page.drawImage(logo, { x: cursorX, y: topY - logoHeight, width: logoWidth, height: logoHeight });
+    cursorX += logoWidth + gap;
+  }
+
+  page.drawText(tagline, {
+    x: cursorX,
     y: topY - logoHeight / 2 - 4,
-    size: 11,
+    size: taglineSize,
     font: fontRegular,
     color: rgb(0.45, 0.45, 0.45),
   });

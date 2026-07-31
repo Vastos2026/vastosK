@@ -8,6 +8,7 @@ import { categoryForPropertyType, getProjectTypeConfig, orderRoomsForWalkthrough
 import { generateWalkthrough, orderRoomsWithAI } from "@/lib/generation-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { GeneratingProgressRing } from "@/components/ui/generating-progress-ring";
 import { useAsyncFeedback } from "@/hooks/use-async-feedback";
 import { useShareToken } from "@/hooks/use-share-token";
 import { useExportProjectPdf } from "@/hooks/use-export-project-pdf";
@@ -47,7 +48,19 @@ export default function WalkthroughPage() {
   const staticOrder = useMemo(() => {
     if (!covered) return null;
     const orderedNames = orderRoomsForWalkthrough(category, tokens);
-    return orderedNames.map((t, i) => included.find((r) => (r.type || r.name) === t) ?? included[i]);
+    const remaining = [...included];
+    const ordered: Room[] = [];
+
+    for (const name of orderedNames) {
+      const index = remaining.findIndex((r) => (r.type || r.name) === name);
+      if (index !== -1) {
+        ordered.push(remaining.splice(index, 1)[0]);
+      } else if (remaining.length > 0) {
+        ordered.push(remaining.shift()!);
+      }
+    }
+
+    return [...ordered, ...remaining];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [covered, category, includedKey]);
 
@@ -166,6 +179,11 @@ export default function WalkthroughPage() {
       return persisted ? "Link copied" : "Link copied (saved on this device for now)";
     });
 
+  // One Veo clip per room is the dominant cost — a flat floor plus a per-room
+  // increment approximates it well enough for a progress ring, without
+  // needing the server to report real progress.
+  const walkthroughEstimatedMs = Math.max(30000, effectiveOrder.length * 20000);
+
   const reorderItems: ReorderableRoom[] = effectiveOrder.map((room) => {
     const card = project.roomCards.find((c) => c.roomId === room.id);
     const approved = card?.generations.find((g) => g.id === card.approvedId);
@@ -194,7 +212,7 @@ export default function WalkthroughPage() {
         </div>
         <p className="mt-2 flex items-center gap-1.5 text-xs text-faint">
           <Icon name="CircleAlert" className="size-3.5 shrink-0" />
-          Sizes can appear a little larger or smaller than expected — confirm with the sq ft
+          Sizes can appear a little larger or smaller than expected. Confirm with the sq ft
           figure for accuracy.
         </p>
 
@@ -232,15 +250,22 @@ export default function WalkthroughPage() {
 
         {wt?.status === "completed" && wt.videoUrl ? (
           <div className="mt-6">
-            <video src={wt.videoUrl} controls className="w-full rounded-2xl border border-border" />
+            {busy ? (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface p-8">
+                <GeneratingProgressRing active={busy} estimatedMs={walkthroughEstimatedMs} />
+                <p className="text-xs text-muted">Regenerating walkthrough…</p>
+              </div>
+            ) : (
+              <video src={wt.videoUrl} controls className="w-full rounded-2xl border border-border" />
+            )}
             <div className="mt-3 flex flex-wrap gap-2">
               <a href={wt.videoUrl} download>
-                <Button variant="outline" icon="Download">Download</Button>
+                <Button variant="outline" icon="Download" disabled={busy}>Download</Button>
               </a>
-              <Button variant="outline" icon="Copy" onClick={getShareLink} loading={share.busy}>
+              <Button variant="outline" icon="Copy" onClick={getShareLink} loading={share.busy} disabled={busy}>
                 Get shareable link
               </Button>
-              <Button variant="outline" icon="FileUp" onClick={pdfExport.exportPdf} loading={pdfExport.busy}>
+              <Button variant="outline" icon="FileUp" onClick={pdfExport.exportPdf} loading={pdfExport.busy} disabled={busy}>
                 Export PDF
               </Button>
               <Button variant="ghost" icon="RefreshCw" onClick={generate} loading={busy}>
@@ -254,9 +279,14 @@ export default function WalkthroughPage() {
               <p className="mt-2 text-xs text-muted">{pdfExport.feedback}</p>
             )}
           </div>
+        ) : busy ? (
+          <div className="mt-6 flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface p-8">
+            <GeneratingProgressRing active={busy} estimatedMs={walkthroughEstimatedMs} />
+            <p className="text-xs text-muted">Generating walkthrough…</p>
+          </div>
         ) : (
-          <Button className="mt-6 w-full" icon="Clapperboard" loading={busy} disabled={busy || orderingBusy} onClick={generate}>
-            {busy ? "Generating walkthrough…" : "Generate walkthrough"}
+          <Button className="mt-6 w-full" icon="Clapperboard" disabled={orderingBusy} onClick={generate}>
+            Generate walkthrough
           </Button>
         )}
       </div>

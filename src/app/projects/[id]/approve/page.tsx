@@ -64,7 +64,7 @@ export default function ApprovePage() {
             if (!card || card.generations.length === 0) {
               return (
                 <div key={room.id} className="rounded-2xl border border-dashed border-border p-4 text-sm text-faint">
-                  {room.name} — not generated yet.
+                  {room.name}. Not generated yet.
                 </div>
               );
             }

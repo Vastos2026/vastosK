@@ -9,10 +9,10 @@ import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { GeneratingLoader } from "@/components/ui/generating-loader";
+import { GeneratingProgressRing } from "@/components/ui/generating-progress-ring";
 import { Badge } from "@/components/ui/badge";
 import { RoomNavRail } from "@/components/project/room-nav-rail";
-import { uid, cn } from "@/lib/utils";
+import { uid, cn, slugifyRoomName } from "@/lib/utils";
 import type { Room, RoomCard, RoomGeneration } from "@/lib/types";
 
 // Stable reference for the "no rooms generating" case — `?? []` in the
@@ -130,7 +130,7 @@ export default function GeneratePage() {
         </div>
         <p className="mb-8 flex items-center gap-1.5 text-xs text-faint">
           <Icon name="CircleAlert" className="size-3.5 shrink-0" />
-          Sizes can appear a little larger or smaller than expected — confirm with the sq ft
+          Sizes can appear a little larger or smaller than expected. Confirm with the sq ft
           figure for accuracy.
         </p>
 
@@ -238,6 +238,16 @@ function HeroCard({
               Latest
             </span>
           )}
+          <a
+            href={latest.imageUrl}
+            download={`${slugifyRoomName(room.name)}.png`}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute right-2 top-2 z-20 grid size-7 place-items-center rounded-md border border-white/10 bg-black/70 text-foreground/90 backdrop-blur-sm transition hover:bg-black/90 cursor-pointer"
+            aria-label="Save image to your device"
+            title="Save image"
+          >
+            <Icon name="Download" className="size-3.5" />
+          </a>
           <button
             onClick={onView}
             className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition-all duration-200 hover:bg-black/50 group-hover:opacity-100 cursor-pointer"
@@ -250,7 +260,7 @@ function HeroCard({
       ) : generating ? (
         <div className="absolute inset-0 grid place-items-center bg-grid">
           <div className="flex flex-col items-center gap-3">
-            <GeneratingLoader />
+            <GeneratingProgressRing active={generating} estimatedMs={15000} />
             <p className="text-xs text-muted">Generating {room.name}…</p>
           </div>
         </div>
@@ -281,22 +291,29 @@ function VersionThumb({
   onView: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onView}
-      className="hover-lift group relative aspect-[4/3] cursor-pointer overflow-hidden rounded-2xl border border-border bg-surface"
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={generation.imageUrl}
-        alt={`${room.name} version`}
-        className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.05]"
-      />
+    <div className="hover-lift group relative aspect-[4/3] overflow-hidden rounded-2xl border border-border bg-surface">
+      <button type="button" onClick={onView} className="absolute inset-0 cursor-pointer">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={generation.imageUrl}
+          alt={`${room.name} version`}
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.05]"
+        />
+        <div className="absolute inset-0 bg-black/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
+      </button>
       <span className="absolute left-2 top-2 z-10 rounded-md border border-white/10 bg-black/60 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-muted backdrop-blur-sm">
         v{version}
       </span>
-      <div className="absolute inset-0 bg-black/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
-    </button>
+      <a
+        href={generation.imageUrl}
+        download={`${slugifyRoomName(room.name)}-v${version}.png`}
+        className="absolute right-2 top-2 z-20 grid size-7 place-items-center rounded-md border border-white/10 bg-black/60 text-muted backdrop-blur-sm transition hover:bg-black/90 hover:text-foreground cursor-pointer"
+        aria-label="Save image to your device"
+        title="Save image"
+      >
+        <Icon name="Download" className="size-3.5" />
+      </a>
+    </div>
   );
 }
 
@@ -335,7 +352,7 @@ function GenerateMoreCard({
       {busy ? (
         <div className="absolute inset-0 grid place-items-center">
           <div className="flex flex-col items-center gap-3">
-            <GeneratingLoader />
+            <GeneratingProgressRing active={busy} estimatedMs={15000} />
             <p className="text-xs text-muted">Generating another version…</p>
           </div>
         </div>

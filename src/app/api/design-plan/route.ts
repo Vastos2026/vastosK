@@ -11,7 +11,7 @@
 
 import { buildUniversalInput, type DesignSelection, type RoomSelection } from "@/lib/ai/prompting/build-universal-input";
 import { runDesignPlanning } from "@/lib/ai/prompting/design-planning";
-import { ProviderError } from "@/lib/ai/errors";
+import { toErrorResponse } from "@/lib/ai/errors";
 import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
@@ -28,7 +28,10 @@ interface Body {
 
 export async function POST(request: Request) {
   // One Gemini structured-generation call per design plan.
-  const guard = await assertAllowed(request, { rateLimit: { key: "design-plan", limit: 10, windowMs: 60_000 } });
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "design-plan", limit: 10, windowMs: 60_000 },
+    checkUsage: true,
+  });
   if (guard instanceof Response) return guard;
 
   let body: Body;
@@ -53,13 +56,7 @@ export async function POST(request: Request) {
     const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id });
     return Response.json({ universalInput, designSpec });
   } catch (e) {
-    if (e instanceof ProviderError) {
-      const status = e.category === "ValidationError" ? 400 : 502;
-      return Response.json({ error: e.message, category: e.category }, { status });
-    }
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Design planning failed" },
-      { status: 500 },
-    );
+    const { status, body } = toErrorResponse(e, "Design planning");
+    return Response.json(body, { status });
   }
 }

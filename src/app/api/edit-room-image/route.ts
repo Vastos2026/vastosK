@@ -13,12 +13,14 @@
 
 import { randomUUID } from "node:crypto";
 import { editImage } from "@/lib/ai/provider";
-import { ProviderError } from "@/lib/ai/errors";
+import { toErrorResponse } from "@/lib/ai/errors";
 import { getObject, putObject } from "@/lib/pipeline/storage";
 import { STYLE_BY_ID, STYLES } from "@/lib/data";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
 import { MAX_LASSO_REGIONS } from "@/components/project/lasso-canvas";
+import { requireOwnedProject } from "@/lib/supabase/projects";
+import { allProjectStorageKeys } from "@/lib/projects/approved-rooms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,6 +69,12 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid baseImageKey" }, { status: 400 });
   }
 
+  const owned = await requireOwnedProject(guard.id, projectId);
+  if (owned instanceof Response) return owned;
+  if (owned && !allProjectStorageKeys(owned).has(baseImageKey)) {
+    return Response.json({ error: "Image not found or not owned by you" }, { status: 403 });
+  }
+
   const style = STYLE_BY_ID[styleId ?? ""] ?? STYLES[0];
 
   try {
@@ -85,13 +93,7 @@ export async function POST(request: Request) {
     void recordGeneration({ projectId, userId: guard.id, type: "edit", storageUrl: imageUrl });
     return Response.json({ imageUrl, key });
   } catch (e) {
-    if (e instanceof ProviderError) {
-      const status = e.category === "ValidationError" ? 400 : 502;
-      return Response.json({ error: e.message, category: e.category }, { status });
-    }
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Edit failed" },
-      { status: 500 },
-    );
+    const { status, body } = toErrorResponse(e, "Edit");
+    return Response.json(body, { status });
   }
 }

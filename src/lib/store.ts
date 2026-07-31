@@ -45,7 +45,10 @@ interface VastoState {
    *  every room's render prompt is built from. */
   setDesignPlan: (
     id: string,
-    plan: Pick<Project, "subcategory" | "luxuryLevel" | "colourPalette" | "additionalRequirements" | "universalInput" | "designSpec">,
+    plan: Pick<
+      Project,
+      "subcategory" | "luxuryLevel" | "colourPalette" | "customColourHexes" | "additionalRequirements" | "universalInput" | "designSpec" | "designSignature"
+    >,
   ) => void;
 
   /** Doors/windows ("openings") on the plan's walls. */

@@ -35,6 +35,9 @@ export default function DesignPage() {
   );
   const [luxuryLevel, setLuxuryLevel] = useState<LuxuryLevel>(project?.luxuryLevel ?? "Premium");
   const [colourPalette, setColourPalette] = useState(project?.colourPalette ?? COLOUR_PALETTES[0].id);
+  const [customColors, setCustomColors] = useState<string[]>(
+    project?.customColourHexes ?? ["#ffffff", "#ffffff", "#ffffff"],
+  );
   const [additionalRequirements, setAdditionalRequirements] = useState(
     project?.additionalRequirements ?? "",
   );
@@ -43,6 +46,10 @@ export default function DesignPage() {
 
   const rooms = useMemo(() => project?.floorPlan?.rooms ?? [], [project?.floorPlan?.rooms]);
   const style = STYLES.find((s) => s.id === styleId) ?? STYLES[0];
+  // "Choose custom color" sends the literal hex codes the user picked to the
+  // model as a list, instead of one of the preset labels — COLOUR_PALETTES
+  // has no entry for it.
+  const isCustomPalette = colourPalette === "custom";
 
   if (!project) return null;
 
@@ -67,6 +74,23 @@ export default function DesignPage() {
       return;
     }
     const palette = COLOUR_PALETTES.find((c) => c.id === colourPalette) ?? COLOUR_PALETTES[0];
+    const colourPaletteText = isCustomPalette
+      ? `Custom (${customColors.join(", ")})`
+      : `${palette.label} (${palette.description})`;
+    // Fingerprints exactly the design selections that affect a room's
+    // generated image. Compared against the project's last-saved signature
+    // below to decide whether a room that already has an image should keep
+    // it (nothing that would change its render actually changed) or get
+    // regenerated (the design itself changed, not just the room list).
+    const signature = JSON.stringify({
+      subcategory,
+      styleId,
+      luxuryLevel,
+      colourPalette,
+      customColors: isCustomPalette ? customColors : undefined,
+      notes: additionalRequirements.trim(),
+    });
+    const signatureUnchanged = project.designSignature === signature;
     setBusy(true);
     setError(null);
     try {
@@ -88,16 +112,18 @@ export default function DesignPage() {
         design: {
           style: style.name,
           luxuryLevel,
-          colourPalette: `${palette.label} (${palette.description})`,
+          colourPalette: colourPaletteText,
         },
       });
       setDesignPlan(id, {
         subcategory,
         luxuryLevel,
         colourPalette,
+        customColourHexes: isCustomPalette ? customColors : undefined,
         additionalRequirements: additionalRequirements.trim() || undefined,
         universalInput,
         designSpec,
+        designSignature: signature,
       });
       useVasto.getState().setStyle(id, styleId);
       useVasto.getState().setStatus(id, "designing");
@@ -106,7 +132,14 @@ export default function DesignPage() {
       // already in flight before the user even sees the Generate page — not
       // awaited: the Generate page (rebuilt in a later task) reads progress
       // from the store (generatingRoomIds + roomCards), not from this promise.
+      // Rooms that already have a generation are skipped when nothing about
+      // the design actually changed (signatureUnchanged) — re-confirming
+      // Design after only adding a new room shouldn't silently replace every
+      // other room's already-approved-looking image.
       for (const room of rooms) {
+        const existingCard = project.roomCards.find((c) => c.roomId === room.id);
+        if (signatureUnchanged && (existingCard?.generations.length ?? 0) > 0) continue;
+
         useVasto.getState().startGenerating(id, room.id);
         // Omit size entirely when a dimension is still missing, rather than
         // sending a literal "undefined x undefined ft" into the render
@@ -157,7 +190,7 @@ export default function DesignPage() {
         <div className="mb-6">
           <h2 className="text-2xl font-semibold tracking-tight">Design</h2>
           <p className="mt-1 text-sm text-muted">
-            Chosen once, applied to every room — {rooms.length} room{rooms.length === 1 ? "" : "s"} confirmed.
+            Chosen once, applied to every room. {rooms.length} room{rooms.length === 1 ? "" : "s"} confirmed.
           </p>
         </div>
 
@@ -255,7 +288,51 @@ export default function DesignPage() {
                 </div>
               </button>
             ))}
+
+            <button
+              onClick={() => setColourPalette("custom")}
+              className={cn(
+                "group cursor-pointer overflow-hidden rounded-2xl border text-left transition-colors",
+                isCustomPalette
+                  ? "border-accent/60 bg-accent/5"
+                  : "border-border bg-surface hover:border-border-strong",
+              )}
+            >
+              <div className="flex h-10 overflow-hidden">
+                {customColors.map((hex, i) => (
+                  <div key={i} className="flex-1" style={{ background: hex }} />
+                ))}
+              </div>
+              <div className="p-3">
+                <p className="text-sm font-medium">Choose custom color</p>
+                <p className="mt-0.5 line-clamp-1 text-xs text-muted">Pick your own 3-colour palette</p>
+              </div>
+            </button>
           </div>
+
+          {isCustomPalette && (
+            <div className="mt-3 flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5">
+              <p className="text-xs text-muted">Pick 3 colours:</p>
+              {customColors.map((hex, i) => (
+                <label
+                  key={i}
+                  className="relative size-10 cursor-pointer overflow-hidden rounded-lg border border-border-strong"
+                  style={{ background: hex }}
+                >
+                  <input
+                    type="color"
+                    value={hex}
+                    onChange={(e) =>
+                      setCustomColors((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
+                    }
+                    className="absolute inset-0 size-full cursor-pointer opacity-0"
+                    aria-label={`Custom colour ${i + 1}`}
+                  />
+                </label>
+              ))}
+              <p className="ml-auto text-xs font-mono text-faint">{customColors.join(" · ")}</p>
+            </div>
+          )}
         </Section>
 
         <Section title="Additional requirements">
@@ -267,7 +344,7 @@ export default function DesignPage() {
             className="input w-full resize-none text-sm"
           />
           <p className="mt-1.5 text-[11px] text-faint">
-            One note for the whole project — no need to say which room it&apos;s for.
+            One note for the whole project. No need to say which room it&apos;s for.
           </p>
         </Section>
 
@@ -286,9 +363,6 @@ export default function DesignPage() {
             {busy ? "Planning the design…" : "Confirm & plan design"}
           </Button>
         </div>
-        <p className="mt-2 text-right text-[11px] text-faint">
-          Runs one AI call to plan a consistent design language for every room.
-        </p>
       </div>
     </div>
   );

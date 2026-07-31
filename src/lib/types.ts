@@ -254,11 +254,21 @@ export interface Project {
   subcategory?: string;
   luxuryLevel?: LuxuryLevel;
   colourPalette?: string;
+  /** Hex codes chosen via "Choose custom color" (colourPalette === "custom") — absent for a preset palette. */
+  customColourHexes?: string[];
   /** One global free-text note (Workstream 8.5) — replaces the earlier per-room field. */
   additionalRequirements?: string;
   /** Cached Universal Input + Design Specification from the last Design Planning run. */
   universalInput?: UniversalInput;
   designSpec?: DesignSpecification;
+  /**
+   * Fingerprint of the design selections (subcategory/style/luxury/palette/
+   * additional requirements) used for the last Design Planning run — lets
+   * confirming Design again after only adding a room skip regenerating
+   * images for rooms that already have one, instead of re-firing every
+   * room's generation on an unrelated change.
+   */
+  designSignature?: string;
   /** Per-room generation history — the Room Generation Gallery + Final Image Selection. */
   roomCards: RoomCard[];
   walkthrough?: Walkthrough;

@@ -10,7 +10,7 @@
  */
 
 import { generateStructured } from "@/lib/ai/provider";
-import { ProviderError } from "@/lib/ai/errors";
+import { ProviderError, toErrorResponse } from "@/lib/ai/errors";
 import { assertAllowed } from "@/lib/api-guard";
 
 export const runtime = "nodejs";
@@ -30,7 +30,10 @@ interface Body {
 
 export async function POST(request: Request) {
   // Cheap structured-text call (no image/video cost) — a more generous cap.
-  const guard = await assertAllowed(request, { rateLimit: { key: "order-rooms", limit: 20, windowMs: 60_000 } });
+  const guard = await assertAllowed(request, {
+    rateLimit: { key: "order-rooms", limit: 20, windowMs: 60_000 },
+    checkUsage: true,
+  });
   if (guard instanceof Response) return guard;
 
   let body: Body;
@@ -43,6 +46,15 @@ export async function POST(request: Request) {
   const { category, roomNames } = body;
   if (!category || !roomNames?.length) {
     return Response.json({ error: "category and roomNames are required" }, { status: 400 });
+  }
+  if (roomNames.length > 60) {
+    return Response.json({ error: "too many rooms (max 60)" }, { status: 400 });
+  }
+  if (roomNames.some((n) => typeof n !== "string" || n.length > 200)) {
+    return Response.json(
+      { error: "each room name must be a string of at most 200 characters" },
+      { status: 400 },
+    );
   }
 
   const prompt = `Order these rooms of a ${category} project into the sequence a visitor would naturally walk through them, starting near an entrance/public area and ending in more private rooms. Rooms: ${roomNames.join(", ")}. Return every room name exactly once, unchanged, in "order".`;
@@ -58,9 +70,7 @@ export async function POST(request: Request) {
       // order rather than blocking the walkthrough on a planning-call failure.
       return Response.json({ order: roomNames, fellBack: true });
     }
-    return Response.json(
-      { error: e instanceof Error ? e.message : "Ordering failed" },
-      { status: 500 },
-    );
+    const { status, body } = toErrorResponse(e, "Ordering");
+    return Response.json(body, { status });
   }
 }

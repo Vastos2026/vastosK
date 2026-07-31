@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useProject } from "@/lib/store";
+import { useProject, useVasto } from "@/lib/store";
+import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -11,11 +12,23 @@ export default function FloorPlanPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const project = useProject(id);
+  const setFloorPlan = useVasto((s) => s.setFloorPlan);
+  const setStatus = useVasto((s) => s.setStatus);
   const [choice, setChoice] = useState<"yes" | "no" | null>(null);
 
   if (!project) return null;
 
-  const goSketch = () => router.push(`/projects/${id}/sketch`);
+  // Restored the original pre-sketch-tool flow (2026-07-30): straight to
+  // Room Confirmation's manual "Add room" form, same as Upload page's own
+  // "enter rooms manually" fallback (`goManual` there) — see that page for
+  // the identical pattern. The sketch tool (`/projects/[id]/sketch`) is left
+  // in place but unlinked, per an explicit product decision to keep it
+  // dormant rather than delete it.
+  const goManual = () => {
+    setFloorPlan(id, emptyPlan());
+    setStatus(id, "parsed");
+    router.push(`/projects/${id}/review`);
+  };
 
   return (
     <div className="grid h-full place-items-center px-6">
@@ -53,8 +66,8 @@ export default function FloorPlanPage() {
         </div>
 
         {choice === "no" && (
-          <Button className="mt-6" iconRight="ArrowRight" onClick={goSketch}>
-            Sketch your floor plan
+          <Button className="mt-6" icon="ListPlus" onClick={goManual}>
+            Enter rooms manually
           </Button>
         )}
 

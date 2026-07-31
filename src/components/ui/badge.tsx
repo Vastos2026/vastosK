@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Icon } from "./icon";
 import type { ProjectStatus, RenderStatus } from "@/lib/types";
-import type { UserStatus } from "@/lib/auth/session";
+import type { UserStatus } from "@/lib/auth/types";
 
 export function Badge({
   children,

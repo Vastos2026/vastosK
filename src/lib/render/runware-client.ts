@@ -13,10 +13,26 @@
  * Model choice is env-overridable so a slug can be pinned/swapped without a
  * code change, same convention as `GEMINI_IMAGE_MODEL`/`GEMINI_VIDEO_MODEL`:
  *   RUNWARE_IMAGE_MODEL — default `runware:400@1` (FLUX.2 [dev], text-to-image)
- *   RUNWARE_EDIT_MODEL  — default `runware:102@1` (FLUX Fill, masked inpainting —
- *                          purpose-built for the lasso edit's seed+mask shape,
- *                          unlike FLUX.2 [dev]'s generic reference-image editing)
+ *   RUNWARE_EDIT_MODEL  — default `google:4@2` (Nano Banana Pro, reference-image
+ *                          editing — see the "Nano Banana via Runware" section
+ *                          below for why this replaced FLUX Fill as the lasso
+ *                          edit's primary model, 2026-07-30)
  *   RUNWARE_VIDEO_MODEL — default `alibaba:wan@2.7` (Wan 2.7, image-to-video)
+ *   RUNWARE_FALLBACK_IMAGE_MODEL — default `google:4@3` (Nano Banana 2) — the
+ *                          second-tier fallback for BOTH generateImage and
+ *                          editImage when the primary Runware model fails
+ *                          (see provider.ts's chained fallback); a third tier,
+ *                          the direct Google Gemini API key path, is provider.ts's
+ *                          own responsibility, not this file's.
+ *
+ * Nano Banana via Runware (google:4@2 "Pro", google:4@3 "2") — confirmed via
+ * live schema lookups (2026-07-30) to be REFERENCE-IMAGE editors, same as
+ * FLUX.2: `inputs.referenceImages` (1-14 images), no `maskImage`/mask concept
+ * at all. So the lasso edit's crop → edit → composite-back pipeline (already
+ * built for the direct-Google-API Nano Banana path, see
+ * `render/gemini-image.ts`'s `planCropEdit`/`compositeCrop`) is REUSED here
+ * rather than reinvented — `editImageWithRunwareGemini` below calls those
+ * same two functions, swapping only the actual "edit this crop" HTTP call.
  *
  * Output resolution is env-overridable in two tiers, RUNWARE_IMAGE_RESOLUTION:
  *   sd (default) — 1280x704 image, 1280x720 video, ~720p 16:9. Verified live
@@ -41,19 +57,46 @@
 
 import { randomUUID } from "node:crypto";
 import { sleep, ProviderError } from "@/lib/ai/errors";
+import { planCropEdit, compositeCrop, parseDataUri } from "@/lib/render/gemini-image";
+import type { DesignStyle } from "@/lib/types";
 
 const API_BASE = "https://api.runware.ai/v1";
 
 const IMAGE_MODEL = process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1";
-const EDIT_MODEL = process.env.RUNWARE_EDIT_MODEL?.trim() || "runware:102@1";
+const EDIT_MODEL = process.env.RUNWARE_EDIT_MODEL?.trim() || "google:4@2";
 const VIDEO_MODEL = process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7";
+/** Nano Banana 2 — second-tier fallback, used for both generation and editing. */
+const FALLBACK_IMAGE_MODEL = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
+/** FLUX Fill [dev] — no longer the default edit model (see header comment),
+ * kept only so `RUNWARE_EDIT_MODEL` can still be pointed back at it. */
+const FLUX_FILL_MODEL = "runware:102@1";
 
 function resolutionTier(): "sd" | "hd" {
   return process.env.RUNWARE_IMAGE_RESOLUTION?.trim().toLowerCase() === "hd" ? "hd" : "sd";
 }
 
+// Runware's `negativePrompt` field (unlike Gemini, which has no separate
+// negative channel and has to fold everything into one prompt string) —
+// static, not room-specific, so it's set here rather than threaded through
+// the whole provider abstraction. Targets the "looks AI-generated" complaint
+// directly: CGI/render/illustration tells, plastic-smooth surfaces, flat
+// studio lighting, and low-detail/blurry output.
+const REALISM_NEGATIVE_PROMPT =
+  "3D render, CGI, illustration, cartoon, painting, plastic-looking surfaces, artificial studio lighting, " +
+  "overexposed highlights, flat lighting, blurry, soft focus, low detail, low resolution, watermark, text, " +
+  "logo, distorted geometry, warped proportions, impossible architecture";
+
 const IMAGE_DIMENSIONS = { sd: { width: 1280, height: 704 }, hd: { width: 1920, height: 1088 } } as const;
 const VIDEO_DIMENSIONS = { sd: { width: 1280, height: 720 }, hd: { width: 1920, height: 1080 } } as const;
+/**
+ * Nano Banana (google:4@x) rejects arbitrary width/height outright —
+ * confirmed live via "unsupportedDimensions" 400s using FLUX's own
+ * 64-divisible IMAGE_DIMENSIONS above — it validates against a fixed enum of
+ * preset dimensions per aspect-ratio + size-tier instead. These are the exact
+ * 16:9 members of that enum (1K and 2K tiers), used by
+ * `generateImageWithRunwareGemini` below.
+ */
+const GEMINI_IMAGE_DIMENSIONS = { sd: { width: 1376, height: 768 }, hd: { width: 2752, height: 1536 } } as const;
 
 export function runwareConfigured(): boolean {
   return !!process.env.RUNWARE_API_KEY?.trim();
@@ -184,6 +227,12 @@ export async function generateImageWithRunware(
       taskUUID: randomUUID(),
       model: IMAGE_MODEL,
       positivePrompt: prompt,
+      negativePrompt: REALISM_NEGATIVE_PROMPT,
+      // FLUX.2 [dev]'s own step default is undocumented/unknown — raising it
+      // is the most direct, lowest-risk lever for "sharper, more detailed"
+      // output (documented valid range 1-50). CFGScale is left unset to keep
+      // Runware's own documented default (4), which is already reasonable.
+      steps: 35,
       width,
       height,
       outputType: "URL",
@@ -196,31 +245,147 @@ export async function generateImageWithRunware(
 }
 
 /**
- * Masked region edit via FLUX Fill. `maskDataUri` follows this codebase's
- * existing convention (see api/edit-room-image/route.ts): white = edit this
- * region, black = leave untouched — passed straight through as `maskImage`,
- * no crop/composite step needed (unlike the Gemini path), since FLUX Fill
- * does masked inpainting natively.
+ * DISABLED — kept aside, not deleted, per this repo's convention for retired
+ * models (matches `src/lib/pipeline/opencv.ts`'s style). No longer called
+ * from `provider.ts` as of 2026-07-30 — replaced by `editImageWithRunwareGemini`
+ * below (Nano Banana Pro/2), per the user's explicit "the output from lasso
+ * is still not good, change it" after the steps/CFGScale tuning below was
+ * already live-verified to help but apparently not enough. Masked region
+ * edit via FLUX Fill. `maskDataUri` follows this codebase's existing
+ * convention (see api/edit-room-image/route.ts): white = edit this region,
+ * black = leave untouched — no crop/composite step needed (unlike the Gemini
+ * path), since FLUX Fill does masked inpainting natively.
+ *
+ * `seedImage`/`maskImage` stay TOP-LEVEL, not nested under `inputs`. The
+ * user-supplied FLUX.1 Fill [dev] OpenAPI schema doc (2026-07-30) shows them
+ * nested under `inputs` — but two separate live 400s proved the doc doesn't
+ * match this model's actual deployed validation: nesting under `inputs`
+ * gets `missingMaskImage` ("Model is of type Inpainting and requires a mask
+ * image to be provided" — the validator doesn't see it there), and the same
+ * doc's `maskMargin` field gets `unsupportedArchitectureMaskMargin` ("Mask
+ * margin is not supported in this model architecture") outright. Top-level
+ * seedImage/maskImage with no maskMargin is what actually works, confirmed
+ * by a real successful edit. Don't "fix" this back to match the doc without
+ * re-confirming live first, if this is ever revived.
+ *
+ * A live A/B test (real bedroom seed image, masked region, "add a large
+ * bright red vase with flowers") showed the edit lands roughly in the right
+ * region (seedImage/maskImage ARE respected) but the un-tuned result looked
+ * flat/pasted-on rather than a lit, integrated 3D object — matching the
+ * user's "output but not good" complaint. Explicit `steps`/`CFGScale` (both
+ * undocumented-default, i.e. Runware's own defaults for this model are
+ * unknown/possibly low) fixed that specific problem — a second live A/B
+ * confirmed a real, well-integrated result — but the user still wasn't
+ * satisfied and asked to move to Nano Banana Pro regardless.
  */
-export async function editImageWithRunware(
+export async function editImageWithRunwareFluxFill(
   baseDataUri: string,
   maskDataUri: string,
   instruction: string,
 ): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
+  // Without an explicit width/height, Runware infers dimensions from
+  // `seedImage`'s own pixel size, which isn't guaranteed to be a multiple of
+  // 64 between 128-2048 (FLUX Fill's hard requirement) — confirmed live via
+  // "invalidWidth" 400s on the lasso edit path. Pin to the same locked
+  // resolution-tier constants `generateImageWithRunware` uses, which are
+  // always valid, instead of trusting the seed image's actual dimensions.
+  const { width, height } = IMAGE_DIMENSIONS[resolutionTier()];
   const [result] = await submit([
     {
       taskType: "imageInference",
       taskUUID: randomUUID(),
-      model: EDIT_MODEL,
+      model: FLUX_FILL_MODEL,
       positivePrompt: instruction,
+      negativePrompt: REALISM_NEGATIVE_PROMPT,
       seedImage: baseDataUri,
       maskImage: maskDataUri,
+      steps: 38,
+      CFGScale: 7,
+      width,
+      height,
       outputType: "URL",
       outputFormat: "PNG",
       includeCost: true,
     },
   ]);
   if (!result?.imageURL) throw new Error("Runware FLUX Fill returned no imageURL");
+  return finishDownload(result.imageURL, "image/", "image/png", result.cost);
+}
+
+/**
+ * Region edit via Nano Banana (Pro or 2) on Runware — reuses the SAME crop /
+ * generous-pad / prompt-build / feathered-composite pipeline as the direct
+ * Google API path (`gemini-image.ts`'s `planCropEdit`/`compositeCrop`), only
+ * swapping which HTTP call actually performs the "edit this crop" step.
+ * Neither Nano Banana model has a mask parameter — both are reference-image
+ * editors (`inputs.referenceImages`), confirmed against their live Runware
+ * schemas (2026-07-30) — hence needing the crop+composite trick at all,
+ * unlike FLUX Fill's native masked inpainting.
+ *
+ * `resolution: "1K"` is passed instead of explicit `width`/`height` — the
+ * docs state `referenceImages` requires `resolution` (not width/height) and
+ * that the model then auto-matches the input's aspect ratio, which sidesteps
+ * having to guess whether an arbitrary crop size falls inside Nano Banana's
+ * documented-but-unverified per-tier dimension ranges. `compositeCrop`
+ * already resizes whatever comes back to the exact crop size regardless, so
+ * the returned image's exact pixel dimensions don't need to match anything.
+ */
+export async function editImageWithRunwareGemini(
+  baseDataUri: string,
+  maskDataUri: string,
+  instruction: string,
+  style: DesignStyle,
+  tier: "primary" | "fallback" = "primary",
+): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
+  const plan = await planCropEdit(baseDataUri, maskDataUri, instruction, style);
+  if (!plan) throw new ProviderError("ValidationError", "lasso selection is empty");
+  const crop = parseDataUri(plan.cropDataUri);
+
+  const [result] = await submit([
+    {
+      taskType: "imageInference",
+      taskUUID: randomUUID(),
+      model: tier === "primary" ? EDIT_MODEL : FALLBACK_IMAGE_MODEL,
+      positivePrompt: plan.prompt,
+      inputs: { referenceImages: [`data:${crop.mime};base64,${crop.data}`] },
+      resolution: "1K",
+      outputType: "URL",
+      outputFormat: "PNG",
+      includeCost: true,
+    },
+  ]);
+  if (!result?.imageURL) throw new Error("Runware Nano Banana returned no imageURL");
+  const edited = await download(result.imageURL);
+  const composited = await compositeCrop(plan.baseBuf, edited.bytes, plan.bx, plan.by, plan.bw, plan.bh);
+  return { ...composited, costUsd: result.cost };
+}
+
+/**
+ * Text-to-image via Nano Banana 2 — the generation fallback tier (see
+ * `provider.ts`'s chained fallback: FLUX first, this second, direct Google
+ * API third). No reference image, so plain `width`/`height` rather than the
+ * `resolution` enum (that enum's docs tie it to `referenceImages` being
+ * present) — but this model's width/height must be one of its own preset
+ * enum values, NOT FLUX's 64-divisible range (see GEMINI_IMAGE_DIMENSIONS).
+ */
+export async function generateImageWithRunwareGemini(
+  prompt: string,
+): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
+  const { width, height } = GEMINI_IMAGE_DIMENSIONS[resolutionTier()];
+  const [result] = await submit([
+    {
+      taskType: "imageInference",
+      taskUUID: randomUUID(),
+      model: FALLBACK_IMAGE_MODEL,
+      positivePrompt: prompt,
+      width,
+      height,
+      outputType: "URL",
+      outputFormat: "PNG",
+      includeCost: true,
+    },
+  ]);
+  if (!result?.imageURL) throw new Error("Runware Nano Banana returned no imageURL");
   return finishDownload(result.imageURL, "image/", "image/png", result.cost);
 }
 
