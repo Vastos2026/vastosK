@@ -249,3 +249,50 @@ Flag any of these that are wrong:
 Real-world dimensions and their reconciliation with drawn geometry; L-shaped
 and non-rectangular rooms; multi-floor plans; reviving the Python/OpenCV
 detector; manual camera override; multiple views per room.
+
+---
+
+## 10. Phase A result — 2026-08-01: shipped and verified
+
+All six tasks (data model, plan editor page + canvas, greybox geometry
+hardening, generation wiring) landed and were verified end-to-end against a
+real generation, not just the Phase 0 spike.
+
+**Verification method.** The plan editor's canvas relies on `ResizeObserver`
+(the same pattern `sketch-canvas.tsx` already used) to size itself, and the
+browser-automation harness used for this session does not composite frames —
+confirmed by reproducing the identical symptom on the untouched, pre-existing
+`sketch-canvas.tsx`, not just the new code. So interactive drag/resize
+testing of the 2D canvas could not be done in this harness; that logic was
+verified by careful code review instead (see the commit for
+`plan-editor-canvas.tsx`) and is flagged for the user to click through in a
+real browser. Everything else — hydration, room placement/seeding, and the
+full generation pipeline — was verified live with real API calls:
+
+- A hydration bug was found and fixed live: `useState(initialRooms)` froze
+  at empty because it ran before the persisted store hydrated. Fixed by
+  gating the editor's mount on hydration instead of syncing via effect.
+- A real project was driven through Upload → (seeded) Plan → Review →
+  Design → Generate. `POST /api/upload-greybox` (200) and
+  `POST /api/generate-room-image` (200, with a reference image attached)
+  both fired for the room that had a `shape`; the room with no `shape`
+  generated via the unchanged text-only path (confirmed via its logged
+  prompt, which did not contain the greybox clause).
+- The actual generated output was compared against its own real greybox
+  reference (not a hand-authored one): both windows and the door landed at
+  the reference's positions, the door rendered CLOSED (Task 10's fix
+  holding under real generation, not just the spike), and no invented
+  opening appeared at the corner post. The room was also correctly
+  furnished as a bedroom, unlike Phase 0's placeholder-prompt lounge —
+  expected, since this run had a real `DesignSpecification` behind it.
+- One pre-existing, unrelated race was observed: an `<img>` can request a
+  freshly-generated image via `GET /api/render` before the local-first
+  store's `PUT /api/projects` sync finishes, since the fast-path ownership
+  check keys off the server-side snapshot. This is a property of the
+  existing local-first sync architecture (not introduced by this phase) and
+  is not fixed here — flagged for awareness, not a Phase A blocker.
+
+**Outstanding for the user to confirm:** the Plan Editor canvas's drag/
+resize/click interactions (room move/resize, opening place/cycle/drag/
+resize) in a real browser, since this harness could not render frames to
+test them interactively.
