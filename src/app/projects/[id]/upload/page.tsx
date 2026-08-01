@@ -73,7 +73,7 @@ export default function UploadPage() {
       // the current continuous upload → review hop, so that's fine.
       setFloorPlan(id, selected.url ? { ...result.plan, previewUrl: selected.url } : result.plan);
       setStatus(id, "parsed");
-      router.push(`/projects/${id}/review`);
+      router.push(`/projects/${id}/plan`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Extraction failed");
       setStatus(id, "draft");
@@ -84,7 +84,7 @@ export default function UploadPage() {
   const goManual = useCallback(() => {
     setFloorPlan(id, emptyPlan());
     setStatus(id, "parsed");
-    router.push(`/projects/${id}/review`);
+    router.push(`/projects/${id}/plan`);
   }, [id, setFloorPlan, setStatus, router]);
 
   const reset = useCallback(() => {

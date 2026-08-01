@@ -6,6 +6,7 @@ import type { Phase, Project } from "./types";
 // Final Image Selection; "Walkthrough" is the simplified 3-second-clip video.
 export const PHASES: { id: Phase; label: string; icon: string }[] = [
   { id: "upload", label: "Upload", icon: "FileUp" },
+  { id: "plan", label: "Plan", icon: "DoorClosed" },
   { id: "review", label: "Review", icon: "Ruler" },
   { id: "design", label: "Design", icon: "Palette" },
   { id: "generate", label: "Generate", icon: "Image" },
@@ -13,7 +14,15 @@ export const PHASES: { id: Phase; label: string; icon: string }[] = [
   { id: "walkthrough", label: "Walkthrough", icon: "Clapperboard" },
 ];
 
-/** The phase a project should resume at, based on its status. */
+/**
+ * The phase a project should resume at, based on its status.
+ *
+ * Deliberately skips "plan" even for a freshly-parsed project — a returning
+ * user resumes at Review, the more common continuation point. "Plan" is
+ * still reachable any time via the stepper for anyone who wants to place or
+ * adjust openings; only the FIRST forward pass through Upload routes there
+ * (see upload/page.tsx).
+ */
 export function resumePhase(project: Project): Phase {
   switch (project.status) {
     case "draft":

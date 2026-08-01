@@ -23,6 +23,7 @@ import type { Phase, Project } from "@/lib/types";
 function computeDoneMap(project?: Project): Record<Phase, boolean> {
   return {
     upload: !!project?.floorPlan,
+    plan: (project?.floorPlan?.rooms ?? []).some((r) => !!r.shape),
     review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
     design: !!project?.designSpec,
     generate: (project?.roomCards ?? []).some((c) => c.generations.length > 0),
@@ -54,7 +55,8 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const backHref = (() => {
     if (step === "floor-plan") return "/";
     if (step === "upload") return `/projects/${params.id}/floor-plan`;
-    if (step === "review") return `/projects/${params.id}/upload`;
+    if (step === "plan") return `/projects/${params.id}/upload`;
+    if (step === "review") return `/projects/${params.id}/plan`;
     if (step === "generate" && subSegment) return `/projects/${params.id}/generate`;
     const idx = PHASES.findIndex((p) => p.id === step);
     return idx > 0 ? `/projects/${params.id}/${PHASES[idx - 1].id}` : "/";
