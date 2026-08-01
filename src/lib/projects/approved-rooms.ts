@@ -60,5 +60,8 @@ export function allProjectStorageKeys(project: Project): Set<string> {
     for (const generation of card.generations) keys.add(generation.imageKey);
   }
   if (project.walkthrough?.videoKey) keys.add(project.walkthrough.videoKey);
+  for (const room of project.floorPlan?.rooms ?? []) {
+    if (room.greyboxKey) keys.add(room.greyboxKey);
+  }
   return keys;
 }

@@ -7,6 +7,7 @@ import { useProject, useVasto } from "@/lib/store";
 import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
+import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
@@ -147,19 +148,35 @@ export default function DesignPage() {
         // buildUniversalInput uses, so this payload and the Design Planning
         // call describe a room's size identically.
         const size = formatRoomSize(room.width, room.height);
-        generateRoomImage({
-          projectId: id,
-          universalInput,
-          room: {
-            name: room.name,
-            type: room.type,
-            ...(size ? { size } : {}),
-            additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
-            openings: room.openings,
-          },
-          designSpec,
-        })
-          .then((gen) => {
+        // An async IIFE, not awaited by this loop (rooms still generate in
+        // parallel, matching the .then/.catch/.finally chain this replaces)
+        // — it just needs its OWN await for the greybox render/upload step
+        // to finish before the actual generation call for that one room.
+        (async () => {
+          try {
+            const greyboxKey = await ensureGreyboxKey(id, room).catch((e) => {
+              console.warn(
+                `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
+                e instanceof Error ? e.message : e,
+              );
+              return undefined;
+            });
+            if (greyboxKey && greyboxKey !== room.greyboxKey) {
+              useVasto.getState().updateRoom(id, room.id, { greyboxKey });
+            }
+            const gen = await generateRoomImage({
+              projectId: id,
+              universalInput,
+              room: {
+                name: room.name,
+                type: room.type,
+                ...(size ? { size } : {}),
+                additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
+                openings: room.openings,
+              },
+              designSpec,
+              greyboxKey,
+            });
             useVasto.getState().addGeneration(id, room.id, {
               id: uid("gen"),
               createdAt: new Date().toISOString(),
@@ -167,13 +184,12 @@ export default function DesignPage() {
               imageKey: gen.key,
               prompt: gen.prompt,
             });
-          })
-          .catch((e) => {
+          } catch (e) {
             console.warn(`[generate] room "${room.name}" failed:`, e instanceof Error ? e.message : e);
-          })
-          .finally(() => {
+          } finally {
             useVasto.getState().stopGenerating(id, room.id);
-          });
+          }
+        })();
       }
 
       router.push(`/projects/${id}/generate`);

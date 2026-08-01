@@ -19,7 +19,7 @@ import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
 import { generateImage } from "@/lib/ai/provider";
 import { ProviderError, toErrorResponse } from "@/lib/ai/errors";
-import { putObject } from "@/lib/pipeline/storage";
+import { getObject, putObject } from "@/lib/pipeline/storage";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject } from "@/lib/supabase/projects";
@@ -38,6 +38,13 @@ interface Body {
   universalInput?: UniversalInput;
   room?: UniversalInputRoom;
   designSpec?: DesignSpecification;
+  /** Room.greyboxKey — this room's rendered perspective reference, if the user placed it in the Plan Editor. */
+  greyboxKey?: string;
+}
+
+async function loadGreyboxDataUri(key: string): Promise<string> {
+  const bytes = await getObject(key);
+  return `data:image/png;base64,${bytes.toString("base64")}`;
 }
 
 export async function POST(request: Request) {
@@ -55,7 +62,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, universalInput, room, designSpec } = body;
+  const { projectId, universalInput, room, designSpec, greyboxKey } = body;
   if (!projectId || !universalInput || !room || !designSpec) {
     return Response.json(
       { error: "projectId, universalInput, room and designSpec are required" },
@@ -78,8 +85,9 @@ export async function POST(request: Request) {
   if (owned instanceof Response) return owned;
 
   try {
-    const prompt = await buildRoomPrompt(universalInput, room, designSpec);
-    const image = await generateImage(prompt, { projectId, userId: guard.id });
+    const prompt = await buildRoomPrompt(universalInput, room, designSpec, { hasGreybox: !!greyboxKey });
+    const referenceImages = greyboxKey ? [await loadGreyboxDataUri(greyboxKey)] : undefined;
+    const image = await generateImage(prompt, { projectId, userId: guard.id }, { referenceImages });
     const ext = image.contentType === "image/jpeg" ? "jpg" : "png";
     const key = `renders/${projectId}/${randomUUID()}.${ext}`;
     await putObject(key, image.bytes, image.contentType);

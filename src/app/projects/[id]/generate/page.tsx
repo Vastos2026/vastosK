@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { generateRoomImage } from "@/lib/design-plan-client";
+import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ export default function GeneratePage() {
   const router = useRouter();
   const project = useProject(id);
   const addGeneration = useVasto((s) => s.addGeneration);
+  const updateRoom = useVasto((s) => s.updateRoom);
   const generatingIds = useVasto((s) => s.generatingRoomIds[id] ?? NO_GENERATING_IDS);
   const startGenerating = useVasto((s) => s.startGenerating);
   const stopGenerating = useVasto((s) => s.stopGenerating);
@@ -74,6 +76,21 @@ export default function GeneratePage() {
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
     try {
+      // Renders + uploads a fresh greybox only the first time; a room that
+      // already has one (from an earlier generation of the SAME room) reuses
+      // its stored key, so "Generate More" doesn't re-render on every call.
+      // A room never placed in the Plan Editor (no `shape`) resolves to
+      // undefined here, falling back to the text-only openings clause
+      // exactly as before this feature existed.
+      const greyboxKey = await ensureGreyboxKey(id, room).catch((e) => {
+        console.warn(
+          `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
+          e instanceof Error ? e.message : e,
+        );
+        return undefined;
+      });
+      if (greyboxKey && greyboxKey !== room.greyboxKey) updateRoom(id, room.id, { greyboxKey });
+
       // Omit size entirely when a dimension is still missing, rather than
       // sending a literal "undefined x undefined ft" into the render
       // prompt — see Room.width/height's doc comment. Same helper
@@ -93,6 +110,7 @@ export default function GeneratePage() {
           openings: room.openings,
         },
         designSpec,
+        greyboxKey,
       });
       addGeneration(id, room.id, {
         id: uid("gen"),

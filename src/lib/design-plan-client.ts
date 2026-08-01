@@ -42,6 +42,8 @@ export function generateRoomImage(input: {
   universalInput: UniversalInput;
   room: UniversalInputRoom;
   designSpec: DesignSpecification;
+  /** This room's rendered greybox reference key, if it was placed in the Plan Editor — see ensure-greybox-key.ts. */
+  greyboxKey?: string;
 }): Promise<{ imageUrl: string; key: string; prompt: string }> {
   return postJson("/api/generate-room-image", input);
 }
