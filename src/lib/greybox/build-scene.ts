@@ -20,8 +20,14 @@ export const WINDOW_HEAD = 7;
 const WALL_COLOR = 0xb4b4b4;
 const FLOOR_COLOR = 0x9a9a9a;
 const CEIL_COLOR = 0xc8c8c8;
-const DOOR_COLOR = 0x262626;
+// A near-black filler read as an open doorway leading somewhere else, in the
+// Phase 0 spike (the model correctly inferred "void = opening through"). A
+// mid-tone, wall-adjacent leaf colour reads as a CLOSED door instead.
+const DOOR_COLOR = 0x8a7c6a;
 const WINDOW_COLOR = 0xf2f2f2;
+// Slightly darker than the wall — the jamb/lintel reveal around an opening,
+// giving it visible depth instead of being a flat colour swap.
+const REVEAL_COLOR = 0x7c7c7c;
 
 /** Where a wall sits and how its local axis maps into world space. */
 interface WallFrame {
@@ -117,12 +123,70 @@ function addPanel(
 }
 
 /**
+ * A short vertical return face along one edge of an opening (a door/window
+ * jamb) — perpendicular to the wall, extending `depth` outward from the wall
+ * face, giving the opening visible DEPTH instead of a flat colour swap.
+ *
+ * Built from an explicit orthonormal basis (not an Euler rotation.y +
+ * rotation.z composition) because Three.js applies Euler axes in a fixed
+ * order — composing two single-axis rotations by hand is easy to get
+ * subtly wrong. A basis matrix says exactly which world direction each of
+ * the plane's local axes should map to, with no ordering ambiguity.
+ */
+function addRevealSide(
+  group: THREE.Group,
+  frame: WallFrame,
+  u: number,
+  y0: number,
+  y1: number,
+  depth: number,
+  material: THREE.Material,
+) {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(depth, y1 - y0), material);
+  const xAxis = new THREE.Vector3(frame.nx, 0, frame.nz); // local width -> outward normal
+  const yAxis = new THREE.Vector3(0, 1, 0); // local height -> world up
+  const zAxis = xAxis.clone().cross(yAxis);
+  mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
+  mesh.position.set(
+    frame.cx + frame.ax * u + frame.nx * (depth / 2),
+    (y0 + y1) / 2,
+    frame.cz + frame.az * u + frame.nz * (depth / 2),
+  );
+  group.add(mesh);
+}
+
+/** The horizontal return face above an opening (a lintel) — same construction as addRevealSide, see its comment. */
+function addRevealTop(
+  group: THREE.Group,
+  frame: WallFrame,
+  u: number,
+  width: number,
+  y: number,
+  depth: number,
+  material: THREE.Material,
+) {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), material);
+  const xAxis = new THREE.Vector3(frame.ax, 0, frame.az); // local width -> along the wall
+  const yAxis = new THREE.Vector3(frame.nx, 0, frame.nz); // local "height" -> outward normal
+  const zAxis = xAxis.clone().cross(yAxis);
+  mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
+  mesh.position.set(
+    frame.cx + frame.ax * u + frame.nx * (depth / 2),
+    y,
+    frame.cz + frame.az * u + frame.nz * (depth / 2),
+  );
+  group.add(mesh);
+}
+
+/**
  * Builds one wall as a set of panels surrounding its openings: full-height
  * panels for the gaps between openings, plus a panel below and above each
  * opening. The opening itself is left as a hole and backed by a contrasting
  * filler plane just outside the wall, so it reads unmistakably as a door or a
  * window rather than showing the background through it.
  */
+const REVEAL_DEPTH = 0.08;
+
 function buildWall(
   group: THREE.Group,
   wall: GreyboxWall,
@@ -130,6 +194,7 @@ function buildWall(
   wallMat: THREE.Material,
   doorMat: THREE.Material,
   windowMat: THREE.Material,
+  revealMat: THREE.Material,
 ) {
   const frame = wallFrame(wall, spec.width, spec.depth);
   const L = frame.len;
@@ -170,6 +235,15 @@ function buildWall(
       -0.08,
     );
 
+    // Reveal: short returned faces along the opening's edges, at wall
+    // thickness — gives the opening visible DEPTH (a real recess), which is
+    // what keeps a corner or wall junction from being mistaken for one (the
+    // Phase 0 spike's invented glazing) and gives a door frame to read as
+    // "closed door", not "hole".
+    addRevealSide(group, frame, u - opW / 2, op.y0, op.y1, REVEAL_DEPTH, revealMat);
+    addRevealSide(group, frame, u + opW / 2, op.y0, op.y1, REVEAL_DEPTH, revealMat);
+    addRevealTop(group, frame, u, opW, op.y1, REVEAL_DEPTH, revealMat);
+
     cursor = op.x1;
   }
   // Remaining full-height panel after the last opening.
@@ -190,6 +264,7 @@ export function buildGreyboxScene(spec: GreyboxRoomSpec): THREE.Scene {
   const ceilMat = new THREE.MeshStandardMaterial({ color: CEIL_COLOR, side: THREE.DoubleSide, roughness: 1 });
   const doorMat = new THREE.MeshBasicMaterial({ color: DOOR_COLOR, side: THREE.DoubleSide });
   const windowMat = new THREE.MeshBasicMaterial({ color: WINDOW_COLOR, side: THREE.DoubleSide });
+  const revealMat = new THREE.MeshStandardMaterial({ color: REVEAL_COLOR, side: THREE.DoubleSide, roughness: 1 });
 
   const group = new THREE.Group();
 
@@ -203,8 +278,30 @@ export function buildGreyboxScene(spec: GreyboxRoomSpec): THREE.Scene {
   group.add(ceiling);
 
   (["north", "south", "east", "west"] as GreyboxWall[]).forEach((wall) =>
-    buildWall(group, wall, spec, wallMat, doorMat, windowMat),
+    buildWall(group, wall, spec, wallMat, doorMat, windowMat, revealMat),
   );
+
+  // A post at each of the room's 4 internal corners, in the REVEAL colour —
+  // a deliberate, unambiguous "this is a corner" visual cue, cheaper than
+  // trying to out-argue the model with prompt wording alone (which the
+  // Phase 0 strict prompt already tried and only partly worked against
+  // invented glazing at an unbroken corner). Sized to actually be visible:
+  // a first attempt at the WALL colour and a token 0.06 width blended in
+  // completely — same colour as its surroundings reads as no signal at all.
+  const hw = spec.width / 2;
+  const hd = spec.depth / 2;
+  const POST_W = 0.22;
+  const corners: [number, number][] = [
+    [-hw, -hd],
+    [hw, -hd],
+    [hw, hd],
+    [-hw, hd],
+  ];
+  for (const [cx, cz] of corners) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(POST_W, CEILING_H, POST_W), revealMat);
+    post.position.set(cx, CEILING_H / 2, cz);
+    group.add(post);
+  }
 
   scene.add(group);
 
