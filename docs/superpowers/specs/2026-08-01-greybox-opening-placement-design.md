@@ -198,3 +198,49 @@ Then, only if the spike lands:
 - **Phase 3** — generation wiring + strict prompt
 
 Fast-follow, deliberately deferred: furniture placement, L-shaped rooms.
+
+## Phase 0 result — 2026-08-01: PASSED
+
+Both images generated from the same room description; the only variable was the
+geometry channel. Model: Runware Nano Banana 2 (`google:4@3`), 2752x1536.
+
+Greybox target positions, as NDC x across the frame (-1 = left edge, +1 = right):
+door on south t=0.28 → **+0.34**; window on east t=0.30 → **-0.37**; window on
+north t=0.72 → **-0.79**. These were read out of the projection directly, and
+independently confirmed by a column-brightness scan of the greybox PNG, which
+found its two bright panels at -0.81 and -0.40.
+
+| Check (judged against the greybox, which is ground truth) | Conditioned | Text-only |
+| --- | --- | --- |
+| Door on the correct wall, at its position | yes | no — landed on the opposite wall, inside a wardrobe run |
+| East window present | yes | no correspondence |
+| East window at its position | yes | no |
+| North window present at its position | yes | no |
+| Exactly one door and two windows, nothing invented | **no** | no — three windows |
+| **Score** | **4 / 5** | **0 / 5** |
+
+All three openings in the conditioned output land on the correct wall, in the
+correct left-to-right order, at visually matching positions. The camera, room
+proportions and wall junctions also carry over from the reference.
+
+**The one real failure: the model invented a full-height glazed slot at the far
+wall junction** (around NDC -0.18 to -0.02), where the greybox has a plain
+corner. So the strict prompt successfully holds openings that EXIST in place,
+but does not yet stop the model adding new ones. Phase 3's prompt work must
+target that specifically — an explicit "every wall not shown as an opening is
+solid; add no glazing at corners or wall junctions" clause is the obvious first
+attempt.
+
+Two smaller notes, neither blocking:
+
+- The conditioned room furnished as a lounge (daybed, media console) rather than
+  a bedroom. That is prompt/design-spec territory, not geometry — the spike's
+  prompt carried only a one-line room description, where the real pipeline
+  supplies a full `DesignSpecification`.
+- Automated brightness measurement works on the greybox but NOT on photoreal
+  output, because real windows show dark foliage rather than uniform brightness.
+  Output scoring is therefore visual; don't build a regression check on that
+  measurement without solving it properly first.
+
+**Decision: proceed to Phase 1.** The accuracy gain is not marginal — it is the
+difference between openings landing where specified and landing arbitrarily.
