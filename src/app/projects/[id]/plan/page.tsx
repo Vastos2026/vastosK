@@ -1,14 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useProject, useVasto } from "@/lib/store";
+import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { PlanEditorCanvas, type EditorRoom } from "@/components/project/plan-editor-canvas";
 import { deriveOpenings, seedPlacedOpenings, type EditorShape } from "@/lib/plan-editor/geometry";
 import { ROOM_PALETTE, uid } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import type { Room } from "@/lib/types";
+import type { FloorPlan, Room } from "@/lib/types";
 
 /**
  * The Plan Editor (revamp: greybox opening placement, Phase A) — sits between
@@ -27,24 +27,42 @@ const DEFAULT_SHAPE: EditorShape = { x: 0.38, y: 0.38, w: 0.2, h: 0.2 };
 
 export default function PlanEditorPage() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
+  const hydrated = useHydrated();
   const project = useProject(id);
+
+  // Gate the EDITOR's mount on hydration+data being ready, rather than
+  // seeding its local room-copy state via an effect: the persisted store
+  // only finishes hydrating from localStorage AFTER the first render, so a
+  // useState initializer evaluated on that first render would freeze at
+  // empty forever (useState's argument is only used once, ever). Not
+  // rendering PlanEditorContent until real data exists means its own
+  // useState(project.floorPlan.rooms) runs for the first time with the real
+  // rooms already in hand.
+  if (!hydrated || !project) return null;
+
+  return <PlanEditorContent projectId={id} floorPlan={project.floorPlan} />;
+}
+
+function PlanEditorContent({
+  projectId,
+  floorPlan,
+}: {
+  projectId: string;
+  floorPlan: FloorPlan | undefined;
+}) {
+  const router = useRouter();
   const applyPlanLayout = useVasto((s) => s.applyPlanLayout);
 
-  const initialRooms = useMemo(() => project?.floorPlan?.rooms ?? [], [project?.floorPlan?.rooms]);
-  const [rooms, setRooms] = useState<Room[]>(initialRooms);
+  const [rooms, setRooms] = useState<Room[]>(floorPlan?.rooms ?? []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
   const [aspect, setAspect] = useState<number | null>(null);
 
-  if (!project) return null;
-
-  const plan = project.floorPlan;
   const referenceImage = imageFailed
     ? undefined
-    : plan?.meta?.storageKey
-      ? `/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`
-      : plan?.previewUrl;
+    : floorPlan?.meta?.storageKey
+      ? `/api/render?key=${encodeURIComponent(floorPlan.meta.storageKey)}`
+      : floorPlan?.previewUrl;
 
   const placedRooms: EditorRoom[] = rooms
     .filter((r): r is Room & { shape: NonNullable<Room["shape"]> } => !!r.shape)
@@ -96,9 +114,9 @@ export default function PlanEditorPage() {
     if (placedRooms.length > 0) {
       const derived = deriveOpenings(placedRooms);
       const finalRooms = rooms.map((r) => (r.shape ? { ...r, openings: derived[r.id] ?? [] } : r));
-      applyPlanLayout(id, finalRooms);
+      applyPlanLayout(projectId, finalRooms);
     }
-    router.push(`/projects/${id}/review`);
+    router.push(`/projects/${projectId}/review`);
   };
 
   return (
@@ -119,7 +137,11 @@ export default function PlanEditorPage() {
               No plan image to draw on for this project. You can still add rooms and their doors/windows
               manually on the next screen.
             </p>
-            <Button className="mt-4" iconRight="ArrowRight" onClick={() => router.push(`/projects/${id}/review`)}>
+            <Button
+              className="mt-4"
+              iconRight="ArrowRight"
+              onClick={() => router.push(`/projects/${projectId}/review`)}
+            >
               Continue to Room Confirmation
             </Button>
           </div>
@@ -245,7 +267,7 @@ export default function PlanEditorPage() {
 
         {referenceImage && (
           <div className="mt-6 flex items-center justify-between gap-3">
-            <Button variant="ghost" onClick={() => router.push(`/projects/${id}/review`)}>
+            <Button variant="ghost" onClick={() => router.push(`/projects/${projectId}/review`)}>
               Skip for now
             </Button>
             <Button iconRight="ArrowRight" onClick={proceed}>
