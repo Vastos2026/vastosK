@@ -29,6 +29,14 @@ interface VastoState {
   patchProject: (id: string, patch: Partial<Project>) => void;
 
   setFloorPlan: (id: string, plan: Project["floorPlan"]) => void;
+  /**
+   * Bulk-replaces the plan's room list — the Plan Editor's "Continue".
+   * Unlike setFloorPlan, this does NOT reset roomCards/designSpec/
+   * universalInput/walkthrough: a user can revisit Plan after Generate has
+   * already run (e.g. fixing one missed opening), and that must not wipe
+   * paid generation work just because room geometry changed.
+   */
+  applyPlanLayout: (id: string, rooms: Room[]) => void;
   updateRoom: (id: string, roomId: string, patch: Partial<Room>) => void;
   /** Append a room to the plan (lasso-extracted rooms). */
   addRoom: (id: string, room: Room) => void;
@@ -192,6 +200,14 @@ export const useVasto = create<VastoState>()(
               : p,
           ),
           generatingRoomIds: { ...s.generatingRoomIds, [id]: [] },
+        })),
+
+      applyPlanLayout: (id, rooms) =>
+        set((s) => ({
+          projects: s.projects.map((p) => {
+            if (p.id !== id || !p.floorPlan) return p;
+            return touch({ ...p, floorPlan: { ...p.floorPlan, rooms } });
+          }),
         })),
 
       updateRoom: (id, roomId, patch) =>

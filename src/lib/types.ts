@@ -1,6 +1,7 @@
 /* Domain types for the Vastos frontend (mock layer). */
 
 import type { DesignSpecification, LuxuryLevel, UniversalInput } from "./ai/prompting/types";
+import type { GreyboxWall } from "./greybox/types";
 
 export type PropertyType = "apartment" | "villa" | "office" | "commercial";
 
@@ -9,7 +10,26 @@ export type ProjectStatus = "draft" | "parsing" | "parsed" | "designing" | "rend
 /** Unit system for displaying/editing dimensions — canonical storage is always decimal feet. */
 export type Unit = "ft-in" | "ft" | "m" | "cm";
 
-export type Phase = "upload" | "review" | "design" | "generate" | "approve" | "walkthrough";
+export type Phase = "upload" | "plan" | "review" | "design" | "generate" | "approve" | "walkthrough";
+
+/**
+ * A door/window placed by hand on a room's wall in the Plan Editor
+ * (/projects/[id]/plan) — see docs/superpowers/specs/2026-08-01-greybox-*.
+ */
+export interface PlacedOpening {
+  id: string;
+  type: "door" | "window";
+  wall: GreyboxWall;
+  /**
+   * 0..1 centre along the wall, in the plan's reading order (west->east on
+   * north/south walls, north->south on east/west walls) — MUST match
+   * greybox/build-scene.ts's wallFrame convention, or the greybox render
+   * puts this opening on the wrong side of the wall.
+   */
+  t: number;
+  /** 0..1 fraction of the wall's length. */
+  span: number;
+}
 
 export type RenderStatus = "queued" | "processing" | "completed" | "failed";
 
@@ -37,8 +57,24 @@ export interface Room {
    * Doors/windows on this room's walls, assigned deterministically post-merge
    * (see pipeline/assign-openings.ts) — never asserts a room has NO openings,
    * only states what was positively detected. Undefined until that stage runs.
+   * Once `shape` is set, this is DERIVED from `placedOpenings` (see
+   * plan-editor/geometry.ts's deriveOpenings) rather than Gemini's guess, so
+   * this field's meaning is the same either way to every consumer.
    */
   openings?: import("./pipeline/assign-openings").RoomOpening[];
+  /**
+   * Normalised [0,1] rect on the uploaded plan image — the Plan Editor's
+   * output. Undefined until the user places this room there; a room without
+   * one keeps using the text-only openings clause (prompt-builder.ts).
+   */
+  shape?: { x: number; y: number; w: number; h: number };
+  /**
+   * Hand-placed doors/windows, the Plan Editor's source of truth once set.
+   * `openings` above is derived from this.
+   */
+  placedOpenings?: PlacedOpening[];
+  /** Storage key of this room's rendered perspective greybox reference image. */
+  greyboxKey?: string;
 }
 
 export interface Door {
