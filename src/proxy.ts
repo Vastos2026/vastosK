@@ -17,7 +17,22 @@ import { NextResponse, type NextRequest } from "next/server";
 // comments. Without listing both here, this optimistic check would redirect
 // an unauthenticated visitor to /login before either one ever ran, which is
 // exactly the audience "Get shareable link" is meant to reach.
-const PUBLIC_PREFIXES = ["/login", "/s", "/api/s"];
+//
+// /spike and /api/spike are the Phase 0 greybox proof spike (throwaway — see
+// docs/superpowers/plans/2026-08-01-greybox-opening-placement-phase0-spike.md),
+// which bypasses assertAllowed entirely and so must never be reachable in a
+// deployment. Gated on an explicit SPIKE_ENABLED flag rather than NODE_ENV:
+// `process.env.NODE_ENV === "production"` is TRUE inside this file even under
+// `next dev` (verified 2026-08-01 — /s/foo returned 200 while /spike/greybox
+// still 307'd), so NODE_ENV is not a usable dev signal here. SPIKE_ENABLED
+// lives only in .env.local, which is gitignored and never deployed.
+// Note "/api/spike-greybox", not "/api/spike": the match below requires an
+// exact hit or a "/" boundary, so "/api/spike" would NOT cover
+// "/api/spike-greybox/save".
+const SPIKE_ENABLED = process.env.SPIKE_ENABLED === "1";
+const PUBLIC_PREFIXES = SPIKE_ENABLED
+  ? ["/login", "/s", "/api/s", "/spike", "/api/spike-greybox"]
+  : ["/login", "/s", "/api/s"];
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

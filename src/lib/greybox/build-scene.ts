@@ -75,6 +75,23 @@ function openingVertical(o: GreyboxOpening): { y0: number; y1: number } {
 }
 
 /**
+ * World-space centre of an opening. Exported so camera.ts can score candidate
+ * viewpoints by how many openings actually land in frame, rather than guessing
+ * from a heuristic — the two must agree exactly on where an opening sits, so
+ * they share this one derivation instead of each doing their own.
+ */
+export function openingCentre(spec: GreyboxRoomSpec, o: GreyboxOpening): THREE.Vector3 {
+  const frame = wallFrame(o.wall, spec.width, spec.depth);
+  const L = frame.len;
+  const spanLen = Math.max(0, Math.min(1, o.span)) * L;
+  const centre = Math.max(0, Math.min(1, o.t)) * L;
+  const x0 = Math.max(0, Math.min(L - spanLen, centre - spanLen / 2));
+  const u = x0 + spanLen / 2 - L / 2;
+  const { y0, y1 } = openingVertical(o);
+  return new THREE.Vector3(frame.cx + frame.ax * u, (y0 + y1) / 2, frame.cz + frame.az * u);
+}
+
+/**
  * Adds one rectangular panel lying in a wall's plane. `u` is the panel's
  * centre along the wall's local axis, measured from the wall's centre.
  */
@@ -190,10 +207,27 @@ export function buildGreyboxScene(spec: GreyboxRoomSpec): THREE.Scene {
   );
 
   scene.add(group);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x505050, 2.0));
-  const key = new THREE.DirectionalLight(0xffffff, 1.6);
-  key.position.set(spec.width, CEILING_H * 1.6, spec.depth);
+
+  // Lighting exists only to make FORM readable, not to look good. A plain
+  // hemisphere light leaves the ceiling near-black — its visible face points
+  // down, so it only ever picks up the ground colour (seen on the first live
+  // render). A strong ambient floor plus a soft key keeps every surface
+  // clearly separated without any of them going to black, which matters
+  // because a black ceiling reads to the image model as an opening rather
+  // than a surface.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 0.5));
+  // Two directional lights from opposite corners at different strengths: every
+  // wall catches a different amount, so adjacent surfaces never share a value
+  // and the room's corners stay legible. A single key left the wall opposite
+  // it flat, and cranking ambient to compensate washed the whole render into
+  // one grey (both seen on live renders).
+  const key = new THREE.DirectionalLight(0xffffff, 0.75);
+  key.position.set(spec.width, CEILING_H * 1.5, spec.depth);
   scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.4);
+  fill.position.set(-spec.width, CEILING_H, -spec.depth);
+  scene.add(fill);
 
   return scene;
 }
