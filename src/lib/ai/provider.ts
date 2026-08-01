@@ -420,9 +420,22 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
  * gemini-3.1-flash-image specifically since bumping IMAGE_MODEL (2026-07-31) —
  * same request shape, flag if aspect ratio ever looks wrong after this bump.
  */
-async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> {
+async function generateImageWithGemini(
+  prompt: string,
+  referenceImages?: string[],
+): Promise<GeneratedImage> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new ProviderError("AiProviderError", "GEMINI_API_KEY is not configured");
+
+  // Image parts before the text part, matching the ordering extractFloorPlan
+  // already uses for its vision call.
+  const parts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [];
+  for (const uri of referenceImages ?? []) {
+    const m = /^data:([^;]+);base64,(.+)$/.exec(uri);
+    if (!m) throw new ProviderError("ValidationError", "reference image must be a base64 data URI");
+    parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+  }
+  parts.push({ text: prompt });
 
   const url = `${API_BASE}/${IMAGE_MODEL}:generateContent?key=${key}`;
   let res: Response;
@@ -431,8 +444,13 @@ async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "16:9" } },
+        contents: [{ role: "user", parts }],
+        // A reference image carries its own aspect ratio, and the whole point
+        // of passing one is that the output matches it — pinning 16:9 on top
+        // would fight the reference. Only set it for text-only calls.
+        generationConfig: referenceImages?.length
+          ? { responseModalities: ["IMAGE"] }
+          : { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "16:9" } },
       }),
     });
   } catch (e) {
@@ -468,6 +486,7 @@ async function generateImageWithGemini(prompt: string): Promise<GeneratedImage> 
 export async function generateImage(
   prompt: string,
   ctx?: CallContext,
+  opts?: { referenceImages?: string[] },
 ): Promise<GeneratedImage> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const primary = await resolveProvider("image_gen", process.env.IMAGE_PROVIDER);
@@ -482,17 +501,23 @@ export async function generateImage(
     defaultModel,
     ctx,
     async (setCost, setUsed) => {
+      const refs = opts?.referenceImages;
       const steps: ChainStep<GeneratedImage>[] = [];
       const runwareGeminiStep: ChainStep<GeneratedImage> = {
         model: fallbackModel,
         provider: "runware",
         run: async () => {
-          const out = await generateImageWithRunwareGemini(prompt);
+          const out = await generateImageWithRunwareGemini(prompt, refs);
           setCost(out.costUsd);
           return out;
         },
       };
-      if (primary === "runware") {
+      // FLUX.2 is skipped entirely when reference images are supplied — its
+      // reference-image contract differs from Nano Banana's, and silently
+      // dropping the reference would produce a confident, geometrically wrong
+      // image rather than an error. Chain then starts at Nano Banana, which
+      // does support it.
+      if (primary === "runware" && !refs?.length) {
         steps.push({
           model: slugs.imageGen.runware,
           provider: "runware",
@@ -511,7 +536,7 @@ export async function generateImage(
       steps.push({
         model: IMAGE_MODEL,
         provider: "google",
-        run: () => generateImageWithGemini(prompt),
+        run: () => generateImageWithGemini(prompt, refs),
       });
       return runChain(steps, setUsed);
     },

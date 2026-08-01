@@ -363,23 +363,36 @@ export async function editImageWithRunwareGemini(
 /**
  * Text-to-image via Nano Banana 2 — the generation fallback tier (see
  * `provider.ts`'s chained fallback: FLUX first, this second, direct Google
- * API third). No reference image, so plain `width`/`height` rather than the
- * `resolution` enum (that enum's docs tie it to `referenceImages` being
- * present) — but this model's width/height must be one of its own preset
- * enum values, NOT FLUX's 64-divisible range (see GEMINI_IMAGE_DIMENSIONS).
+ * API third).
+ *
+ * Two request shapes, depending on whether reference images are supplied:
+ *
+ * - WITHOUT references: plain `width`/`height`, which must be one of this
+ *   model's own preset enum values, NOT FLUX's 64-divisible range (see
+ *   GEMINI_IMAGE_DIMENSIONS).
+ * - WITH references: `resolution` INSTEAD of width/height — the docs tie that
+ *   enum to `referenceImages` being present, and the model then matches the
+ *   reference's own aspect ratio. That is exactly what a greybox reference
+ *   needs, since the greybox is rendered at the target framing already (see
+ *   docs/superpowers/specs/2026-08-01-greybox-opening-placement-design.md).
+ *   Same shape `editImageWithRunwareGemini` above already uses successfully.
  */
 export async function generateImageWithRunwareGemini(
   prompt: string,
+  referenceImages?: string[],
 ): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
-  const { width, height } = GEMINI_IMAGE_DIMENSIONS[resolutionTier()];
+  const tier = resolutionTier();
+  const { width, height } = GEMINI_IMAGE_DIMENSIONS[tier];
+  const hasRefs = !!referenceImages?.length;
   const [result] = await submit([
     {
       taskType: "imageInference",
       taskUUID: randomUUID(),
       model: FALLBACK_IMAGE_MODEL,
       positivePrompt: prompt,
-      width,
-      height,
+      ...(hasRefs
+        ? { inputs: { referenceImages }, resolution: tier === "hd" ? "2K" : "1K" }
+        : { width, height }),
       outputType: "URL",
       outputFormat: "PNG",
       includeCost: true,
