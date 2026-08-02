@@ -37,6 +37,12 @@ const DOOR_COLOR = 0x8a7c6a;
 // cannot darken it and the prompt's "a bright panel is a window" contract is
 // guaranteed by the render rather than by luck.
 const WINDOW_COLOR = 0xfafafa;
+// Slightly darker than the wall — the jamb/lintel reveal around an opening
+// (and the corner posts, which share this constant), giving both visible
+// depth instead of being a flat colour swap. Darkened further than the prior
+// 0x7c7c7c as part of this task's wider value-ladder pass, widening the gap
+// to WALL_COLOR (56 -> 66 in raw channel value) so the reveal reads with more
+// contrast, hence more depth, than the old narrower gap did.
 const REVEAL_COLOR = 0x6e6e6e;
 
 /** Where a wall sits and how its local axis maps into world space. */
