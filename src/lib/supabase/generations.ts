@@ -14,7 +14,7 @@ export interface GenerationEntry {
   userId: string;
   /** room id/name, or omit/null for a project-level (walkthrough) generation */
   roomKey?: string | null;
-  type: "image" | "edit" | "video";
+  type: "image" | "edit" | "video" | "plan";
   /** the /api/render?key=... URL this generation is served from */
   storageUrl: string;
   modelUsed?: string;

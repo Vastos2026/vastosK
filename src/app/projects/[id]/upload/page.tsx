@@ -61,7 +61,7 @@ export default function UploadPage() {
     try {
       const category = categoryForPropertyType(project.propertyType);
       const roomTypeHints = getProjectTypeConfig(category)?.roomTypes ?? [];
-      const result = await parsePlanViaApi(selected.file, { roomTypeHints });
+      const result = await parsePlanViaApi(selected.file, id, { roomTypeHints });
       if (!result.readable) {
         setUnreadable(true);
         setStatus(id, "draft");

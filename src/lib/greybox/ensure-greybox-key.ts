@@ -1,6 +1,7 @@
 "use client";
 
 import { renderGreyboxToDataUri } from "./render-to-data-uri";
+import { toWorldFurniture } from "./furniture-layout";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import type { Room } from "@/lib/types";
 
@@ -38,6 +39,7 @@ export async function ensureGreyboxKey(projectId: string, room: Room): Promise<s
     width,
     depth: height,
     openings: room.placedOpenings ?? [],
+    furniture: toWorldFurniture(room.furniture ?? [], width, height),
   });
 
   const res = await fetch("/api/upload-greybox", {

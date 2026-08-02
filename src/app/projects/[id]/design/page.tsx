@@ -8,6 +8,7 @@ import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
 import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
+import { describeFurnitureForPrompt } from "@/lib/greybox/furniture-layout";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
@@ -109,6 +110,7 @@ export default function DesignPage() {
           // to every room rather than making the user pre-sort it.
           additionalNotes: additionalRequirements.trim() || undefined,
           openings: r.openings,
+          furniture: r.furniture?.length ? describeFurnitureForPrompt(r.furniture) : undefined,
         })),
         design: {
           style: style.name,
@@ -173,6 +175,7 @@ export default function DesignPage() {
                 ...(size ? { size } : {}),
                 additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
                 openings: room.openings,
+                furniture: room.furniture?.length ? describeFurnitureForPrompt(room.furniture) : undefined,
               },
               designSpec,
               greyboxKey,

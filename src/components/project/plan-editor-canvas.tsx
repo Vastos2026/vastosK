@@ -9,6 +9,8 @@ import {
   pointInShape,
   resizeShape,
   wallHitTest,
+  STANDARD_DOOR_WIDTH_FT,
+  STANDARD_WINDOW_WIDTH_FT,
   type EditorShape,
   type ResizeHandle,
 } from "@/lib/plan-editor/geometry";
@@ -32,16 +34,35 @@ export interface EditorRoom {
   color: string;
   shape: EditorShape;
   placedOpenings: PlacedOpening[];
+  /** Real-world east-west extent in feet, when known — falls back to DEFAULT_ROOM_SIZE_FT
+   *  (see src/lib/pipeline/empty-plan.ts) when the room's real feet dimensions aren't known.
+   *  Used to size newly-placed doors/windows to a realistic real-world width regardless of
+   *  how big or small the room happens to be drawn on screen. */
+  widthFt?: number;
+  /** Real-world north-south extent in feet, when known. Same fallback convention as widthFt. */
+  depthFt?: number;
 }
 
-const DOOR_COLOR = "#e6c15c";
-const WINDOW_COLOR = "#6da8e2";
+/** The active editing tool. "select" is move/resize/drag — everything else is unchanged from
+ *  before this tool system existed. The other three are single-purpose, cross-room actions. */
+export type EditorTool = "select" | "door" | "window" | "delete";
+
+export const DOOR_COLOR = "#e6c15c";
+export const WINDOW_COLOR = "#6da8e2";
+const DELETE_COLOR = "#e35c5c";
 const ACCENT = "#f2f2f2";
 const HANDLE_PX = 7;
 const WALL_HIT_PX = 12;
 const OPENING_END_PX = 8;
 const OPENING_BODY_PX = 10;
 const CLICK_SLOP_PX = 4;
+
+const TOOL_COLOR: Record<EditorTool, string> = {
+  select: ACCENT,
+  door: DOOR_COLOR,
+  window: WINDOW_COLOR,
+  delete: DELETE_COLOR,
+};
 
 type DragMode =
   | { kind: "move-room"; id: string; startShape: EditorShape; startPt: Pt }
@@ -50,18 +71,64 @@ type DragMode =
   | { kind: "resize-opening"; roomId: string; openingId: string; end: "a" | "b" }
   | null;
 
+/** Nearest wall to `p` across EVERY room (not just the selected one), for the door/window tools —
+ *  the user shouldn't have to select a room before adding an opening to it. */
+function findWallAcrossRooms(
+  rooms: EditorRoom[],
+  p: Pt,
+  tol: number,
+): { room: EditorRoom; wall: ReturnType<typeof wallHitTest> } | null {
+  let best: { room: EditorRoom; wall: ReturnType<typeof wallHitTest>; dist: number } | null = null;
+  for (const room of rooms) {
+    const hit = wallHitTest(room.shape, p, tol);
+    if (!hit) continue;
+    const wp = openingPoint(room.shape, hit);
+    const dist = Math.hypot(wp[0] - p[0], wp[1] - p[1]);
+    if (!best || dist < best.dist) best = { room, wall: hit, dist };
+  }
+  return best;
+}
+
+/** Nearest EXISTING opening to `p` across every room, for the delete tool. */
+function findOpeningAcrossRooms(
+  rooms: EditorRoom[],
+  p: Pt,
+  tolPx: number,
+  w: number,
+  h: number,
+): { room: EditorRoom; opening: PlacedOpening } | null {
+  let best: { room: EditorRoom; opening: PlacedOpening; dist: number } | null = null;
+  for (const room of rooms) {
+    for (const o of room.placedOpenings) {
+      const dist = pxDist(openingPoint(room.shape, o), p, w, h);
+      if (dist <= tolPx && (!best || dist < best.dist)) best = { room, opening: o, dist };
+    }
+  }
+  return best ? { room: best.room, opening: best.opening } : null;
+}
+
 export function PlanEditorCanvas({
   rooms,
   selectedId,
+  tool,
   onSelect,
   onShapeChange,
   onOpeningsChange,
+  onInteractionStart,
+  onCommit,
 }: {
   rooms: EditorRoom[];
   selectedId: string | null;
+  tool: EditorTool;
   onSelect: (id: string | null) => void;
   onShapeChange: (id: string, shape: EditorShape) => void;
   onOpeningsChange: (id: string, openings: PlacedOpening[]) => void;
+  /** Fires once at the START of a state-changing interaction (drag or tool click), before any
+   *  mutation — the caller snapshots current state here so it can push an undo entry on commit. */
+  onInteractionStart?: () => void;
+  /** Fires once when a state-changing interaction FINISHES (drag release, or a tool click that
+   *  added/deleted an opening) — the caller pushes the pre-interaction snapshot to undo history. */
+  onCommit?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -71,6 +138,7 @@ export function PlanEditorCanvas({
   const downRef = useRef<{ x: number; y: number } | null>(null);
   const [pointer, setPointer] = useState<Pt | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [deleteHover, setDeleteHover] = useState<{ room: EditorRoom; opening: PlacedOpening } | null>(null);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -132,11 +200,13 @@ export function PlanEditorCanvas({
         for (const o of room.placedOpenings) {
           const [ax, ay] = px(wallPointAt(room.shape, o, "a"));
           const [bx, by] = px(wallPointAt(room.shape, o, "b"));
+          const hoveredForDelete =
+            tool === "delete" && deleteHover?.room.id === room.id && deleteHover.opening.id === o.id;
           ctx.beginPath();
           ctx.moveTo(ax, ay);
           ctx.lineTo(bx, by);
-          ctx.lineWidth = 6;
-          ctx.strokeStyle = o.type === "door" ? DOOR_COLOR : WINDOW_COLOR;
+          ctx.lineWidth = hoveredForDelete ? 14 : 11;
+          ctx.strokeStyle = hoveredForDelete ? DELETE_COLOR : o.type === "door" ? DOOR_COLOR : WINDOW_COLOR;
           ctx.stroke();
           if (selected) {
             ctx.beginPath();
@@ -146,29 +216,48 @@ export function PlanEditorCanvas({
             ctx.fill();
           }
         }
+      }
 
-        // Hover preview: where a click would add a new opening on the
-        // selected room, if not currently over an existing one.
-        if (selected && pointer && !dragging) {
+      // Tool feedback: a small dot follows the cursor in the active tool's
+      // colour (door = yellow, window = blue, delete = red), so the tool is
+      // always visible at a glance. When over a valid target — a wall for
+      // door/window, an existing opening for delete — a bigger snapped ring
+      // previews exactly where the action will land.
+      if (pointer && !dragging) {
+        if (tool === "door" || tool === "window") {
           const tol = WALL_HIT_PX / Math.max(w, h);
-          const hit = wallHitTest(room.shape, pointer, tol);
-          const onExisting = room.placedOpenings.some(
-            (o) => pxDist(openingPoint(room.shape, o), pointer, w, h) <= OPENING_BODY_PX,
-          );
-          if (hit && !onExisting) {
-            const [hx, hy] = px(openingPoint(room.shape, hit));
+          const found = findWallAcrossRooms(rooms, pointer, tol);
+          if (found?.wall) {
+            const [hx, hy] = px(openingPoint(found.room.shape, found.wall));
             ctx.beginPath();
-            ctx.arc(hx, hy, 5, 0, Math.PI * 2);
-            ctx.strokeStyle = ACCENT;
-            ctx.lineWidth = 1.5;
+            ctx.arc(hx, hy, 7, 0, Math.PI * 2);
+            ctx.strokeStyle = TOOL_COLOR[tool];
+            ctx.lineWidth = 2;
             ctx.stroke();
+          }
+          const [px_, py_] = px(pointer);
+          ctx.beginPath();
+          ctx.arc(px_, py_, 4, 0, Math.PI * 2);
+          ctx.fillStyle = TOOL_COLOR[tool];
+          ctx.fill();
+        } else if (tool === "delete") {
+          const [px_, py_] = px(pointer);
+          ctx.beginPath();
+          ctx.arc(px_, py_, deleteHover ? 7 : 4, 0, Math.PI * 2);
+          ctx.fillStyle = deleteHover ? "transparent" : DELETE_COLOR;
+          if (deleteHover) {
+            ctx.strokeStyle = DELETE_COLOR;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          } else {
+            ctx.fill();
           }
         }
       }
     };
     renderRef.current = render;
     render();
-  }, [rooms, selectedId, pointer, dragging]);
+  }, [rooms, selectedId, pointer, dragging, tool, deleteHover]);
 
   const toNorm = (e: React.PointerEvent): Pt => {
     const r = wrapRef.current!.getBoundingClientRect();
@@ -187,10 +276,19 @@ export function PlanEditorCanvas({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 h-full w-full"
-        style={{ cursor: dragging ? "grabbing" : "default", touchAction: "none" }}
+        style={{
+          cursor: dragging ? "grabbing" : tool !== "select" ? "none" : "default",
+          touchAction: "none",
+        }}
         onPointerMove={(e) => {
           const p = toNorm(e);
           setPointer(p);
+          if (tool === "delete") {
+            const { w, h } = sizeRef.current;
+            setDeleteHover(findOpeningAcrossRooms(rooms, p, OPENING_BODY_PX, w, h));
+          } else if (deleteHover) {
+            setDeleteHover(null);
+          }
           const drag = dragRef.current;
           if (!drag) return;
 
@@ -209,13 +307,17 @@ export function PlanEditorCanvas({
             // Generous tolerance while actively dragging an already-selected
             // opening — the pointer can stray off the exact wall line while
             // moving fast; the tight WALL_HIT_PX tolerance is only for
-            // detecting the initial click.
+            // detecting the initial click. wallHitTest always returns the
+            // NEAREST of the 4 walls (never null at tol=1), so once the
+            // pointer crosses a corner into the region closer to an adjacent
+            // wall, hit.wall differs from opening.wall — reassign it instead
+            // of freezing, so the drag continues around the perimeter.
             const hit = wallHitTest(room.shape, p, 1);
-            if (!hit || hit.wall !== opening.wall) return;
+            if (!hit) return;
             const { t, span } = clampOpeningSpan(hit.t, opening.span);
             onOpeningsChange(
               drag.roomId,
-              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, t, span } : o)),
+              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, wall: hit.wall, t, span } : o)),
             );
           } else if (drag.kind === "resize-opening") {
             const room = rooms.find((r) => r.id === drag.roomId);
@@ -240,17 +342,24 @@ export function PlanEditorCanvas({
           downRef.current = { x: e.clientX, y: e.clientY };
           const { w, h } = sizeRef.current;
 
+          // The door/window/delete tools are click-only (handled entirely on
+          // pointerup below, across ALL rooms, not just the selected one) —
+          // don't start a room-move/resize drag while one of them is active.
+          if (tool !== "select") return;
+
           if (selected) {
             // Opening end-handles take priority (finest-grained target).
             for (const o of selected.placedOpenings) {
               const a = wallPointAt(selected.shape, o, "a");
               const b = wallPointAt(selected.shape, o, "b");
               if (pxDist(a, p, w, h) <= OPENING_END_PX) {
+                onInteractionStart?.();
                 dragRef.current = { kind: "resize-opening", roomId: selected.id, openingId: o.id, end: "a" };
                 setDragging(true);
                 return;
               }
               if (pxDist(b, p, w, h) <= OPENING_END_PX) {
+                onInteractionStart?.();
                 dragRef.current = { kind: "resize-opening", roomId: selected.id, openingId: o.id, end: "b" };
                 setDragging(true);
                 return;
@@ -260,6 +369,7 @@ export function PlanEditorCanvas({
             for (const o of selected.placedOpenings) {
               const center = openingPoint(selected.shape, o);
               if (pxDist(center, p, w, h) <= OPENING_BODY_PX) {
+                onInteractionStart?.();
                 dragRef.current = { kind: "move-opening", roomId: selected.id, openingId: o.id };
                 setDragging(true);
                 return;
@@ -268,13 +378,11 @@ export function PlanEditorCanvas({
             // Resize handle.
             const handle = hitTestHandle(selected.shape, p, tolNorm());
             if (handle) {
+              onInteractionStart?.();
               dragRef.current = { kind: "resize-room", id: selected.id, handle, startShape: selected.shape, startPt: p };
               setDragging(true);
               return;
             }
-            // An empty spot on the selected room's wall is handled on
-            // pointerup (below) — only if this turns out to be a plain
-            // click, not the start of a room-move drag.
           }
 
           // Room body (topmost match) — select, and prep a move-drag.
@@ -282,6 +390,7 @@ export function PlanEditorCanvas({
             const room = rooms[i];
             if (pointInShape(room.shape, p)) {
               onSelect(room.id);
+              onInteractionStart?.();
               dragRef.current = { kind: "move-room", id: room.id, startShape: room.shape, startPt: p };
               setDragging(true);
               return;
@@ -297,35 +406,61 @@ export function PlanEditorCanvas({
           setDragging(false);
           if (!down) return;
           const movedPx = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-          if (movedPx > CLICK_SLOP_PX) return; // a real drag already applied its own changes via onPointerMove
-
-          if (!selected) return;
+          const isClick = movedPx <= CLICK_SLOP_PX;
           const p = toNorm(e);
           const { w, h } = sizeRef.current;
 
-          // A plain click (no drag) on an existing opening cycles its type:
-          // door -> window -> removed.
-          for (const o of selected.placedOpenings) {
-            if (pxDist(openingPoint(selected.shape, o), p, w, h) <= OPENING_BODY_PX) {
-              const next =
-                o.type === "door"
-                  ? selected.placedOpenings.map((x) => (x.id === o.id ? { ...x, type: "window" as const } : x))
-                  : selected.placedOpenings.filter((x) => x.id !== o.id);
-              onOpeningsChange(selected.id, next);
-              return;
-            }
-          }
-          if (drag) return; // a resize-handle/room-select click that didn't move enough to count as a drag
-
-          // Empty wall of the selected room — add a new door there.
-          const hit = wallHitTest(selected.shape, p, WALL_HIT_PX / Math.max(w, h));
-          if (hit) {
-            const { t, span } = clampOpeningSpan(hit.t, 0.12);
-            onOpeningsChange(selected.id, [
-              ...selected.placedOpenings,
-              { id: `o-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, type: "door", wall: hit.wall, t, span },
+          if (tool === "door" || tool === "window") {
+            if (!isClick) return;
+            const found = findWallAcrossRooms(rooms, p, WALL_HIT_PX / Math.max(w, h));
+            if (!found?.wall) return;
+            onInteractionStart?.();
+            // Size the new opening to a realistic real-world width (doors ~3ft, windows ~4ft)
+            // as a fraction of the ACTUAL wall it lands on, rather than a flat fraction of the
+            // wall's on-screen length — a door on a huge wall shouldn't become huge, nor tiny
+            // on a small one. North/south walls run east-west (length = room width); east/west
+            // walls run north-south (length = room depth) — matches build-scene.ts's wallFrame.
+            const wallLengthFt =
+              found.wall.wall === "north" || found.wall.wall === "south"
+                ? (found.room.widthFt ?? 10)
+                : (found.room.depthFt ?? 10);
+            const targetWidthFt = tool === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT;
+            const { t, span } = clampOpeningSpan(found.wall.t, targetWidthFt / wallLengthFt);
+            onOpeningsChange(found.room.id, [
+              ...found.room.placedOpenings,
+              {
+                id: `o-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                type: tool,
+                wall: found.wall.wall,
+                t,
+                span,
+              },
             ]);
+            onSelect(found.room.id);
+            onCommit?.();
+            return;
           }
+
+          if (tool === "delete") {
+            if (!isClick) return;
+            const found = findOpeningAcrossRooms(rooms, p, OPENING_BODY_PX, w, h);
+            if (!found) return;
+            onInteractionStart?.();
+            onOpeningsChange(
+              found.room.id,
+              found.room.placedOpenings.filter((o) => o.id !== found.opening.id),
+            );
+            onCommit?.();
+            return;
+          }
+
+          // tool === "select": a real drag (move/resize room, drag/resize an
+          // opening) just applied its change live via onPointerMove — commit
+          // it to undo history now. A plain click (room/opening select, or a
+          // handle grabbed then released without moving) has nothing to
+          // commit — adding/removing openings is exclusively the door/
+          // window/delete tools' job now.
+          if (!isClick && drag) onCommit?.();
         }}
       />
     </div>

@@ -175,24 +175,81 @@ export async function requireOwnedProject(
 }
 
 /**
+ * Whether a `generations` row exists proving `userId` owns this exact
+ * `renders/...` key — written SYNCHRONOUSLY, in the same request that
+ * created the image (see `recordGeneration`, `/api/generate-room-image`),
+ * unlike the project snapshot below which only updates via a client-side
+ * sync that's debounced 800ms then makes its own round-trip. Checking this
+ * FIRST closes a real race: an `<img>` requesting a just-generated image
+ * used to 403 (browsers don't auto-retry a failed `<img>`, so it just sat
+ * broken) whenever it beat that debounced sync — found via a direct user
+ * report of images intermittently failing to load / appearing to hang.
+ */
+async function isRecordedGeneration(userId: string, projectId: string, key: string): Promise<boolean> {
+  const db = supabaseAdmin();
+  if (!db) return false;
+  const storageUrl = `/api/render?key=${encodeURIComponent(key)}`;
+  const { data } = await db
+    .from("generations")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("project_id", projectId)
+    .eq("storage_url", storageUrl)
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
+/**
+ * Same immediate-ownership check as `isRecordedGeneration`, for `plans/...`
+ * keys — which, unlike `renders/<projectId>/...`, have no project id embedded
+ * in the key itself (see this file's header comment), so there's no
+ * `projectId` to filter on here; `user_id` + the exact `storage_url` (which
+ * embeds a random uuid) is enough. Written synchronously by
+ * `/api/parse-plan` in the same request that uploads the plan image — see
+ * that route's comment for the race this closes.
+ */
+async function isRecordedPlanUpload(userId: string, key: string): Promise<boolean> {
+  const db = supabaseAdmin();
+  if (!db) return false;
+  const storageUrl = `/api/render?key=${encodeURIComponent(key)}`;
+  const { data } = await db
+    .from("generations")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("type", "plan")
+    .eq("storage_url", storageUrl)
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
+/**
  * Shared ownership guard for `/api/render`, which only ever receives a bare
  * storage `key` (no `projectId`). For the common `renders/<projectId>/...`
- * shape, does a single targeted `getOwnedProjectSnapshot` lookup instead of
- * `isOwnedStorageKey`'s full scan of every one of the caller's projects —
- * this route is the hottest in the app (every thumbnail/version/floor-plan
- * preview/video goes through it), and the broad scan re-fetches every
- * project's full JSONB blob on every single image request (found in
- * review). `plans/<uuid>/...` keys have no embedded project id and fall
- * back to the broad scan, same as before.
+ * shape, checks the immediate `generations` record first (see
+ * `isRecordedGeneration`), then falls back to a single targeted
+ * `getOwnedProjectSnapshot` lookup instead of `isOwnedStorageKey`'s full scan
+ * of every one of the caller's projects — this route is the hottest in the
+ * app (every thumbnail/version/floor-plan preview/video goes through it),
+ * and the broad scan re-fetches every project's full JSONB blob on every
+ * single image request (found in review). `plans/<uuid>/...` keys have no
+ * embedded project id, so there's no targeted lookup available for them —
+ * checks the immediate `generations` record first (see
+ * `isRecordedPlanUpload`), then falls back to `isOwnedStorageKey`'s broad
+ * scan for uploads from before that immediate record existed.
  */
 export async function requireOwnedKey(userId: string, key: string): Promise<true | Response> {
   if (!supabaseAdmin()) return true;
   const renderMatch = key.match(/^renders\/([^/]+)\//);
   if (renderMatch) {
-    const project = await getOwnedProjectSnapshot(renderMatch[1], userId);
+    const projectId = renderMatch[1];
+    if (await isRecordedGeneration(userId, projectId, key)) return true;
+    const project = await getOwnedProjectSnapshot(projectId, userId);
     if (project && allProjectStorageKeys(project).has(key)) return true;
     return Response.json({ error: "Not found" }, { status: 403 });
   }
+  if (key.startsWith("plans/") && (await isRecordedPlanUpload(userId, key))) return true;
   const owned = await isOwnedStorageKey(userId, key);
   return owned ? true : Response.json({ error: "Not found" }, { status: 403 });
 }

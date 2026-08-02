@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GreyboxOpening, GreyboxRoomSpec, GreyboxWall } from "./types";
+import { catalogueEntry } from "./furniture-catalogue";
 
 /**
  * Room spec → an untextured grey 3D box, rendered from `greyboxCamera` and
@@ -301,6 +302,18 @@ export function buildGreyboxScene(spec: GreyboxRoomSpec): THREE.Scene {
     const post = new THREE.Mesh(new THREE.BoxGeometry(POST_W, CEILING_H, POST_W), revealMat);
     post.position.set(cx, CEILING_H / 2, cz);
     group.add(post);
+  }
+
+  // Phase B: furniture proxies. Additive — spec.furniture is undefined/empty for every room
+  // built before this feature existed, so this loop is a no-op for them. An unknown `kind`
+  // (stale data after a catalogue edit) is skipped rather than thrown on.
+  for (const f of spec.furniture ?? []) {
+    const entry = catalogueEntry(f.kind);
+    if (!entry) continue;
+    const item = entry.build();
+    item.position.set(f.x, 0, f.z);
+    item.rotation.y = f.rotation;
+    group.add(item);
   }
 
   scene.add(group);

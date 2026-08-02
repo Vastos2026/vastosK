@@ -27,7 +27,7 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
     review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
     design: !!project?.designSpec,
     generate: (project?.roomCards ?? []).some((c) => c.generations.length > 0),
-    approve: (project?.roomCards ?? []).some((c) => !!c.approvedId),
+    approve: (project?.roomCards ?? []).some((c) => !!c.approvedByUser),
     walkthrough: project?.walkthrough?.status === "completed",
   };
 }
@@ -40,24 +40,36 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const project = useVasto((s) => s.projects.find((p) => p.id === params.id));
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  // Match the phase whose segment appears in the path.
-  const currentPhase = (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload") as Phase;
-
   // Route segments after the project id: ["floor-plan"] / ["upload"] /
-  // ["generate", roomId] / etc — used for the back-step arrow, which needs
-  // to distinguish routes PHASES doesn't know about (floor-plan isn't a
-  // tracked phase; generate/[roomId] is a sub-route of "generate").
+  // ["generate", roomId] / etc — used for both currentPhase and the
+  // back-step arrow, which need to distinguish routes PHASES doesn't know
+  // about (floor-plan isn't a tracked phase; generate/[roomId] and
+  // furnish/[roomId] are per-room sub-routes reached FROM "generate", so
+  // both should read/behave as "generate", not fall through to the "upload"
+  // default just because "furnish" isn't a phase id substring of the path).
   const segments = pathname.split("/").filter(Boolean);
   const step = segments[2];
   const subSegment = segments[3];
   const hasRoomsToLose = (project?.floorPlan?.rooms?.length ?? 0) > 0;
+
+  // generate/[roomId] (View & Edit) and furnish/[roomId] each render their own
+  // in-flow back link in a header at the same top-left spot — the floating
+  // button below would stack directly on top of it, hiding the room name
+  // (reported bug). Those two are the only sub-routes with their own header.
+  const hasOwnBackNav = (step === "generate" || step === "furnish") && !!subSegment;
+
+  // Match the phase whose segment appears in the path — "furnish" maps to
+  // "generate" (see comment above) rather than being matched generically.
+  const currentPhase = (
+    step === "furnish" ? "generate" : (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload")
+  ) as Phase;
 
   const backHref = (() => {
     if (step === "floor-plan") return "/";
     if (step === "upload") return `/projects/${params.id}/floor-plan`;
     if (step === "plan") return `/projects/${params.id}/upload`;
     if (step === "review") return `/projects/${params.id}/plan`;
-    if (step === "generate" && subSegment) return `/projects/${params.id}/generate`;
+    if ((step === "generate" || step === "furnish") && subSegment) return `/projects/${params.id}/generate`;
     const idx = PHASES.findIndex((p) => p.id === step);
     return idx > 0 ? `/projects/${params.id}/${PHASES[idx - 1].id}` : "/";
   })();
@@ -145,15 +157,17 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
       </header>
 
       <div className="relative min-h-0 flex-1">
-        <button
-          type="button"
-          onClick={onBackClick}
-          className="absolute left-4 top-4 z-10 grid size-9 place-items-center rounded-lg border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground cursor-pointer"
-          aria-label="Back one step"
-          title="Back"
-        >
-          <Icon name="ArrowLeft" className="size-5" />
-        </button>
+        {!hasOwnBackNav && (
+          <button
+            type="button"
+            onClick={onBackClick}
+            className="absolute left-4 top-4 z-10 grid size-9 place-items-center rounded-lg border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground cursor-pointer"
+            aria-label="Back one step"
+            title="Back"
+          >
+            <Icon name="ArrowLeft" className="size-5" />
+          </button>
+        )}
         {children}
       </div>
 

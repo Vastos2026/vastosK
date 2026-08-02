@@ -20,7 +20,7 @@ export function currentModelSlugs() {
   const geminiImageModel = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
   return {
     imageGen: {
-      runware: process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1",
+      runware: process.env.RUNWARE_IMAGE_MODEL?.trim() || "bfl:5@1",
       gemini: geminiImageModel,
     },
     imageEdit: {

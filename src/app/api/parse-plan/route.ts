@@ -3,6 +3,7 @@ import { runPlanExtraction } from "@/lib/pipeline/extract-plan";
 import { putObject } from "@/lib/pipeline/storage";
 import { assertAllowed } from "@/lib/api-guard";
 import { toErrorResponse } from "@/lib/ai/errors";
+import { recordGeneration } from "@/lib/supabase/generations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,6 +67,9 @@ export async function POST(request: Request) {
       return Response.json({ error: "File too large (max 20MB)" }, { status: 400 });
     }
 
+    const projectIdParam = form.get("projectId");
+    const projectId = typeof projectIdParam === "string" && projectIdParam ? projectIdParam : null;
+
     const roomTypeHintsParam = form.get("roomTypeHints");
     const roomTypeHints =
       typeof roomTypeHintsParam === "string" && roomTypeHintsParam
@@ -79,6 +83,24 @@ export async function POST(request: Request) {
 
     const storageKey = `plans/${crypto.randomUUID()}/${sanitizeFileName(file.name)}`;
     await putObject(storageKey, bytes, mimeType);
+
+    // Written synchronously, in this same request — same fix as the
+    // `renders/...` image-load race (recordGeneration's doc comment): the
+    // Plan Editor's <img> used to request this key immediately on
+    // navigation, but the client-side project_snapshots sync that would
+    // otherwise be the only proof of ownership is debounced 800ms, so the
+    // very first load 403'd and got stuck on "No plan image" until a manual
+    // refresh gave the debounced sync time to land (reported bug). Skipped
+    // when no projectId was sent (older client) — falls back to the
+    // pre-existing debounced-snapshot check, same as before this fix.
+    if (projectId) {
+      await recordGeneration({
+        projectId,
+        userId: guard.id,
+        type: "plan",
+        storageUrl: `/api/render?key=${encodeURIComponent(storageKey)}`,
+      });
+    }
 
     const result = await runPlanExtraction({
       bytes,

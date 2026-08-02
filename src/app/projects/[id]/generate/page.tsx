@@ -4,8 +4,10 @@ import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
+import { RetryImg } from "@/components/ui/retry-img";
 import { generateRoomImage } from "@/lib/design-plan-client";
 import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
+import { describeFurnitureForPrompt } from "@/lib/greybox/furniture-layout";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
@@ -108,6 +110,7 @@ export default function GeneratePage() {
             .filter(Boolean)
             .join(". ") || undefined,
           openings: room.openings,
+          furniture: room.furniture?.length ? describeFurnitureForPrompt(room.furniture) : undefined,
         },
         designSpec,
         greyboxKey,
@@ -162,6 +165,7 @@ export default function GeneratePage() {
               onGenerateMore={(note) => generateMore(room, note)}
               onRetryFirst={() => generateMore(room)}
               onView={() => router.push(`/projects/${id}/generate/${room.id}`)}
+              onFurnish={room.shape ? () => router.push(`/projects/${id}/furnish/${room.id}`) : undefined}
             />
           ))}
         </div>
@@ -178,6 +182,7 @@ function RoomSection({
   onGenerateMore,
   onRetryFirst,
   onView,
+  onFurnish,
 }: {
   room: Room;
   card?: RoomCard;
@@ -185,6 +190,8 @@ function RoomSection({
   onGenerateMore: (note?: string) => Promise<void>;
   onRetryFirst: () => Promise<void>;
   onView: () => void;
+  /** Only set when this room has a Plan Editor shape — furnishing needs a real footprint to place items in. */
+  onFurnish?: () => void;
 }) {
   const generations = card?.generations ?? [];
   const latest = generations.at(-1);
@@ -194,8 +201,15 @@ function RoomSection({
 
   return (
     <section id={`room-${room.id}`} className="scroll-mt-4 pt-6 first:pt-0">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
+          {onFurnish && (
+            <Button size="sm" icon="Sofa" onClick={onFurnish}>
+              Adjust with 3D
+            </Button>
+          )}
+        </div>
         <p className="text-xs text-muted">{formatDimensionsRounded(room.width, room.height)}</p>
       </div>
 
@@ -245,8 +259,7 @@ function HeroCard({
     <div className="hover-lift group relative aspect-[4/3] overflow-hidden rounded-2xl border border-border bg-surface">
       {latest ? (
         <>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
+          <RetryImg
             src={latest.imageUrl}
             alt={room.name}
             className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
@@ -311,8 +324,7 @@ function VersionThumb({
   return (
     <div className="hover-lift group relative aspect-[4/3] overflow-hidden rounded-2xl border border-border bg-surface">
       <button type="button" onClick={onView} className="absolute inset-0 cursor-pointer">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <RetryImg
           src={generation.imageUrl}
           alt={`${room.name} version`}
           className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.05]"

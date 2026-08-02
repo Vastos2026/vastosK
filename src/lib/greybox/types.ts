@@ -21,10 +21,26 @@ export interface GreyboxOpening {
   span: number;
 }
 
+/** One furniture proxy, already in world-feet coordinates (see furniture-layout.ts's
+ *  toWorldFurniture for the room-local [0,1] -> world-feet conversion). */
+export interface GreyboxFurniturePlacement {
+  /** Catalogue key — see furniture-catalogue.ts. */
+  kind: string;
+  /** World X, feet, 0 = room centre. */
+  x: number;
+  /** World Z, feet, 0 = room centre. */
+  z: number;
+  /** Radians, about the vertical (Y) axis. */
+  rotation: number;
+}
+
 export interface GreyboxRoomSpec {
   /** East-west extent. */
   width: number;
   /** North-south extent. */
   depth: number;
   openings: GreyboxOpening[];
+  /** Phase B: furniture proxies. Optional and additive — a spec with none renders exactly as it
+   *  did before this feature existed. */
+  furniture?: GreyboxFurniturePlacement[];
 }

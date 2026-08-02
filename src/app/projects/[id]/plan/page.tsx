@@ -1,14 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
-import { PlanEditorCanvas, type EditorRoom } from "@/components/project/plan-editor-canvas";
+import {
+  PlanEditorCanvas,
+  DOOR_COLOR,
+  WINDOW_COLOR,
+  type EditorRoom,
+  type EditorTool,
+} from "@/components/project/plan-editor-canvas";
 import { deriveOpenings, seedPlacedOpenings, type EditorShape } from "@/lib/plan-editor/geometry";
+import { DEFAULT_ROOM_SIZE_FT } from "@/lib/pipeline/empty-plan";
 import { ROOM_PALETTE, uid } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { FloorPlan, Room } from "@/lib/types";
+
+/** How many undo steps to keep — a generous cap, not a claim anyone needs more. */
+const HISTORY_LIMIT = 50;
+
+/**
+ * A freshly-uploaded plan image can very rarely still 403 for a moment even
+ * with the server-side ownership fix (requireOwnedKey/generations table, see
+ * supabase/projects.ts's isRecordedPlanUpload) — e.g. a slow DB replica — and
+ * browsers never retry a failed <img> on their own, so without this a rare
+ * miss permanently shows "No plan image" until a manual reload. Same
+ * short-retry pattern as generate/page.tsx's RetryImg.
+ */
+// Same widened schedule as retry-img.tsx's RETRY_SCHEDULE_MS — kept as its
+// own copy rather than routed through the shared RetryImg component because
+// this page needs its OWN "give up" UI (the large "No plan image to draw on"
+// empty state with a Continue button), not RetryImg's generic broken-icon.
+const IMG_RETRY_SCHEDULE_MS = [500, 800, 1300, 2000, 3000];
 
 /**
  * The Plan Editor (revamp: greybox opening placement, Phase A) — sits between
@@ -56,7 +80,49 @@ function PlanEditorContent({
   const [rooms, setRooms] = useState<Room[]>(floorPlan?.rooms ?? []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
+  const [imgAttempt, setImgAttempt] = useState(0);
   const [aspect, setAspect] = useState<number | null>(null);
+  const imgRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (imgRetryRef.current) clearTimeout(imgRetryRef.current);
+  }, []);
+  const [tool, setTool] = useState<EditorTool>("select");
+
+  // Undo/redo for canvas interactions (room move/resize, opening add/
+  // delete/move/resize) — NOT room-list actions like "Add room" or "Delete
+  // room entirely", which stay outside this history, same as before this
+  // feature existed. onInteractionStart snapshots `rooms` BEFORE a drag or
+  // tool click mutates it; onCommit pushes that snapshot once the
+  // interaction actually finishes — so one undo step = one user action,
+  // not one step per pointermove frame during a drag.
+  const [history, setHistory] = useState<Room[][]>([]);
+  const [future, setFuture] = useState<Room[][]>([]);
+  const pendingSnapshotRef = useRef<Room[] | null>(null);
+
+  const handleInteractionStart = () => {
+    pendingSnapshotRef.current = rooms;
+  };
+  const handleCommit = () => {
+    const before = pendingSnapshotRef.current;
+    pendingSnapshotRef.current = null;
+    if (!before) return;
+    setHistory((h) => [...h, before].slice(-HISTORY_LIMIT));
+    setFuture([]);
+  };
+  const undo = () => {
+    if (history.length === 0) return;
+    const prev = history[history.length - 1];
+    setFuture((f) => [...f, rooms]);
+    setHistory((h) => h.slice(0, -1));
+    setRooms(prev);
+  };
+  const redo = () => {
+    if (future.length === 0) return;
+    const next = future[future.length - 1];
+    setHistory((h) => [...h, rooms]);
+    setFuture((f) => f.slice(0, -1));
+    setRooms(next);
+  };
 
   const referenceImage = imageFailed
     ? undefined
@@ -72,6 +138,8 @@ function PlanEditorContent({
       color: r.color,
       shape: r.shape,
       placedOpenings: r.placedOpenings ?? [],
+      widthFt: r.width ?? DEFAULT_ROOM_SIZE_FT,
+      depthFt: r.height ?? DEFAULT_ROOM_SIZE_FT,
     }));
   const unplacedRooms = rooms.filter((r) => !r.shape);
 
@@ -81,7 +149,7 @@ function PlanEditorContent({
   const placeRoom = (room: Room) => {
     // Seed from this room's extraction-time openings (side-only guess) so
     // there's something to drag into place, not a blank rectangle.
-    const seeded = room.placedOpenings ?? seedPlacedOpenings(room.openings ?? []);
+    const seeded = room.placedOpenings ?? seedPlacedOpenings(room.openings ?? [], room.width, room.height);
     patchRoom(room.id, { shape: { ...DEFAULT_SHAPE }, placedOpenings: seeded });
     setSelectedId(room.id);
   };
@@ -123,10 +191,11 @@ function PlanEditorContent({
     <div className="scrollbar-thin h-full overflow-y-auto">
       <div className="mx-auto max-w-6xl px-6 py-8">
         <div className="mb-6">
-          <h2 className="text-2xl font-bold tracking-tight">Place doors and windows</h2>
+          <h2 className="text-2xl font-bold tracking-tight">Confirm room &amp; opening placement</h2>
           <p className="mt-1 text-sm text-muted">
-            Draw each room where it actually sits on the plan, then drag its doors and windows onto the
-            right wall. This is what makes the generated image put them in the same place.
+            We&apos;ve placed your rooms and their doors/windows automatically from the plan. Check they
+            look right, drag anything that&apos;s off, and add or delete rooms/openings we missed — this
+            is what makes the generated image put them in the same place.
           </p>
         </div>
 
@@ -146,18 +215,69 @@ function PlanEditorContent({
             </Button>
           </div>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+          <div className="grid gap-4 lg:grid-cols-[auto_1.4fr_1fr] lg:gap-6">
+            <div className="flex flex-row items-center gap-1 rounded-xl border border-border bg-surface p-1 lg:flex-col lg:items-stretch lg:self-start">
+              <ToolButton icon="Move" label="Select" active={tool === "select"} onClick={() => setTool("select")} />
+              <ToolButton
+                icon="DoorClosed"
+                label="Add door"
+                active={tool === "door"}
+                activeColor={DOOR_COLOR}
+                onClick={() => setTool("door")}
+              />
+              <ToolButton
+                icon="PanelsTopLeft"
+                label="Add window"
+                active={tool === "window"}
+                activeColor={WINDOW_COLOR}
+                onClick={() => setTool("window")}
+              />
+              <ToolButton
+                icon="Trash2"
+                label="Delete"
+                active={tool === "delete"}
+                activeColor="#e35c5c"
+                onClick={() => setTool("delete")}
+              />
+              <div className="mx-1 w-px self-stretch bg-border lg:mx-0 lg:my-1 lg:h-px lg:w-auto" />
+              <Button
+                size="icon"
+                variant="ghost"
+                icon="Undo2"
+                aria-label="Undo"
+                title="Undo"
+                disabled={history.length === 0}
+                onClick={undo}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                icon="Redo2"
+                aria-label="Redo"
+                title="Redo"
+                disabled={future.length === 0}
+                onClick={redo}
+              />
+            </div>
+
             <div
               className="relative w-full overflow-hidden rounded-2xl border border-border bg-grid bg-surface"
               style={{ aspectRatio: aspect ?? 4 / 3 }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
+                key={imgAttempt}
                 src={referenceImage}
                 alt="Uploaded floor plan"
                 draggable={false}
                 className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill"
-                onError={() => setImageFailed(true)}
+                onError={() => {
+                  if (imgAttempt >= IMG_RETRY_SCHEDULE_MS.length) {
+                    setImageFailed(true);
+                    return;
+                  }
+                  imgRetryRef.current = setTimeout(() => setImgAttempt((a) => a + 1), IMG_RETRY_SCHEDULE_MS[imgAttempt]);
+                }}
                 onLoad={(e) => {
                   const img = e.currentTarget;
                   if (img.naturalWidth && img.naturalHeight) setAspect(img.naturalWidth / img.naturalHeight);
@@ -166,9 +286,12 @@ function PlanEditorContent({
               <PlanEditorCanvas
                 rooms={placedRooms}
                 selectedId={selectedId}
+                tool={tool}
                 onSelect={setSelectedId}
                 onShapeChange={(roomId, shape) => patchRoom(roomId, { shape })}
                 onOpeningsChange={(roomId, placedOpenings) => patchRoom(roomId, { placedOpenings })}
+                onInteractionStart={handleInteractionStart}
+                onCommit={handleCommit}
               />
             </div>
 
@@ -176,19 +299,36 @@ function PlanEditorContent({
               <div className="rounded-2xl border border-border bg-surface p-3.5">
                 <h3 className="text-sm font-semibold">Rooms</h3>
                 <p className="mt-1 text-xs text-faint">
-                  Click a wall on the selected room to add a door; click it again to make it a window, once
-                  more to remove it. Drag a door/window along its wall, or drag its ends to resize.
+                  {tool === "select" &&
+                    "Drag a room to move it, its handles to resize, or a placed door/window to reposition it."}
+                  {tool === "door" && "Click any room's edge to add a door there."}
+                  {tool === "window" && "Click any room's edge to add a window there."}
+                  {tool === "delete" && "Click any door or window to remove it."}
                 </p>
+                <div className="mt-2 flex items-center gap-4 text-xs text-faint">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-7 shrink-0 rounded-full" style={{ background: DOOR_COLOR }} />
+                    Door
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-7 shrink-0 rounded-full" style={{ background: WINDOW_COLOR }} />
+                    Window
+                  </span>
+                </div>
                 <div className="scrollbar-thin mt-3 max-h-64 space-y-1.5 overflow-y-auto pr-1">
                   {placedRooms.map((r) => {
                     const doors = r.placedOpenings.filter((o) => o.type === "door").length;
                     const windows = r.placedOpenings.filter((o) => o.type === "window").length;
                     return (
-                      <button
+                      <div
                         key={r.id}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setSelectedId(r.id)}
-                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") setSelectedId(r.id);
+                        }}
+                        className={`flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
                           r.id === selectedId ? "bg-accent/15 text-accent" : "hover:bg-surface-2"
                         }`}
                       >
@@ -209,7 +349,7 @@ function PlanEditorContent({
                         >
                           <Icon name="EyeOff" className="size-3.5" />
                         </button>
-                      </button>
+                      </div>
                     );
                   })}
                   {placedRooms.length === 0 && (
@@ -277,5 +417,38 @@ function PlanEditorContent({
         )}
       </div>
     </div>
+  );
+}
+
+function ToolButton({
+  icon,
+  label,
+  active,
+  activeColor,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+  /** Tints the active state with the tool's own colour (door/window/delete) instead of the
+   *  generic accent — so the toolbar itself previews what the cursor will look like. */
+  activeColor?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      className={`flex size-9 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-lg text-xs font-medium transition-colors lg:h-9 lg:w-full lg:justify-start lg:px-2.5 ${
+        active ? "bg-surface-2" : "text-faint hover:bg-surface-2 hover:text-foreground"
+      }`}
+      style={active && activeColor ? { color: activeColor } : undefined}
+    >
+      <Icon name={icon} className="size-4 shrink-0" />
+      <span className="hidden lg:inline">{label}</span>
+    </button>
   );
 }

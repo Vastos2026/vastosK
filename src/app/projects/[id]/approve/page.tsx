@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { RetryImg } from "@/components/ui/retry-img";
 import { cn } from "@/lib/utils";
 
 /**
@@ -97,8 +98,7 @@ export default function ApprovePage() {
                           : "border-transparent opacity-75 hover:opacity-100",
                       )}
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={g.imageUrl} alt="" className="h-full w-full object-cover" />
+                      <RetryImg src={g.imageUrl} alt="" className="h-full w-full object-cover" />
                       {g.id === card.approvedId && (
                         <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-accent text-accent-foreground">
                           <Icon name="Check" className="size-3" />

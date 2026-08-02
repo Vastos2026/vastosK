@@ -434,7 +434,7 @@ export const useVasto = create<VastoState>()(
               ? touch({
                   ...p,
                   roomCards: p.roomCards.map((c) =>
-                    c.roomId === roomId ? { ...c, approvedId: generationId } : c,
+                    c.roomId === roomId ? { ...c, approvedId: generationId, approvedByUser: true } : c,
                   ),
                 })
               : p,

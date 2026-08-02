@@ -17,6 +17,7 @@ export interface ModelSlugs {
 }
 
 const KNOWN_LABELS: Record<string, string> = {
+  "bfl:5@1": "FLUX.2 Pro",
   "runware:400@1": "FLUX.2",
   "google:4@2": "Nano Banana Pro",
   "google:4@3": "Nano Banana 2",

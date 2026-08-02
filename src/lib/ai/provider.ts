@@ -37,6 +37,7 @@ import {
 } from "@/lib/render/runware-client";
 import { getProviderPrimary, type ProviderCapability } from "@/lib/settings/provider-settings";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
+import { debugLogPrompt } from "@/lib/ai/debug-log";
 
 export interface CallContext {
   userId?: string | null;
@@ -231,11 +232,17 @@ export interface GeneratedImage {
   contentType: string;
 }
 
+/** [y_min, x_min, y_max, x_max], each an integer 0-1000 normalised to the full image — Gemini's
+ *  standard spatial-grounding box convention, independent of the image's actual pixel size. */
+export type RawBox = [number, number, number, number];
+
 export interface RawOpening {
   kind: "door" | "window";
   side: "north" | "south" | "east" | "west";
   /** another room's name, "exterior", or omitted if the model couldn't tell */
   connectsTo?: string;
+  /** bounding box of the door/window symbol itself, omitted if the model wasn't confident */
+  box?: RawBox;
 }
 
 export interface RawExtractedRoom {
@@ -246,6 +253,8 @@ export interface RawExtractedRoom {
   widthFt?: number;
   heightFt?: number;
   openings: RawOpening[];
+  /** bounding box of the room's wall outline, omitted if the model wasn't confident */
+  box?: RawBox;
 }
 
 export interface RawExtraction {
@@ -315,6 +324,15 @@ interface RawExtractionResponse {
   }[];
 }
 
+/** A well-formed box: exactly 4 finite numbers, each in [0,1000], with a positive area. */
+function validBox(box: number[] | undefined): RawBox | undefined {
+  if (!box || box.length !== 4 || !box.every((n) => Number.isFinite(n) && n >= 0 && n <= 1000)) {
+    return undefined;
+  }
+  const [ymin, xmin, ymax, xmax] = box;
+  return ymax > ymin && xmax > xmin ? [ymin, xmin, ymax, xmax] : undefined;
+}
+
 /**
  * Single-call floor-plan extraction — replaces the old OCR + OpenCV geometry +
  * semantic + merge pipeline. Reads room names verbatim, classifies each into a
@@ -355,6 +373,12 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
     { inlineData: { mimeType: img.mimeType, data: img.data } },
     { text: prompt },
   ];
+
+  debugLogPrompt("1. Upload → floor-plan extraction (extractFloorPlan)", {
+    prompt,
+    chain: `Gemini ${process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest"} (direct, vision)`,
+    referenceImages: [`the uploaded plan image itself (${img.mimeType})`],
+  });
 
   return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest", ctx, async () => {
     const raw = await generateJson<RawExtractionResponse>(parts, {
@@ -401,6 +425,130 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
       readable: raw.readable !== false && rooms.length > 0,
     };
   });
+}
+
+export interface RawGeometry {
+  roomBoxes: { roomIndex: number; box: RawBox }[];
+  openings: { roomIndex: number; type: "door" | "window"; box: RawBox }[];
+}
+
+const GEOMETRY_BOX_SCHEMA = { type: "ARRAY", items: { type: "INTEGER" }, minItems: 4, maxItems: 4 } as const;
+const GEOMETRY_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    roomBoxes: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: { roomIndex: { type: "INTEGER" }, box_2d: GEOMETRY_BOX_SCHEMA },
+        required: ["roomIndex", "box_2d"],
+      },
+    },
+    openings: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          roomIndex: { type: "INTEGER" },
+          type: { type: "STRING", enum: ["door", "window"] },
+          box_2d: GEOMETRY_BOX_SCHEMA,
+        },
+        required: ["roomIndex", "type", "box_2d"],
+      },
+    },
+  },
+  required: ["roomBoxes", "openings"],
+} as const;
+
+interface RawGeometryResponse {
+  roomBoxes?: { roomIndex?: number; box_2d?: number[] }[];
+  openings?: { roomIndex?: number; type?: string; box_2d?: number[] }[];
+}
+
+/**
+ * A SEPARATE call from extractFloorPlan, deliberately — bundling spatial
+ * grounding (box_2d per room + per opening) into the same call as
+ * name/type/dimensions/openings was live-tested 2026-08-01 and found
+ * unreliable on dense plans: on a 13-16-room plan the bundled call returned
+ * box_2d for 0/22 or 1/16 openings across repeated runs, while this same
+ * geometry, asked for on its OWN in a focused call, returned it for 13/13
+ * rooms and 8-18 openings consistently across 5 runs. Splitting the
+ * concerns keeps each call's task simple enough for the model to actually
+ * do well, matching the pattern that worked in the original spike.
+ *
+ * Takes the room names already produced by extractFloorPlan (as an ordered
+ * list) so the model can reference them BY INDEX rather than by name —
+ * floor plans routinely have multiple rooms sharing a name (e.g. two rooms
+ * both called "BEDROOM"), and index reference sidesteps that ambiguity
+ * entirely rather than trying to disambiguate identical names.
+ *
+ * Best-effort: returns an empty result (never throws) on any failure —
+ * geometry is a placement ENHANCEMENT, not a requirement. A room this call
+ * can't confidently place falls back to the pre-existing manual "Place"
+ * flow in the Plan Editor exactly as if this call didn't exist.
+ */
+export async function extractOpeningGeometry(
+  bytes: Buffer,
+  mimeType: string,
+  roomNames: string[],
+  ctx?: CallContext,
+): Promise<RawGeometry> {
+  const empty: RawGeometry = { roomBoxes: [], openings: [] };
+  if (!geminiConfigured() || roomNames.length === 0) return empty;
+
+  try {
+    const img = await downscaleForGemini(bytes);
+    const list = roomNames.map((n, i) => `${i}: "${n}"`).join("\n");
+    const prompt = `This architectural floor plan has already been read; here are its rooms, indexed in no particular order:
+${list}
+
+For EACH room index above, return its bounding box: [y_min,x_min,y_max,x_max], integers 0-1000 normalised to the full image, tightly around that room's actual wall outline (not its label text).
+
+Also find every door/window on each room's walls and return its bounding box the same way (swing arc included for a door). Reference the room by its index above, not its name.
+
+Be conservative — omit an entry rather than guess if you're not confident.`;
+
+    const parts: GeminiPart[] = [
+      { inlineData: { mimeType: img.mimeType, data: img.data } },
+      { text: prompt },
+    ];
+
+    debugLogPrompt("2. Upload → opening/geometry extraction (extractOpeningGeometry)", {
+      prompt,
+      chain: `Gemini ${process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest"} (direct, vision)`,
+      referenceImages: [`the uploaded plan image itself (${img.mimeType})`],
+    });
+
+    return await instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest", ctx, async () => {
+      const raw = await generateJson<RawGeometryResponse>(parts, {
+        temperature: 0.1,
+        maxOutputTokens: 65536,
+        responseSchema: GEOMETRY_SCHEMA,
+      });
+      if (!raw) return empty;
+
+      const n = roomNames.length;
+      const roomBoxes = (raw.roomBoxes ?? [])
+        .filter((r) => typeof r.roomIndex === "number" && r.roomIndex >= 0 && r.roomIndex < n)
+        .map((r) => ({ roomIndex: r.roomIndex as number, box: validBox(r.box_2d) }))
+        .filter((r): r is { roomIndex: number; box: RawBox } => !!r.box);
+      const openings = (raw.openings ?? [])
+        .filter(
+          (o) =>
+            typeof o.roomIndex === "number" &&
+            o.roomIndex >= 0 &&
+            o.roomIndex < n &&
+            (o.type === "door" || o.type === "window"),
+        )
+        .map((o) => ({ roomIndex: o.roomIndex as number, type: o.type as "door" | "window", box: validBox(o.box_2d) }))
+        .filter((o): o is { roomIndex: number; type: "door" | "window"; box: RawBox } => !!o.box);
+
+      return { roomBoxes, openings };
+    });
+  } catch (e) {
+    console.warn("[extractOpeningGeometry] failed, continuing without positions:", (e as Error).message);
+    return empty;
+  }
 }
 
 /**
@@ -471,14 +619,18 @@ async function generateImageWithGemini(
  * Builder hands this a fully-assembled natural-language prompt; this layer
  * never sees or constructs prompt structure itself.
  *
- * Fallback chain (2026-07-31, per explicit user request): the admin's
- * "primary provider" choice (console's Analytics page) picks which model
- * starts the chain — FLUX.2 [dev] for "runware", or Runware's own
- * Gemini-hosted image model (Nano Banana 2) for "gemini" — but EITHER way,
- * as long as Runware is actually configured, both Runware tiers run before
- * ever reaching Google. Direct Google Gemini API is now a true last resort,
- * only reached when Runware itself is unreachable (unconfigured, or every
- * Runware tier failed) — previously, choosing "gemini" skipped Runware
+ * Fallback chain (2026-07-31, per explicit user request; FLUX tier bumped to
+ * [pro] 2026-08-02, also per explicit user request — see runware-client.ts's
+ * header comment): the admin's "primary provider" choice (console's
+ * Analytics page) picks which model starts the chain — FLUX.2 [pro] for
+ * "runware", or Runware's own Gemini-hosted image model (Nano Banana 2) for
+ * "gemini" — but EITHER way, as long as Runware is actually configured, both
+ * Runware tiers run before ever reaching Google. FLUX now runs even when a
+ * greybox reference image is attached (previously skipped — see the "runware"
+ * step below), which is the common case, not the exception, for real room
+ * generations in this app. Direct Google Gemini API is now a true last
+ * resort, only reached when Runware itself is unreachable (unconfigured, or
+ * every Runware tier failed) — previously, choosing "gemini" skipped Runware
  * entirely and went straight to the direct Google API even though Runware
  * hosts the same Gemini model. Each tier only runs if the previous one
  * throws — see `runChain`.
@@ -486,7 +638,7 @@ async function generateImageWithGemini(
 export async function generateImage(
   prompt: string,
   ctx?: CallContext,
-  opts?: { referenceImages?: string[] },
+  opts?: { referenceImages?: string[]; referenceImageUrls?: string[] },
 ): Promise<GeneratedImage> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const primary = await resolveProvider("image_gen", process.env.IMAGE_PROVIDER);
@@ -495,6 +647,18 @@ export async function generateImage(
   const fallbackModel = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
   const defaultModel =
     primary === "runware" ? slugs.imageGen.runware : runwareAvailable ? fallbackModel : IMAGE_MODEL;
+
+  debugLogPrompt("3/4. Room image generation (generateImage — first generation, Generate More, or Furnish's Generate all call this)", {
+    prompt,
+    chain:
+      primary === "runware"
+        ? `Runware ${slugs.imageGen.runware} → Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
+        : runwareAvailable
+          ? `Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
+          : `Gemini ${IMAGE_MODEL} (direct)`,
+    referenceImages: opts?.referenceImages,
+    referenceImageUrls: opts?.referenceImageUrls,
+  });
 
   return instrumented(
     "image",
@@ -512,17 +676,25 @@ export async function generateImage(
           return out;
         },
       };
-      // FLUX.2 is skipped entirely when reference images are supplied — its
-      // reference-image contract differs from Nano Banana's, and silently
-      // dropping the reference would produce a confident, geometrically wrong
-      // image rather than an error. Chain then starts at Nano Banana, which
-      // does support it.
-      if (primary === "runware" && !refs?.length) {
+      // FLUX.2 [pro] (the current RUNWARE_IMAGE_MODEL default, bfl:5@1) DOES
+      // support reference images (`inputs.referenceImages`, confirmed against
+      // Runware's docs 2026-08-02 — see runware-client.ts's header comment),
+      // unlike the old FLUX.2 [dev] default this chain used to assume. Most
+      // real room generations in this app carry a greybox reference, so
+      // skipping FLUX whenever one was present effectively meant FLUX never
+      // ran at all — this used to fall straight through to Nano Banana
+      // instead, which is what a direct user report ("switch off Nano Banana
+      // 2, use FLUX.2 Pro instead") was actually describing. If a caller ever
+      // points RUNWARE_IMAGE_MODEL back at a `runware:*` tier without
+      // reference-image support, that tier's own 400 just falls through to
+      // the next step in this chain like any other failure — no special
+      // casing needed here.
+      if (primary === "runware") {
         steps.push({
           model: slugs.imageGen.runware,
           provider: "runware",
           run: async () => {
-            const out = await generateImageWithRunware(prompt);
+            const out = await generateImageWithRunware(prompt, refs);
             setCost(out.costUsd);
             return out;
           },
@@ -571,6 +743,17 @@ export async function editImage(
   const fallbackModel = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
   const defaultModel =
     primary === "runware" ? slugs.imageEdit.runware : runwareAvailable ? fallbackModel : IMAGE_MODEL;
+
+  debugLogPrompt("5. View & Edit lasso region edit (editImage)", {
+    prompt: `[instruction as typed] ${instruction}\n\n(the actual model prompt is assembled per-region inside planCropEdit, gemini-image.ts — this logs the raw instruction this layer received, not that assembled text)`,
+    chain:
+      primary === "runware"
+        ? `Runware ${slugs.imageEdit.runware} → Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
+        : runwareAvailable
+          ? `Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
+          : `Gemini ${IMAGE_MODEL} (direct)`,
+    referenceImages: ["the cropped+padded region of the current room image (base + mask)"],
+  });
 
   return instrumented(
     "edit",
@@ -675,6 +858,11 @@ export async function generateStructured<T>(
 ): Promise<T> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
+  debugLogPrompt("2b. Design → Design Planning (generateStructured, runs runDesignPlanning's prompt)", {
+    prompt,
+    chain: `Gemini ${model} (direct, structured JSON)`,
+    referenceImages: null,
+  });
   return instrumented("planning", model, ctx, async () => {
     const parts: GeminiPart[] = [{ text: prompt }];
     const out = await generateJson<T>(parts, {

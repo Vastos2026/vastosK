@@ -19,9 +19,10 @@ export interface ParseOptions {
   roomTypeHints?: string[];
 }
 
-export async function parsePlanViaApi(file: File, opts: ParseOptions = {}): Promise<ParseResult> {
+export async function parsePlanViaApi(file: File, projectId: string, opts: ParseOptions = {}): Promise<ParseResult> {
   const form = new FormData();
   form.append("file", file);
+  form.append("projectId", projectId);
   if (opts.roomTypeHints?.length) form.append("roomTypeHints", opts.roomTypeHints.join(","));
 
   const res = await fetch("/api/parse-plan", { method: "POST", body: form });

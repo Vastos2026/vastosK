@@ -138,7 +138,10 @@ export async function POST(request: Request) {
     const key = `renders/${projectId}/${randomUUID()}.mp4`;
     await putObject(key, withMusic, "video/mp4");
     const videoUrl = `/api/render?key=${encodeURIComponent(key)}`;
-    void recordGeneration({ projectId, userId: guard.id, roomKey: null, type: "video", storageUrl: videoUrl });
+    // Awaited, not fire-and-forget — see generate-room-image/route.ts's identical comment:
+    // /api/render's ownership check reads this row to authorize a just-created asset
+    // immediately, instead of waiting on the client's debounced project-snapshot sync.
+    await recordGeneration({ projectId, userId: guard.id, roomKey: null, type: "video", storageUrl: videoUrl });
     return Response.json({ videoUrl, key });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Walkthrough generation");

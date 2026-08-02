@@ -12,7 +12,19 @@
  *
  * Model choice is env-overridable so a slug can be pinned/swapped without a
  * code change, same convention as `GEMINI_IMAGE_MODEL`/`GEMINI_VIDEO_MODEL`:
- *   RUNWARE_IMAGE_MODEL — default `runware:400@1` (FLUX.2 [dev], text-to-image)
+ *   RUNWARE_IMAGE_MODEL — default `bfl:5@1` (FLUX.2 [pro] — switched from
+ *                          FLUX.2 [dev]/`runware:400@1` 2026-08-02 per direct
+ *                          user testing: better output quality. Unlike [dev],
+ *                          [pro] documents `inputs.referenceImages` support
+ *                          (confirmed against Runware's own docs,
+ *                          runware.ai/docs/models/bfl-flux-2-pro, 2026-08-02)
+ *                          — same request shape as the Nano Banana tiers
+ *                          below — so `generateImageWithRunware` now takes a
+ *                          reference-images param and provider.ts no longer
+ *                          has to skip FLUX entirely for greybox-conditioned
+ *                          rooms, which is most of them. [pro]'s docs list no
+ *                          `negativePrompt` parameter (unlike [dev], which
+ *                          does support it) — sent conditionally, see below.
  *   RUNWARE_EDIT_MODEL  — default `google:4@2` (Nano Banana Pro, reference-image
  *                          editing — see the "Nano Banana via Runware" section
  *                          below for why this replaced FLUX Fill as the lasso
@@ -62,7 +74,19 @@ import type { DesignStyle } from "@/lib/types";
 
 const API_BASE = "https://api.runware.ai/v1";
 
-const IMAGE_MODEL = process.env.RUNWARE_IMAGE_MODEL?.trim() || "runware:400@1";
+const IMAGE_MODEL = process.env.RUNWARE_IMAGE_MODEL?.trim() || "bfl:5@1";
+/**
+ * Black Forest Labs' own hosted tiers (bfl:*, e.g. FLUX.2 [pro]) reject both
+ * `negativePrompt` (undocumented, assumed unsupported per their docs) AND
+ * `steps` — the latter confirmed live, 2026-08-02: every real generation
+ * 400'd with `unsupportedArchitectureSteps` ("Parameter 'steps' is not
+ * supported for the selected model configuration") until this was added.
+ * Runware's self-hosted `runware:*` tiers (e.g. the old FLUX.2 [dev]
+ * default) DO support both. Gated per-model rather than sent
+ * unconditionally — an unsupported param 400s outright on this API (see this
+ * file's header comment for the established pattern).
+ */
+const isBflModel = (model: string) => model.startsWith("bfl:");
 const EDIT_MODEL = process.env.RUNWARE_EDIT_MODEL?.trim() || "google:4@2";
 const VIDEO_MODEL = process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7";
 /** Nano Banana 2 — second-tier fallback, used for both generation and editing. */
@@ -216,23 +240,35 @@ async function finishDownload(
   };
 }
 
-/** Text-to-image via FLUX.2. Synchronous — Runware returns the imageURL directly. */
+/**
+ * Text-to-image via FLUX.2 — reference-conditioned (a greybox render) when
+ * `referenceImages` is given, plain text-to-image otherwise. Synchronous —
+ * Runware returns the imageURL directly.
+ */
 export async function generateImageWithRunware(
   prompt: string,
+  referenceImages?: string[],
 ): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
   const { width, height } = IMAGE_DIMENSIONS[resolutionTier()];
+  const bfl = isBflModel(IMAGE_MODEL);
+  // No separate negativePrompt channel on this model (see isBflModel's
+  // comment) — fold the same realism guidance into the positive prompt as an
+  // explicit "avoid" clause instead of silently dropping it.
+  const positivePrompt = bfl ? `${prompt}\n\nAvoid: ${REALISM_NEGATIVE_PROMPT}.` : prompt;
   const [result] = await submit([
     {
       taskType: "imageInference",
       taskUUID: randomUUID(),
       model: IMAGE_MODEL,
-      positivePrompt: prompt,
-      negativePrompt: REALISM_NEGATIVE_PROMPT,
-      // FLUX.2 [dev]'s own step default is undocumented/unknown — raising it
-      // is the most direct, lowest-risk lever for "sharper, more detailed"
-      // output (documented valid range 1-50). CFGScale is left unset to keep
-      // Runware's own documented default (4), which is already reasonable.
-      steps: 35,
+      positivePrompt,
+      ...(bfl ? {} : { negativePrompt: REALISM_NEGATIVE_PROMPT }),
+      ...(referenceImages?.length ? { inputs: { referenceImages } } : {}),
+      // `steps` is rejected outright on bfl:* tiers (see isBflModel's
+      // comment) — Runware's self-hosted tiers DO take it, and raising it is
+      // the most direct, lowest-risk lever for "sharper, more detailed"
+      // output there (documented valid range 1-50). CFGScale is left unset
+      // to keep Runware's own documented default (4), already reasonable.
+      ...(bfl ? {} : { steps: 35 }),
       width,
       height,
       outputType: "URL",

@@ -75,6 +75,25 @@ export interface Room {
   placedOpenings?: PlacedOpening[];
   /** Storage key of this room's rendered perspective greybox reference image. */
   greyboxKey?: string;
+  /**
+   * Phase B: procedural furniture proxies placed in the 3D greybox (never on the 2D plan — see
+   * docs/superpowers/plans/2026-08-01-greybox-phase-b-furniture.md). Optional and additive; a
+   * room with none renders exactly as it did before this feature existed.
+   */
+  furniture?: PlacedFurniture[];
+}
+
+/** One furniture proxy placed in a room's greybox — see furniture-catalogue.ts for `kind`s. */
+export interface PlacedFurniture {
+  id: string;
+  /** Catalogue key, e.g. "bed", "sofa" — see src/lib/greybox/furniture-catalogue.ts. */
+  kind: string;
+  /** Room-local, 0..1 across the room's WIDTH (east-west). */
+  x: number;
+  /** Room-local, 0..1 across the room's DEPTH (north-south). */
+  z: number;
+  /** Radians, about the vertical (Y) axis. */
+  rotation: number;
 }
 
 export interface Door {
@@ -252,8 +271,13 @@ export interface RoomGeneration {
 export interface RoomCard {
   roomId: string;
   generations: RoomGeneration[];
-  /** id of the RoomGeneration approved as this room's final image */
+  /** id of the RoomGeneration approved as this room's final image — auto-defaults to the first
+   *  generation so Approve/Walkthrough have something usable before the user picks anything */
   approvedId?: string;
+  /** true only once the user has explicitly picked a version on the Approve page (setApproved) —
+   *  distinct from approvedId, which is auto-set by addGeneration; the workspace stepper's Approve
+   *  checkmark reads THIS, not approvedId, so it doesn't turn green before the user ever visits Approve */
+  approvedByUser?: boolean;
   /** included in the walkthrough — defaults to true once a room has an approved image */
   included: boolean;
 }

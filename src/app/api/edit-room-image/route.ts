@@ -90,7 +90,10 @@ export async function POST(request: Request) {
     const key = `renders/${projectId}/${randomUUID()}.png`;
     await putObject(key, finalBytes, "image/png");
     const imageUrl = `/api/render?key=${encodeURIComponent(key)}`;
-    void recordGeneration({ projectId, userId: guard.id, type: "edit", storageUrl: imageUrl });
+    // Awaited, not fire-and-forget — see generate-room-image/route.ts's identical comment:
+    // /api/render's ownership check reads this row to authorize a just-created image
+    // immediately, instead of waiting on the client's debounced project-snapshot sync.
+    await recordGeneration({ projectId, userId: guard.id, type: "edit", storageUrl: imageUrl });
     return Response.json({ imageUrl, key });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Edit");

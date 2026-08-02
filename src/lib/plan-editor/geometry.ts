@@ -40,8 +40,37 @@ const OPPOSITE: Record<GreyboxWall, GreyboxWall> = {
   west: "east",
 };
 
-/** Default along-wall fraction for a newly-placed opening. */
+/** Standard real-world door/window widths, feet — used to size a placed opening as a fraction
+ *  of the ACTUAL wall it's on (see toWallFraction below), so a door doesn't scale up on a huge
+ *  wall or shrink on a tiny one. Shared with plan-editor-canvas.tsx's interactive click-to-add. */
+export const STANDARD_DOOR_WIDTH_FT = 3;
+export const STANDARD_WINDOW_WIDTH_FT = 4;
+
+/** Fallback along-wall fraction, used only when the room's real feet dimensions are unknown
+ *  (so a real-world width can't be converted to a wall fraction at all). */
 const DEFAULT_SPAN: Record<PlacedOpening["type"], number> = { door: 0.12, window: 0.18 };
+
+/** A wall's real length in feet, given the room's real width/depth — matches build-scene.ts's
+ *  wallFrame convention: north/south walls run east-west (length = room width); east/west walls
+ *  run north-south (length = room depth). */
+function wallLengthFt(wall: GreyboxWall, roomWidthFt: number, roomDepthFt: number): number {
+  return wall === "north" || wall === "south" ? roomWidthFt : roomDepthFt;
+}
+
+/** Standard real-world width, as a fraction of `wall`'s actual length — falls back to
+ *  DEFAULT_SPAN[type] when the room's real feet dimensions aren't known. */
+function toWallFraction(
+  type: PlacedOpening["type"],
+  wall: GreyboxWall,
+  roomWidthFt: number | undefined,
+  roomDepthFt: number | undefined,
+): number {
+  if (!roomWidthFt || !roomDepthFt) return DEFAULT_SPAN[type];
+  const lengthFt = wallLengthFt(wall, roomWidthFt, roomDepthFt);
+  if (!(lengthFt > 0)) return DEFAULT_SPAN[type];
+  const targetFt = type === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT;
+  return targetFt / lengthFt;
+}
 
 export function moveShape(shape: EditorShape, dx: number, dy: number): EditorShape {
   return {
@@ -117,7 +146,7 @@ export function openingPoint(shape: EditorShape, o: { wall: GreyboxWall; t: numb
   return [a[0] + (b[0] - a[0]) * o.t, a[1] + (b[1] - a[1]) * o.t];
 }
 
-function nearestWall(shape: EditorShape, p: Pt): { wall: GreyboxWall; dist: number } {
+export function nearestWall(shape: EditorShape, p: Pt): { wall: GreyboxWall; dist: number } {
   let best: { wall: GreyboxWall; dist: number } | null = null;
   (["north", "south", "east", "west"] as GreyboxWall[]).forEach((wall) => {
     const [a, b] = wallEndpoints(shape, wall);
@@ -183,6 +212,53 @@ export function deriveOpenings(
   return result;
 }
 
+/** A Gemini spatial-grounding box: [ymin,xmin,ymax,xmax], each 0-1000 over the full image. */
+export type GeminiBox = [number, number, number, number];
+
+/** Converts a Gemini box (0-1000 scale) to a normalised [0,1] EditorShape rect. */
+export function boxToShape(box: GeminiBox): EditorShape {
+  const [ymin, xmin, ymax, xmax] = box;
+  return { x: xmin / 1000, y: ymin / 1000, w: (xmax - xmin) / 1000, h: (ymax - ymin) / 1000 };
+}
+
+/** How far (normalised) an opening box's centre may sit from its room's nearest wall before we
+ *  distrust the reading and fall back to a side-only guess instead of a wrong position. */
+const OPENING_BOX_TOLERANCE = 0.12;
+
+/**
+ * Converts one opening's Gemini box, plus its room's already-placed shape, into a PlacedOpening.
+ * Approximation: uses the box's CENTRE to find the nearest wall and the along-wall position, and
+ * the box's extent along that wall's direction as the span. A door's swing-arc symbol is roughly
+ * as wide as it is tall, so this holds up for doors too, not just windows — it is not exact
+ * (arcs are asymmetric around the true hinge point), but the Plan Editor's manual drag is the
+ * correction layer for whatever this gets close-but-not-exact, so this doesn't need to be exact.
+ * Returns null when the box doesn't plausibly sit on this room's boundary at all (extraction
+ * noise), so the caller can fall back to `seedPlacedOpenings`'s even-spread guess instead.
+ */
+export function openingBoxToPlaced(
+  roomShape: EditorShape,
+  box: GeminiBox,
+  type: PlacedOpening["type"],
+  id: string,
+): PlacedOpening | null {
+  const ob = boxToShape(box);
+  const centre: Pt = [ob.x + ob.w / 2, ob.y + ob.h / 2];
+  const { wall, dist } = nearestWall(roomShape, centre);
+  if (dist > OPENING_BOX_TOLERANCE) return null;
+
+  const [a, b] = wallEndpoints(roomShape, wall);
+  const len2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2;
+  if (len2 < 1e-12) return null;
+  const rawT = ((centre[0] - a[0]) * (b[0] - a[0]) + (centre[1] - a[1]) * (b[1] - a[1])) / len2;
+
+  const wallLen = Math.sqrt(len2);
+  const extentAlongWall = wall === "north" || wall === "south" ? ob.w : ob.h;
+  const rawSpan = wallLen > 1e-9 ? extentAlongWall / wallLen : DEFAULT_SPAN[type];
+
+  const { t, span } = clampOpeningSpan(rawT, rawSpan);
+  return { id, type, wall, t, span };
+}
+
 /**
  * Seeds PlacedOpening[] from a room's EXTRACTION-time openings (Gemini's
  * side-only guess, no position) so a newly-placed room starts with draggable
@@ -191,7 +267,11 @@ export function deriveOpenings(
  * openings of the same type on the same wall are spread evenly so they don't
  * start stacked on top of each other.
  */
-export function seedPlacedOpenings(openings: RoomOpening[]): PlacedOpening[] {
+export function seedPlacedOpenings(
+  openings: RoomOpening[],
+  roomWidthFt?: number,
+  roomDepthFt?: number,
+): PlacedOpening[] {
   const byWall = new Map<string, RoomOpening[]>();
   for (const o of openings) {
     const key = `${o.side}:${o.type}`;
@@ -201,9 +281,10 @@ export function seedPlacedOpenings(openings: RoomOpening[]): PlacedOpening[] {
   let seq = 0;
   for (const [key, group] of byWall) {
     const [wall, type] = key.split(":") as [GreyboxWall, PlacedOpening["type"]];
+    const span = toWallFraction(type, wall, roomWidthFt, roomDepthFt);
     group.forEach((_, i) => {
       const t = (i + 1) / (group.length + 1);
-      out.push({ id: `seed-${seq++}`, type, wall, t, span: DEFAULT_SPAN[type] });
+      out.push({ id: `seed-${seq++}`, type, wall, t, span });
     });
   }
   return out;

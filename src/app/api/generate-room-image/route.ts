@@ -87,12 +87,19 @@ export async function POST(request: Request) {
   try {
     const prompt = await buildRoomPrompt(universalInput, room, designSpec, { hasGreybox: !!greyboxKey });
     const referenceImages = greyboxKey ? [await loadGreyboxDataUri(greyboxKey)] : undefined;
-    const image = await generateImage(prompt, { projectId, userId: guard.id }, { referenceImages });
+    const referenceImageUrls = greyboxKey ? [`/api/render?key=${encodeURIComponent(greyboxKey)}`] : undefined;
+    const image = await generateImage(prompt, { projectId, userId: guard.id }, { referenceImages, referenceImageUrls });
     const ext = image.contentType === "image/jpeg" ? "jpg" : "png";
     const key = `renders/${projectId}/${randomUUID()}.${ext}`;
     await putObject(key, image.bytes, image.contentType);
     const imageUrl = `/api/render?key=${encodeURIComponent(key)}`;
-    void recordGeneration({ projectId, userId: guard.id, roomKey: room.name, type: "image", storageUrl: imageUrl });
+    // Awaited (was fire-and-forget `void`): /api/render's ownership check now
+    // reads this row to authorize a just-generated image immediately, instead
+    // of waiting on the client's debounced project-snapshot sync (found via a
+    // direct user report of freshly-generated images intermittently failing
+    // to load). recordGeneration itself never throws (best-effort insert),
+    // so awaiting it only adds one DB round-trip, no new failure mode.
+    await recordGeneration({ projectId, userId: guard.id, roomKey: room.name, type: "image", storageUrl: imageUrl });
     return Response.json({ imageUrl, key, prompt });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Room image generation");

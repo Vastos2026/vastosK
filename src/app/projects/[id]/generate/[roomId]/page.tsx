@@ -8,6 +8,7 @@ import { editRoomImage } from "@/lib/generation-client";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Modal } from "@/components/ui/modal";
+import { RetryImg } from "@/components/ui/retry-img";
 import { LassoCanvas, REGION_COLORS, MAX_LASSO_REGIONS, type LassoRegionsHandle } from "@/components/project/lasso-canvas";
 import { cn, uid, slugifyRoomName } from "@/lib/utils";
 
@@ -155,8 +156,7 @@ export default function ViewEditPage() {
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
         <div className="mx-auto flex h-full max-w-5xl gap-5">
           <div className="relative min-w-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <RetryImg
               src={current.imageUrl}
               alt={room.name}
               className="absolute inset-0 h-full w-full object-contain"
@@ -257,8 +257,7 @@ export default function ViewEditPage() {
                   g.id === current.id ? "border-accent" : "border-transparent opacity-70 hover:opacity-100",
                 )}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={g.imageUrl} alt="" className="h-full w-full object-cover" />
+                <RetryImg src={g.imageUrl} alt="" className="h-full w-full object-cover" />
               </button>
             ))}
           </div>
