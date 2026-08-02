@@ -19,17 +19,6 @@ interface Result {
   detail?: string;
 }
 
-const results: Result[] = [];
-
-function check(name: string, fn: () => void) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (e) {
-    results.push({ name, ok: false, detail: (e as Error).message });
-  }
-}
-
 function assert(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
@@ -45,7 +34,22 @@ export async function GET() {
   if (process.env.NODE_ENV === "production") {
     return new Response("Not found", { status: 404 });
   }
-  results.length = 0;
+
+  // Request-local, not module-scope: two concurrent requests in the same
+  // Next.js process must not share (and race on resetting) one array. Every
+  // check appended here is synchronous today, but Task 6 adds an async
+  // check — module-scope state plus a shared reset is exactly what turns
+  // that into cross-request corruption.
+  const results: Result[] = [];
+
+  function check(name: string, fn: () => void) {
+    try {
+      fn();
+      results.push({ name, ok: true });
+    } catch (e) {
+      results.push({ name, ok: false, detail: (e as Error).message });
+    }
+  }
 
   // ---- greybox-hash ----
   check("hash is stable across calls", () => {
