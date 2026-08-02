@@ -17,7 +17,11 @@ import { NextResponse, type NextRequest } from "next/server";
 // comments. Without listing both here, this optimistic check would redirect
 // an unauthenticated visitor to /login before either one ever ran, which is
 // exactly the audience "Get shareable link" is meant to reach.
-const PUBLIC_PREFIXES = ["/login", "/s", "/api/s"];
+//
+// /api/dev-check is the dev-only assertion harness (src/app/api/dev-check/
+// route.ts) — it 404s itself in production and never touches user data, but
+// takes no auth by design, so it must be reachable without a session too.
+const PUBLIC_PREFIXES = ["/login", "/s", "/api/s", "/api/dev-check"];
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
