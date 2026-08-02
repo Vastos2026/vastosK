@@ -18,14 +18,16 @@ import * as THREE from "three";
  * the group in the scene applies position + a Y rotation.
  */
 
-// Two new grey shades in the same flat, textureless family as build-scene.ts's
-// palette (0xb4b4b4 wall / 0x9a9a9a floor / 0xc8c8c8 ceiling / 0x7c7c7c reveal)
-// — distinct enough from walls/floor to read as separate objects, but never
-// implying a real material or colour.
-const FRAME_COLOR = 0x8c8c8c; // frames/legs/carcasses — mid grey
-const SEAT_COLOR = 0x707070; // seats/mattresses/cushioned surfaces — darker grey
-const RUG_COLOR = 0xacacac; // lighter than FLOOR_COLOR so a rug still reads as a distinct object
-const FOLIAGE_COLOR = 0x7c8c7c; // plant foliage — the one deliberate, faint hint of green-grey so leaves don't read as a stray grey box
+// Furniture sits deliberately low on the value ladder — 28-35% luma, well
+// clear of the door filler's ~49% — so a wardrobe or dresser proxy is never
+// mistaken for a door panel (a real, observed failure mode). Distinct enough
+// from walls/floor to read as separate objects, but never implying a real
+// material or colour. (build-scene.ts's shell palette: 0xb0b0b0 wall /
+// 0x9c9c9c floor / 0xc4c4c4 ceiling / 0x6e6e6e reveal.)
+const FRAME_COLOR = 0x585858; // frames/legs/carcasses — mid-dark grey
+const SEAT_COLOR = 0x484848; // seats/mattresses/cushioned surfaces — darker grey
+const RUG_COLOR = 0x8a8a8a; // lighter than the furniture greys so a rug still reads as a distinct object
+const FOLIAGE_COLOR = 0x6b7d6b; // plant foliage — the one deliberate, faint hint of green-grey so leaves don't read as a stray grey box
 
 function frameMat() {
   return new THREE.MeshStandardMaterial({ color: FRAME_COLOR, roughness: 1 });

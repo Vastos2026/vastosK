@@ -9,6 +9,7 @@
  * must never do anything that costs money or touches user data.
  */
 import { greyboxHashFor } from "@/lib/greybox/greybox-hash";
+import { openingFaceSamples } from "@/lib/greybox/build-scene";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,6 +92,23 @@ export async function GET() {
     };
     const moved = { ...base, furniture: [{ ...base.furniture[0], x: 0.6 }] };
     assert(greyboxHashFor(base) !== greyboxHashFor(moved), "moving furniture must change the hash");
+  });
+
+  // ---- openingFaceSamples ----
+  check("face samples land inside the opening rectangle", () => {
+    const spec = {
+      width: 12,
+      depth: 10,
+      openings: [{ id: "w1", type: "window" as const, wall: "north" as const, t: 0.5, span: 0.4 }],
+    };
+    const pts = openingFaceSamples(spec, spec.openings[0]);
+    eq(pts.length, 25, "5x5 grid");
+    // North wall sits at z = -depth/2, t runs west->east so samples vary in x only.
+    for (const p of pts) {
+      assert(Math.abs(p.z - -5) < 1e-6, `sample off the north wall plane: z=${p.z}`);
+      assert(Math.abs(p.x) <= (0.4 * 12) / 2 + 1e-6, `sample outside the span: x=${p.x}`);
+      assert(p.y >= 3 && p.y <= 7, `sample outside the window's vertical extent: y=${p.y}`);
+    }
   });
 
   const failed = results.filter((r) => !r.ok);

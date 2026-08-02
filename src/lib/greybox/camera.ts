@@ -57,9 +57,14 @@ export function greyboxCamera(spec: GreyboxRoomSpec, aspect: number): THREE.Pers
   let best: { camera: THREE.PerspectiveCamera; seen: number; spread: number } | null = null;
 
   for (const [cx, cz] of candidates) {
-    const camera = new THREE.PerspectiveCamera(FOV, aspect, 0.1, 200);
+    const camera = new THREE.PerspectiveCamera(FOV, aspect, 0.15, 200);
     camera.position.set(cx, EYE_H, cz);
-    camera.lookAt(0, EYE_H * 0.9, 0);
+    // Level, not tilted down. At 85 degrees a downward tilt produces severe
+    // vertical keystoning — walls converge toward the top of frame — and a
+    // tilted ultra-wide is doubly outside the model's training distribution.
+    // Architectural photography keeps the sensor plane vertical for exactly
+    // this reason. Section 3.3.
+    camera.lookAt(0, EYE_H, 0);
     camera.updateMatrixWorld();
     camera.updateProjectionMatrix();
 
