@@ -223,7 +223,7 @@ loop for judging whether a layout reads correctly.
 
 | Element | Current | New |
 |---|---|---|
-| Window filler | `0xf2f2f2` | `0xfafafa`, `MeshBasicMaterial` (already basic — colour only) |
+| Window filler | `0xf2f2f2` | `0xfafafa` — colour only, see note below |
 | Ceiling | `0xc8c8c8` | `0xc4c4c4` |
 | Wall | `0xb4b4b4` | `0xb0b0b0` |
 | Floor | `0x9a9a9a` | `0x9c9c9c` |
@@ -237,6 +237,38 @@ loop for judging whether a layout reads correctly.
 
 Lighting drops to ambient `0.45`, hemisphere `0.35`, key `0.65`, fill `0.35`. Two-directional setup
 kept — adjacent walls must never share exact brightness.
+
+**Correction to the source document.** §3.5 states the window filler "currently is a lit material,
+so the light rig decides its final value." That is not true on this branch — `build-scene.ts:266-267`
+already uses `MeshBasicMaterial` for **both** door and window fillers. The material change §3.5 asks
+for is already done; only the colour moves, `0xf2f2f2 → 0xfafafa`. Do not "fix" a lit material that
+isn't there.
+
+### 4.1b The two opening fixtures — do not weaken either
+
+The prompt's structural contract says *"A framed recessed panel is a closed door. A bright panel is a
+window."* Those two sentences are only true because the render builds them. Both fixtures already
+exist; this change adjusts values, not structure.
+
+**Door = recess + frame + brown.** Three parts, all load-bearing:
+- **Recess** — filler plane offset `-0.08` ft *behind* the wall plane, never flush
+- **Frame** — two side reveals + one top reveal (`REVEAL_DEPTH = 0.08`, `build-scene.ts:244-246`),
+  darkening `0x7c7c7c → 0x6e6e6e` per §3.1: *"Darker reads depth better"*
+- **Brown fill** — `DOOR_COLOR 0x8a7c6a`, unchanged. §3.1 says **Keep**: *"Empirically validated,
+  desaturated, small frame area."* §3.2 permits it as one of only three colours in the whole render
+
+This is the fix for a real Phase 0 failure: a near-black filler came back as an **open** doorway, read
+as a void leading somewhere else (`build-scene.ts:24-27` still records it). §3.1's luma-gap rule
+guards the other direction — keep furniture at 28–35% well clear of the door's ~49% *"so a wardrobe is
+never read as a door panel."*
+
+**Window = white, unlit, brightest in frame.** `0xfafafa` on `MeshBasicMaterial` so the light rig
+cannot darken it, making "bright panel" true by construction rather than by luck. §3.7's first
+assertion enforces it: the window region occupies the top 1% of luma and no wall pixel exceeds it.
+Nothing else in the render may be that bright.
+
+Corner posts (`0.22` ft, `0x6e6e6e`) stay — an opening flush to a corner reads as a missing wall,
+which is why §5 also enforces 0.75 ft corner clearance.
 
 ### 4.2 Camera — `camera.ts`
 
@@ -276,18 +308,34 @@ from the spec's literal 1376 number in favour of the rule the number was serving
 ## 5. Pass B mask + opening ledger (spec §7.1, §4.2)
 
 New `src/lib/greybox/render-mask.ts`. Second render, **same camera, same resolution, same frame**,
-furniture hidden, everything black — except openings, which are rendered with `MeshBasicMaterial` in
-**pure red for doors and pure green for windows**.
+furniture hidden, everything pure black — except openings, rendered **pure white
+(`MeshBasicMaterial 0xffffff`)**, exactly as §7.1 specifies. No colour-coding by type.
 
-The spec says "openings pure white". Colour-coding by type is a strict improvement and costs
-nothing: the mask is never sent to FLUX, and a white blob cannot tell you whether it is a door or a
-window, which the ledger needs. Connected components run per channel.
+### How a white blob gets a type
+
+§4.2 needs separate door and window counts, and a white component does not carry its type. The type
+does not have to come from the pixels — we own the scene:
+
+1. Run 4-connected component labelling on the mask.
+2. For each opening in `placedOpenings`, project `openingCentre(spec, opening)` (already exported by
+   `build-scene.ts`, already used by `camera.ts`) through the **same** camera to a pixel.
+3. The component containing that pixel inherits that opening's type. Openings whose projected centre
+   lands in no component — clipped at the frame edge, behind the camera, or occluded by furniture —
+   are **not counted**.
+
+Occlusion truth still comes entirely from the mask, which is the whole point of §7.1: an opening the
+camera cannot see is never claimed in the prompt. Identity comes from geometry already in hand.
+
+§7.2 (deferred) confirms this is the intended reading — it asks a *different* question per component
+("Window: mean luma > wall-region mean + 0.20; Door: detectable vertical rectangular edge"), which
+only works if each component already knows its type.
 
 ### Where counting happens
 
-`POST /api/upload-greybox` gains a `maskDataUri` field. Server-side, it decodes the mask with `sharp`
-(already a dependency), runs 4-connected component labelling per channel, discards components under
-64 px (anti-aliasing crumbs), and returns `{ key, maskKey, ledger: { doors, windows } }`.
+`POST /api/upload-greybox` gains `maskDataUri` and a `projectedOpenings: {id, type, px, py}[]` field.
+Server-side it decodes the mask with `sharp` (already a dependency), runs 4-connected component
+labelling, discards components under 64 px (anti-aliasing crumbs), assigns types by the centroid
+lookup above, and returns `{ key, maskKey, ledger: { doors, windows } }`.
 
 `POST /api/generate-room-image` **re-derives the ledger from the stored mask** rather than trusting a
 client-supplied count. One `getObject` + one sharp decode, a few ms, and it makes the prompt a pure
