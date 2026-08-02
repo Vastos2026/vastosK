@@ -350,7 +350,7 @@ Expected: `{"passed":4,"failed":0,...}` with HTTP 200.
 
 - [ ] **Step 4: Deliberately break one check to prove the harness reports failures**
 
-Temporarily change `GREYBOX_RENDER_VERSION` to `2.0001` inside `greyboxHashFor`'s object literal — no: instead, temporarily change the `moved` object in "hash changes when an opening moves" to `t: 0.5` (identical to base).
+In the "hash changes when an opening moves" check, temporarily change the `moved` object's `t` from `0.6` to `0.5`, making it identical to `base` so the assertion must fail.
 
 Run: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/dev-check`
 Expected: `500`. Then revert the change and confirm `200` again. A harness that cannot fail proves nothing.
@@ -2228,7 +2228,6 @@ Leave `DEFAULT_SYSTEM`, `withSystemPreamble` and the schema seed alone — Desig
 
 ```ts
 import "server-only";
-import { getBuilderTemplate } from "./templates";
 import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./types";
 import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
@@ -2314,13 +2313,21 @@ function openingLedger(ledger: GreyboxLedger, furnitureCount: number): string {
   return parts.join(" ");
 }
 
+/**
+ * Note on templates: this no longer reads getBuilderTemplate(). Its three
+ * fields are all deleted content under section 2.4 — `intro` is replaced by
+ * the medium line, `cameraPrefix` restates a camera the reference image
+ * already fixes, and `negativePrefix` introduces exclusions into a prompt
+ * with no negation channel. getBuilderTemplate stays exported from
+ * templates.ts because the prompt_templates row and its admin UI still
+ * exist; it simply has no consumer in the image path any more.
+ */
 export async function buildRoomPrompt(
   input: UniversalInput,
   room: UniversalInputRoom,
   spec: DesignSpecification,
   opts: { ledger?: GreyboxLedger; furniture?: PlacedFurniture[]; hasGreybox: boolean },
 ): Promise<string> {
-  const builder = await getBuilderTemplate();
   const furniture = opts.furniture ?? [];
 
   // 1. Medium + lens. No focal length: section 2.3 tested naming one against a
@@ -2384,7 +2391,6 @@ export async function buildRoomPrompt(
 
   // Section 1, R3.
   console.log(`[prompt-builder] room="${room.name}" chars=${prompt.length} hash=${hash(prompt)}`);
-  void builder;
   return prompt;
 }
 
@@ -2398,7 +2404,7 @@ function hash(s: string): string {
 }
 ```
 
-**Note on `builder`:** `getBuilderTemplate`'s `intro`/`cameraPrefix`/`negativePrefix` are all deleted content under §2.4 (`cameraPrefix` restates a camera the reference already fixes; `negativePrefix` introduces exclusions with no negation channel). The `void builder` line keeps the fetch in place so an operator's published template row is not silently ignored without explanation — **replace it with a real use or delete the fetch entirely** as the last step of Task 17's cleanup, once you can confirm no `builder` row is published in the live database.
+**Do not add a `getBuilderTemplate()` call back in.** All three of its fields (`intro`, `cameraPrefix`, `negativePrefix`) are deleted content under §2.4. The function stays exported from `templates.ts` — the `prompt_templates` row and its admin UI still exist — it just has no consumer in the image path any more. Task 17 Step 6 verifies that state rather than changing it.
 
 - [ ] **Step 3: Add prompt assertions to dev-check**
 
@@ -2929,10 +2935,10 @@ git rm src/components/project/greybox-preview.tsx
 
 It was Phase 0 spike scaffolding with zero callers, superseded by `render-to-data-uri.ts`.
 
-Then resolve the `void builder` note from Task 12:
+Then confirm the template state Task 12 established:
 
 Run: `grep -rn "getBuilderTemplate" src/`
-If `prompt-builder.ts` is the only remaining consumer, delete the `getBuilderTemplate` call and the `void builder` line from it. Leave the function itself in `templates.ts` — the `prompt_templates` row and its admin UI still exist.
+Expected: it is defined and exported in `templates.ts` and called from nowhere in `src/`. That is the intended end state — the `prompt_templates` builder row and its admin UI still exist, but §2.4 deleted every field of it from the image prompt. **Do not delete the function** and do not re-add a call.
 
 - [ ] **Step 7: Full verification pass**
 
