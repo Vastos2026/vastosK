@@ -25,6 +25,7 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
     upload: !!project?.floorPlan,
     plan: (project?.floorPlan?.rooms ?? []).some((r) => !!r.shape),
     review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
+    furnish: (project?.floorPlan?.rooms ?? []).some((r) => !!r.greyboxKey),
     design: !!project?.designSpec,
     generate: (project?.roomCards ?? []).some((c) => c.generations.length > 0),
     approve: (project?.roomCards ?? []).some((c) => !!c.approvedByUser),

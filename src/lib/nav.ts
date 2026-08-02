@@ -8,6 +8,7 @@ export const PHASES: { id: Phase; label: string; icon: string }[] = [
   { id: "upload", label: "Upload", icon: "FileUp" },
   { id: "plan", label: "Plan", icon: "DoorClosed" },
   { id: "review", label: "Review", icon: "Ruler" },
+  { id: "furnish", label: "Furnish", icon: "Sofa" },
   { id: "design", label: "Design", icon: "Palette" },
   { id: "generate", label: "Generate", icon: "Image" },
   { id: "approve", label: "Approve", icon: "ListChecks" },

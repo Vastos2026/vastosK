@@ -10,7 +10,15 @@ export type ProjectStatus = "draft" | "parsing" | "parsed" | "designing" | "rend
 /** Unit system for displaying/editing dimensions — canonical storage is always decimal feet. */
 export type Unit = "ft-in" | "ft" | "m" | "cm";
 
-export type Phase = "upload" | "plan" | "review" | "design" | "generate" | "approve" | "walkthrough";
+export type Phase =
+  | "upload"
+  | "plan"
+  | "review"
+  | "furnish"
+  | "design"
+  | "generate"
+  | "approve"
+  | "walkthrough";
 
 /**
  * A door/window placed by hand on a room's wall in the Plan Editor
@@ -75,6 +83,17 @@ export interface Room {
   placedOpenings?: PlacedOpening[];
   /** Storage key of this room's rendered perspective greybox reference image. */
   greyboxKey?: string;
+  /** Pass B opening mask, stored beside greyboxKey as `{greyboxKey}-mask`. */
+  greyboxMaskKey?: string;
+  /**
+   * Content hash of everything the greybox render depends on. When this
+   * differs from a freshly computed hash, the cached greyboxKey is stale and
+   * must be re-rendered. Fixes the bug where editing a door in the Plan
+   * editor after generating silently reused the old reference image.
+   */
+  greyboxHash?: string;
+  /** Cached ledger, for UI display only. The prompt re-derives from the mask. */
+  greyboxLedger?: GreyboxLedger;
   /**
    * Phase B: procedural furniture proxies placed in the 3D greybox (never on the 2D plan — see
    * docs/superpowers/plans/2026-08-01-greybox-phase-b-furniture.md). Optional and additive; a
@@ -94,6 +113,13 @@ export interface PlacedFurniture {
   z: number;
   /** Radians, about the vertical (Y) axis. */
   rotation: number;
+}
+
+export interface GreyboxLedger {
+  /** Doors visible in the Pass B mask from the locked camera. Not the same as placedOpenings.length. */
+  doors: number;
+  /** Windows visible in the Pass B mask from the locked camera. */
+  windows: number;
 }
 
 export interface Door {

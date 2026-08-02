@@ -38,6 +38,11 @@ interface VastoState {
    */
   applyPlanLayout: (id: string, rooms: Room[]) => void;
   updateRoom: (id: string, roomId: string, patch: Partial<Room>) => void;
+  setRoomGreybox: (
+    id: string,
+    roomId: string,
+    patch: Pick<Room, "furniture" | "greyboxKey" | "greyboxMaskKey" | "greyboxHash" | "greyboxLedger">,
+  ) => void;
   /** Append a room to the plan (lasso-extracted rooms). */
   addRoom: (id: string, room: Room) => void;
   /** Delete a room from the plan (Room Confirmation's room-list edit) and its generation history. */
@@ -225,6 +230,8 @@ export const useVasto = create<VastoState>()(
             });
           }),
         })),
+
+      setRoomGreybox: (id, roomId, patch) => get().updateRoom(id, roomId, patch),
 
       addRoom: (id, room) =>
         set((s) => ({
