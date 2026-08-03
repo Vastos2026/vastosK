@@ -23,7 +23,15 @@ export { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "./dimensions
 /** Supersample factor. One extra offscreen render, no aliasing speckle for the model to read as texture. */
 const SS = 2;
 
-function disposeScene(scene: THREE.Scene) {
+/**
+ * Frees a built scene's GPU-backed resources (geometries, materials) after
+ * its render has been read into a 2D context. Exported so render-mask.ts's
+ * extra render passes (Pass B mask, label pass) reuse this instead of
+ * carrying a byte-for-byte copy — this module already carries the "use
+ * client" boundary and render-mask.ts already imports renderToContext from
+ * here, so this adds no new client/server crossing.
+ */
+export function disposeScene(scene: THREE.Scene) {
   scene.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       obj.geometry.dispose();

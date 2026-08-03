@@ -3,7 +3,14 @@
 import * as THREE from "three";
 import { buildGreyboxScene, type GreyboxClass } from "./build-scene";
 import { greyboxCamera, projectOpenings, type ProjectedOpening } from "./camera";
-import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W, assertHistogram, renderToContext } from "./render-to-data-uri";
+import {
+  GREYBOX_ASPECT,
+  GREYBOX_RENDER_H,
+  GREYBOX_RENDER_W,
+  assertHistogram,
+  disposeScene,
+  renderToContext,
+} from "./render-to-data-uri";
 import type { GreyboxRoomSpec } from "./types";
 
 // projectOpenings/ProjectedOpening live in ./camera (no "use client") rather
@@ -79,17 +86,6 @@ function buildLabelScene(spec: GreyboxRoomSpec): THREE.Scene {
   return scene;
 }
 
-function disposeScene(scene: THREE.Scene) {
-  scene.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.geometry.dispose();
-      const m = obj.material;
-      if (Array.isArray(m)) m.forEach((x) => x.dispose());
-      else m.dispose();
-    }
-  });
-}
-
 function classPixelIndex(labelCtx: CanvasRenderingContext2D): Map<GreyboxClass, number[]> {
   const img = labelCtx.getImageData(0, 0, GREYBOX_RENDER_W, GREYBOX_RENDER_H);
   const byValue = new Map<number, GreyboxClass>();
@@ -120,27 +116,42 @@ export function renderGreyboxBundle(spec: GreyboxRoomSpec): {
 } {
   const camera = greyboxCamera(spec, GREYBOX_ASPECT);
 
-  const real = buildGreyboxScene(spec);
-  const realCtx = renderToContext(real, camera, { supersample: true, antialias: true });
+  // Declared here, not as `const` inside the try below, so `finally` can
+  // dispose whatever actually got built no matter how far the block got.
+  // assertHistogram throwing is its PURPOSE, not a rare edge case — it exists
+  // to fail loudly the moment the value ladder collapses (Task 4's dev-check
+  // fixtures prove it throws on cue) — so every scene built before that
+  // point must still be disposed on that path, or every caught throw here
+  // leaks a scene's geometries and materials.
+  let real: THREE.Scene | undefined;
+  let label: THREE.Scene | undefined;
+  let mask: THREE.Scene | undefined;
 
-  // Label pass: no supersample, no antialias — flat class colours must stay
-  // exact so a blended edge pixel is never misread as a different class.
-  const label = buildLabelScene(spec);
-  const labelCtx = renderToContext(label, camera, { supersample: false, antialias: false });
+  try {
+    real = buildGreyboxScene(spec);
+    const realCtx = renderToContext(real, camera, { supersample: true, antialias: true });
 
-  assertHistogram(realCtx.getImageData(0, 0, GREYBOX_RENDER_W, GREYBOX_RENDER_H), classPixelIndex(labelCtx));
+    // Label pass: no supersample, no antialias — flat class colours must stay
+    // exact so a blended edge pixel is never misread as a different class.
+    label = buildLabelScene(spec);
+    const labelCtx = renderToContext(label, camera, { supersample: false, antialias: false });
 
-  const mask = buildMaskScene(spec);
-  const maskCtx = renderToContext(mask, camera, { supersample: false, antialias: false });
+    assertHistogram(realCtx.getImageData(0, 0, GREYBOX_RENDER_W, GREYBOX_RENDER_H), classPixelIndex(labelCtx));
 
-  const bundle = {
-    dataUri: realCtx.canvas.toDataURL("image/png"),
-    maskDataUri: maskCtx.canvas.toDataURL("image/png"),
-    projected: projectOpenings(spec, camera),
-  };
+    mask = buildMaskScene(spec);
+    const maskCtx = renderToContext(mask, camera, { supersample: false, antialias: false });
 
-  disposeScene(real);
-  disposeScene(label);
-  disposeScene(mask);
-  return bundle;
+    return {
+      dataUri: realCtx.canvas.toDataURL("image/png"),
+      maskDataUri: maskCtx.canvas.toDataURL("image/png"),
+      projected: projectOpenings(spec, camera),
+    };
+  } finally {
+    // Each guard covers a scene that may never have been reached (e.g. `mask`
+    // when assertHistogram threw first) — disposing only what exists avoids
+    // a second, masking error on top of whatever this block already threw.
+    if (real) disposeScene(real);
+    if (label) disposeScene(label);
+    if (mask) disposeScene(mask);
+  }
 }
