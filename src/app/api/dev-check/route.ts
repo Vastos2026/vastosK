@@ -23,6 +23,7 @@ import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "@/lib/greybo
 import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import sharp from "sharp";
 import { countOpenings } from "@/lib/greybox/count-openings";
+import { validateOpenings } from "@/lib/greybox/validate-openings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -400,6 +401,43 @@ export async function GET() {
       { id: "b", type: "window", px: 181, py: 91 },
     ]);
     eq(ledger, { doors: 0, windows: 1 }, "9px component dropped");
+  });
+
+  // ---- validateOpenings (section 5) ----
+  const op = (id: string, wall: "north" | "south" | "east" | "west", t: number, span: number, type: "door" | "window" = "window") =>
+    ({ id, type, wall, t, span }) as const;
+
+  check("a well-placed opening passes", () => {
+    eq(validateOpenings([op("a", "north", 0.5, 0.3)], 12, 10), [], "no violations");
+  });
+
+  check("overlapping openings on the same wall are rejected", () => {
+    const v = validateOpenings([op("a", "north", 0.4, 0.3), op("b", "north", 0.55, 0.3)], 12, 10);
+    assert(v.some((x) => x.message.includes("overlap")), `expected an overlap violation, got ${JSON.stringify(v)}`);
+  });
+
+  check("openings closer than 0.5ft of solid wall are rejected", () => {
+    // 12ft wall: a is t=0.25/span=0.3 -> spans [0.10, 0.40]; b is t=0.5667/span=0.3
+    // -> spans [0.4167, 0.7167]. Gap = (0.4167-0.40)*12 = 0.2ft, under the 0.5ft
+    // floor, and b.lo(0.4167) > a.hi(0.40) so this trips separation, not overlap.
+    const v = validateOpenings([op("a", "north", 0.25, 0.3), op("b", "north", 0.5667, 0.3)], 12, 10);
+    assert(v.some((x) => x.message.includes("solid wall")), `expected a separation violation, got ${JSON.stringify(v)}`);
+  });
+
+  check("an opening flush to a corner is rejected", () => {
+    const v = validateOpenings([op("a", "north", 0.13, 0.25)], 12, 10);
+    assert(v.some((x) => x.message.includes("corner")), `expected a corner violation, got ${JSON.stringify(v)}`);
+  });
+
+  check("an opening narrower than 2ft is rejected", () => {
+    const v = validateOpenings([op("a", "north", 0.5, 0.1)], 12, 10);
+    assert(v.some((x) => x.message.includes("niche")), `expected a min-span violation, got ${JSON.stringify(v)}`);
+  });
+
+  check("east and west walls are measured against depth, not width", () => {
+    // span 0.25 on a 40ft-wide / 4ft-deep room: 1ft on the east wall -> too narrow.
+    const v = validateOpenings([op("a", "east", 0.5, 0.25)], 40, 4);
+    assert(v.some((x) => x.message.includes("niche")), `east wall must use depth, got ${JSON.stringify(v)}`);
   });
 
   const failed = results.filter((r) => !r.ok);
