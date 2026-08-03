@@ -29,7 +29,14 @@ function round(n: number, dp: number): number {
   return Math.round(n * f) / f;
 }
 
-function fnv1a(s: string): string {
+/**
+ * General-purpose non-crypto string hash (FNV-1a) — not greybox-specific.
+ * Exported so other modules that just need "detect if this string changed",
+ * not cryptographic resistance, can reuse it instead of redeclaring the same
+ * ~7-line function (prompt-builder.ts's per-generation prompt-change log
+ * line is the first other caller).
+ */
+export function fnv1a(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);

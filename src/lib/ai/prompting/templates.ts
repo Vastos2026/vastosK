@@ -68,13 +68,28 @@ export async function getSystemTemplate(): Promise<SystemTemplateBody> {
 }
 
 /**
- * Prepends the System Rules to a prompt body. Every call site that produces
- * a natural-language prompt (Design Planning, the Prompt Builder) goes
- * through this instead of fetching getSystemTemplate() and splicing it in by
- * hand — that manual-splice pattern is exactly how the Prompt Builder's
- * image-generation prompt once silently omitted System Rules entirely (it
- * only reached the Design Planning call). Routing both through one function
- * means a future third prompt-producing call site can't repeat that mistake.
+ * Prepends the System Rules to a prompt body. Historically every call site
+ * that produces a natural-language prompt routed through this rather than
+ * fetching getSystemTemplate() and splicing it in by hand — that manual-
+ * splice pattern is exactly how the Prompt Builder's image-generation prompt
+ * once silently omitted System Rules entirely (it only reached the Design
+ * Planning call).
+ *
+ * The image path (prompt-builder.ts) deliberately no longer calls this,
+ * as of the 512-token-budget rewrite: DEFAULT_SYSTEM.rules is ~700 chars,
+ * 39% of the entire 1,800-char cap FLUX.2's text encoder allows, and it
+ * contains four phrases section 2.4 of that rewrite deletes by name —
+ * "tack-sharp focus", "not smoothed or plastic-looking", "structurally real
+ * and buildable", and "No people, no text or watermarks, no visible logos"
+ * (an exclusion with no negation channel, which supplies the concept
+ * instead of banning it). There is no room for this preamble under that
+ * budget, so the image prompt IS the section 2.2 template.
+ *
+ * Design Planning (design-planning.ts) still calls this: it is a text/JSON
+ * call with no 512-token encoder in front of it, so none of the above
+ * applies there, and it's still the only prompt-producing call site left
+ * that must route through here rather than fetching getSystemTemplate() by
+ * hand.
  */
 export async function withSystemPreamble(body: string): Promise<string> {
   const system = await getSystemTemplate();

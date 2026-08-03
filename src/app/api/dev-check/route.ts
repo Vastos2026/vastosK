@@ -27,6 +27,8 @@ import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
 import { clamp } from "@/lib/ai/prompting/design-planning";
+import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
+import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -583,6 +585,138 @@ export async function GET() {
     );
     const pair = buildFurnitureMaterials([f("1", "nightstand"), f("2", "nightstand")], tokens);
     assert(pair.includes("walnut nightstands"), `expected the plural phrase for two nightstands, got: ${pair}`);
+  });
+
+  // ---- buildRoomPrompt (Task 12: 512-token-budget rewrite) ----
+  const uiInput: UniversalInput = {
+    project: { category: "Residential", subcategory: "Independent House" },
+    layout: { rooms: [] },
+    design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
+  };
+  const uiRoom: UniversalInputRoom = { name: "Master Bedroom", type: "Bedroom" };
+  const dspec: DesignSpecification = {
+    // Verbose fields — deliberately oversized. None of this may reach the
+    // image prompt any more; only compactBrief/compactGuidance/materialTokens do.
+    designLanguage: "x".repeat(400),
+    materialPalette: "x".repeat(400),
+    lightingStrategy: "x".repeat(400),
+    colourStrategy: "x".repeat(400),
+    furnitureLanguage: "x".repeat(400),
+    cameraGuidelines: "x".repeat(400),
+    negativeConstraints: "x".repeat(400),
+    compactBrief: "Warm neutrals over walnut and honed limestone, soft morning light from one side.",
+    materialTokens: { wood: "walnut", soft: "cream boucle", stone: "honed limestone" },
+    roomGuidelines: [{ room: "Master Bedroom", guidance: "y".repeat(500), compactGuidance: "Keep the palette calm." }],
+  };
+
+  await checkAsync("the verbose design spec never reaches the prompt", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 2 } });
+    assert(!p.includes("x".repeat(50)), "a verbose field leaked into the prompt");
+    assert(!p.includes("y".repeat(50)), "verbose room guidance leaked into the prompt");
+  });
+
+  await checkAsync("prompt stays under the 1800-char cap", async () => {
+    const p = await buildRoomPrompt(uiInput, { ...uiRoom, additional_notes: "z".repeat(2000) }, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 2 },
+      furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
+    });
+    assert(p.length <= 1800, `prompt is ${p.length} chars`);
+  });
+
+  await checkAsync("the ledger uses number words, not digits", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 2 } });
+    assert(p.includes("two windows and one door"), `expected word-form counts, got: ${p}`);
+    assert(!/\b[0-9]+ (window|door)/.test(p), "digits used for opening counts");
+  });
+
+  await checkAsync("no deleted phrasing survives", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed")],
+    });
+    for (const banned of ["defect", "Count them", "Do not", "no more", "tack-sharp", "watermark", "near the"]) {
+      assert(!p.toLowerCase().includes(banned.toLowerCase()), `banned phrasing "${banned}" is still in the prompt`);
+    }
+  });
+
+  await checkAsync("a room with no openings gets a positive statement", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 0, windows: 0 } });
+    assert(p.includes("Every wall in this room is solid."), `expected positive phrasing, got: ${p}`);
+  });
+
+  await checkAsync("reordering furniture does not change a single byte of the prompt", async () => {
+    // The real invariant (not "same args in, same string out", which no
+    // clock/randomness/shared-mutable-state function could ever fail):
+    // moving a piece in the 3D editor reorders room.furniture, and that must
+    // not bust the prompt cache. Two arrays, same three items, deliberately
+    // in two DIFFERENT orders — and neither order is catalogue order
+    // (bed, nightstand, wardrobe), so a naive insertion-order implementation
+    // would render each array differently and this fixture would catch it.
+    const furnitureA = [f("1", "wardrobe"), f("2", "bed"), f("3", "nightstand")];
+    const furnitureB = [f("3", "nightstand"), f("1", "wardrobe"), f("2", "bed")];
+    assert(
+      furnitureA.map((x) => x.kind).join(",") !== furnitureB.map((x) => x.kind).join(","),
+      "fixture must present furniture in genuinely different orders, or this proves nothing",
+    );
+    const pA = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: furnitureA,
+    });
+    const pB = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: furnitureB,
+    });
+    eq(pA, pB, "reordering furniture must not change the prompt");
+  });
+
+  await checkAsync("an unbounded non-greybox style/subcategory cannot be trimmed into budget and throws, naming the room", async () => {
+    // The contract clause is never trimmed by the overflow ladder (by
+    // design — section 4.4 never trims the contract or the ledger), so for
+    // the non-greybox path (where the contract interpolates input.design.style
+    // and input.project.subcategory unbounded) a pathologically long value
+    // cannot be rescued by dropping accent/furniture/brief. buildRoomPrompt
+    // must reject rather than silently send an over-budget prompt.
+    const overlongInput: UniversalInput = {
+      project: { category: "Custom", subcategory: "S".repeat(5000) },
+      layout: { rooms: [] },
+      design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
+    };
+    let threw = false;
+    let message = "";
+    try {
+      await buildRoomPrompt(overlongInput, uiRoom, dspec, { hasGreybox: false });
+    } catch (e) {
+      threw = true;
+      message = (e as Error).message;
+    }
+    assert(threw, "expected buildRoomPrompt to throw for an unbounded non-greybox contract");
+    assert(message.includes(uiRoom.name), `error message should name the room, got: ${message}`);
+  });
+
+  await checkAsync("the overflow ladder trims the brief but preserves the furniture line", async () => {
+    // Sized (see task-12-report.md for the arithmetic) so the assembled
+    // prompt lands at 1827 chars — just over the 1800 cap — with a single
+    // furniture kind (so buildFurnitureMaterials' own budget-100 retry is a
+    // no-op: one entry can never be dropped) and no accent. That forces the
+    // THIRD ladder stage (brief trimming) to be the one that brings it back
+    // under budget, proving furniture is trimmed/preserved, never dropped
+    // outright, unlike the earlier buggy stage 3 this fixture was written to
+    // catch.
+    const overflowInput: UniversalInput = {
+      project: { category: "Custom", subcategory: "S".repeat(1500) },
+      layout: { rooms: [] },
+      design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
+    };
+    const p = await buildRoomPrompt(overflowInput, uiRoom, dspec, {
+      hasGreybox: false,
+      furniture: [f("1", "bed")],
+    });
+    assert(p.length <= 1800, `prompt is ${p.length} chars, ladder failed to bring it under budget`);
+    assert(p.includes("cream boucle"), `furniture material phrase dropped from prompt: ${p}`);
   });
 
   // ---- clamp (design-planning.ts) ----

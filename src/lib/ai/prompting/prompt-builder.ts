@@ -1,196 +1,175 @@
 import "server-only";
-import { getBuilderTemplate, withSystemPreamble } from "./templates";
-import type { DesignSpecification, UniversalInput, UniversalInputOpening, UniversalInputRoom } from "./types";
+import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
+import { fnv1a } from "@/lib/greybox/greybox-hash";
+import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./types";
+import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
 
 /**
- * The Prompt Builder — deterministic, no AI call. Assembles the final
- * natural-language image-generation prompt for ONE room from: System Rules +
- * Project Context + the cached Design Specification + that room's slice of
- * Room Guidelines + that room's own Additional Requirements + Camera/
- * Negative Rules. This is the only place natural-language prompt text is
- * produced anywhere in the app — the frontend and every AI stage before this
- * point only ever handle structured JSON.
+ * The Prompt Builder — deterministic, no AI call. The only place
+ * natural-language prompt text is produced anywhere in the app.
  *
- * System Rules are prepended via withSystemPreamble (templates.ts), not
- * fetched/spliced in here by hand — that manual pattern is exactly how this
- * function once silently omitted System Rules entirely (they only reached
- * the Design Planning call). Routing through the shared helper means this
- * and design-planning.ts can't independently drift out of sync again.
+ * Section 1 is the constraint everything here follows from: FLUX.2's text
+ * encoder truncates at 512 tokens (~1,800 chars) and Runware silently
+ * discards the overflow — no error, no warning. The previous version of this
+ * file ran ~3,500 chars with the geometry clause starting near char 2,044,
+ * which means that clause NEVER REACHED THE MODEL. Every accuracy problem
+ * previously attributed to prompt tuning was diagnosed against a prompt whose
+ * most important paragraph had been thrown away before inference.
  *
- * `opts.hasGreybox` switches the openings clause from a word-only
- * description (side + connection) to a strict geometry-preservation block,
- * when the caller is also sending a perspective greybox reference image
- * (see docs/superpowers/specs/2026-08-01-greybox-*.md) — the reference
- * carries the real positions, so describing them in words too would be
- * redundant at best and contradictory at worst.
+ * Section order is a safety mechanism, not style: truncation eats the tail,
+ * so geometry goes first and expendable detail goes last.
+ */
+
+/** Section 1, R1. Hard ceiling. Throw and fail the job — never send over. */
+const MAX_PROMPT_CHARS = 1800;
+/** Section 4.4 per-section budgets. */
+const BUDGET = { brief: 240, furniture: 200, accent: 100 } as const;
+
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+/** Word-forms are single semantic tokens and are better represented in text-encoder space than digits. */
+function word(n: number): string {
+  return NUMBER_WORDS[n] ?? String(n);
+}
+
+function plural(n: number, singular: string): string {
+  return n === 1 ? singular : `${singular}s`;
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Section 2.2's structural contract. Fixed boilerplate — never trimmed,
+ * never reordered. Both sentences about panels are true only because
+ * build-scene.ts builds those exact fixtures: a recessed brown panel inside a
+ * darker reveal frame, and an unlit near-white panel that is the brightest
+ * thing in frame by construction.
+ */
+function structuralContract(hasFurniture: boolean): string {
+  const furnitureClause = hasFurniture
+    ? " Darker grey volumes are furniture: keep their position, footprint and approximate size."
+    : "";
+  return (
+    "Image 1 is an untextured grey massing render of this exact room, from the exact camera the " +
+    "output must use. Preserve without deviation: camera position, angle and field of view; room " +
+    "proportions and all wall positions; the position, width and height of every opening. A framed " +
+    "recessed panel is a closed door. A bright panel is a window. Every other surface is solid " +
+    `wall.${furnitureClause} Change only surfaces, materials, lighting and furnishing.`
+  );
+}
+
+/**
+ * Section 4.2. Counts come from the Pass B mask, never from
+ * placedOpenings.length — an opening clipped at the frame edge, behind the
+ * camera, or occluded by furniture is not visible in the output, and claiming
+ * it tells the model to invent one.
+ */
+function openingLedger(ledger: GreyboxLedger, furnitureCount: number): string {
+  const parts: string[] = [];
+  const { doors, windows } = ledger;
+  if (windows > 0 && doors > 0) {
+    parts.push(`The room has ${word(windows)} ${plural(windows, "window")} and ${word(doors)} ${plural(doors, "door")}.`);
+  } else if (windows > 0) {
+    parts.push(`The room has ${word(windows)} ${plural(windows, "window")}.`);
+  } else if (doors > 0) {
+    parts.push(`The room has ${word(doors)} ${plural(doors, "door")}.`);
+  } else {
+    parts.push("Every wall in this room is solid.");
+  }
+  if (doors > 0) parts.push("All doors are closed.");
+  if (furnitureCount > 0) {
+    const verb = furnitureCount === 1 ? "is" : "are";
+    parts.push(`${cap(word(furnitureCount))} furniture ${plural(furnitureCount, "piece")} ${verb} already placed.`);
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Note on templates: this no longer reads getBuilderTemplate(). Its three
+ * fields are all deleted content under section 2.4 — `intro` is replaced by
+ * the medium line, `cameraPrefix` restates a camera the reference image
+ * already fixes, and `negativePrefix` introduces exclusions into a prompt
+ * with no negation channel. getBuilderTemplate stays exported from
+ * templates.ts because the prompt_templates row and its admin UI still
+ * exist; it simply has no consumer in the image path any more.
  */
 export async function buildRoomPrompt(
   input: UniversalInput,
   room: UniversalInputRoom,
   spec: DesignSpecification,
-  opts: { hasGreybox?: boolean } = {},
+  opts: { ledger?: GreyboxLedger; furniture?: PlacedFurniture[]; hasGreybox: boolean },
 ): Promise<string> {
-  const builder = await getBuilderTemplate();
-  const guidance = spec.roomGuidelines.find((g) => g.room === room.name)?.guidance;
-  // `name` is often unreliable on its own (a detected/user-typed label like
-  // "Ananya's Room" says nothing about what kind of room it is) — `type` is
-  // the actual semantic category (Bedroom, Kitchen, Pooja Room, ...) and, when
-  // it's set and differs from the name, is called out explicitly so the model
-  // isn't left to guess a room's purpose from a name alone.
+  const furniture = opts.furniture ?? [];
+
+  // 1. Medium + lens. No focal length: section 2.3 tested naming one against a
+  //    real output and rejected it — FLUX.2 renormalises perspective to ~20-24mm
+  //    without moving openings, and naming a focal length buys camera fidelity
+  //    that isn't required at the cost of barrel distortion.
+  const medium = "Photorealistic interior photograph, wide angle, eye level.";
+
+  // 2. Structural contract, or a one-line geometry statement when there is no
+  //    reference image. One code path, one budget, one assert.
+  const contract = opts.hasGreybox
+    ? structuralContract(furniture.length > 0)
+    : `A ${input.design.luxury_level.toLowerCase()} "${input.design.style}" ${input.project.subcategory}. ` +
+      "Straight walls, level camera, eye level.";
+
+  // 3. Opening ledger.
+  const ledger = opts.hasGreybox && opts.ledger ? openingLedger(opts.ledger, furniture.length) : "";
+
+  // 4. Room brief.
   const roomLabel =
     room.type && room.type.trim() && room.type.trim().toLowerCase() !== room.name.trim().toLowerCase()
-      ? `${room.name} (a ${room.type})`
+      ? `${room.name}, a ${room.type.toLowerCase()}`
       : room.name;
+  const guidance = spec.roomGuidelines.find((g) => g.room === room.name)?.compactGuidance ?? "";
+  // Section 2.4: room dimensions in feet are deleted — the greybox encodes
+  // proportion far more precisely than a number in prose can.
+  const brief = [`${cap(roomLabel)}.`, spec.compactBrief, guidance].filter(Boolean).join(" ").slice(0, BUDGET.brief);
 
-  // `size` is absent when the room's dimensions weren't given (not printed on
-  // the plan, not filled in on Room Confirmation) — state the room without a
-  // size clause rather than baking a wrong number into the render prompt.
-  const roomIntro = room.size
-    ? `Room: ${roomLabel} (${room.size}) in a ${input.design.luxury_level.toLowerCase()} ` +
-      `"${input.design.style}" ${input.project.subcategory}.`
-    : `Room: ${roomLabel} in a ${input.design.luxury_level.toLowerCase()} ` +
-      `"${input.design.style}" ${input.project.subcategory}.`;
+  // 5. Furniture materials. Derived from the set of types present; empty
+  //    furniture omits the line entirely.
+  const furnitureLine = buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture);
 
-  const lines = [
-    builder.intro,
-    "",
-    roomIntro,
-    `Colour palette: ${input.design.colour_palette}.`,
-    "",
-    `Design language: ${spec.designLanguage}`,
-    `Material palette: ${spec.materialPalette}`,
-    `Lighting: ${spec.lightingStrategy}`,
-    `Colour strategy: ${spec.colourStrategy}`,
-    `Furniture language: ${spec.furnitureLanguage}`,
-  ];
+  // 6. Accent — optional, always last, engineered to be the thing that gets
+  //    cut if anything gets cut.
+  const accent = (room.additional_notes?.trim() ?? "").slice(0, BUDGET.accent);
 
-  if (guidance) lines.push("", `This room specifically: ${guidance}`);
-  if (room.additional_notes?.trim()) lines.push(`Additional requirement: ${room.additional_notes.trim()}`);
+  // Section 4.4 overflow order: drop accent, then trim furniture by priority,
+  // then trim brief. NEVER the contract or the ledger. All three stages
+  // rebuild the prompt through the same section list/order so no stage can
+  // silently drop a section the other stages still expect to be there.
+  let briefOut = brief;
+  let furnOut = furnitureLine;
+  let accentOut = accent;
+  const assemble = () => [medium, contract, ledger, briefOut, furnOut, accentOut].filter(Boolean).join("\n\n");
 
-  if (opts.hasGreybox) {
-    lines.push(...greyboxGeometryClause(room.openings));
-  } else if (room.openings?.length) {
-    lines.push("", `Real openings, respect them exactly: ${describeOpenings(room.openings)}.`);
+  let prompt = assemble();
+  if (prompt.length > MAX_PROMPT_CHARS && accentOut) {
+    accentOut = "";
+    prompt = assemble();
+  }
+  if (prompt.length > MAX_PROMPT_CHARS && furnOut) {
+    furnOut = buildFurnitureMaterials(furniture, spec.materialTokens, 100);
+    prompt = assemble();
+  }
+  if (prompt.length > MAX_PROMPT_CHARS && briefOut) {
+    const overflow = prompt.length - MAX_PROMPT_CHARS;
+    briefOut = briefOut.slice(0, Math.max(0, briefOut.length - overflow - 8)).trim();
+    prompt = assemble();
   }
 
-  // Furniture (Phase B) is deliberately NOT described in words here. Once the
-  // greybox reference image shows furniture proxies, the render is the single
-  // source of spatial truth — a text restatement (even a coarse "near the
-  // north wall") is a second source that can disagree with it, and geometry
-  // is what the model reconciles against when the two conflict. What the
-  // furniture is MADE OF (materials, not position) is a separate clause —
-  // see buildFurnitureMaterials (furniture-layout.ts), wired in by Task 12.
-
-  // With a greybox, the camera is already fixed by the reference image —
-  // restating it in words too invites the two to disagree, so only mood/
-  // lighting language from cameraGuidelines would apply there. In practice
-  // cameraGuidelines is framing-only text with no separable lighting
-  // component, so it's dropped entirely for greybox rooms rather than
-  // parsed for a piece that isn't reliably present.
-  if (!opts.hasGreybox) {
-    lines.push("", `${builder.cameraPrefix} ${spec.cameraGuidelines}`);
+  // Section 1, R1: throw rather than send. Runware accepts up to 32,000 chars
+  // and silently discards everything past the encoder's limit, so an overlong
+  // prompt fails invisibly — which is exactly how the old geometry clause was
+  // lost for weeks without a single error.
+  if (prompt.length > MAX_PROMPT_CHARS) {
+    throw new Error(`Prompt is ${prompt.length} chars, over the ${MAX_PROMPT_CHARS} limit for room "${room.name}"`);
   }
 
-  // A second, negative-framed statement of the same door/window counts
-  // already asserted (positively) in greyboxGeometryClause above.
-  // Requested directly by the user after observing the positive framing
-  // alone still let the model add an extra opening on some runs — stating
-  // the same numbers as a hard cap in the negative-constraints line gives
-  // the model two independent, differently-framed passes at the same
-  // checkable fact rather than one.
-  const negativeCounts = opts.hasGreybox ? negativeCountAddendum(room.openings) : "";
-  lines.push(`${builder.negativePrefix} ${spec.negativeConstraints}${negativeCounts}`);
-
-  return withSystemPreamble(lines.join("\n"));
-}
-
-/**
- * The strict geometry-preservation block for a greybox-conditioned
- * generation. Both defects it calls out by name (an open door, an invented
- * opening at a corner) were observed on a REAL generation in the Phase 0
- * spike under an earlier, shorter version of this same clause — see
- * docs/superpowers/specs/2026-08-01-greybox-opening-placement-design.md's
- * "Phase 0 result". The build-scene.ts geometry hardening (closed door
- * leaves, corner posts) targets the same two defects from the image side;
- * this is the prompt side of the same fix.
- *
- * Hardened further (2026-08-02) after a direct, confirmed report: the SAME
- * cached reference image, generated twice in a row with no changes, produced
- * two doors in one output and one in the other — the model inventing/
- * dropping an opening despite an unchanged, correct reference. "Preserve
- * what's shown" is a description, not a checkable instruction; giving the
- * model an explicit COUNT it can verify against ("there are exactly N doors
- * and M windows") is a stronger, falsifiable constraint than asking it to
- * eyeball the image. Also states standard real-world door/window widths
- * explicitly (the reference already encodes this geometrically — see
- * plan-editor/geometry.ts's STANDARD_DOOR_WIDTH_FT/STANDARD_WINDOW_WIDTH_FT
- * — this is reinforcement, not a new source of truth) since a stated size is
- * one more thing the model can check itself against rather than invent.
- */
-function greyboxGeometryClause(openings: UniversalInputOpening[] | undefined): string[] {
-  const doorCount = openings?.filter((o) => o.type === "door").length ?? 0;
-  const windowCount = openings?.filter((o) => o.type === "window").length ?? 0;
-  const totalCount = doorCount + windowCount;
-  const countLine =
-    totalCount > 0
-      ? `This room has EXACTLY ${countSentence(doorCount, windowCount)} — no more, no fewer. Count them in ` +
-        "the reference before you finish: if your output doesn't have exactly that many, it is wrong."
-      : "This room has NO doors or windows in the reference — every wall is solid. Do not add one.";
-
-  const lines = [
-    "",
-    "The attached image is an untextured grey 3D massing render of this exact room, from the exact " +
-      "camera position the output must use. You MUST preserve, without any deviation:",
-    "- the camera position, angle and field of view;",
-    "- the room's proportions and every wall position;",
-    "- the position, width and height of every door and window opening shown. A closed, framed panel " +
-      "is a door — render it CLOSED, never open. A bright panel is a window. Doors are a standard " +
-      "~3 feet (~0.9m) wide, windows a standard ~4 feet (~1.2m) wide, matching the reference exactly " +
-      "— do not widen, narrow, or resize any opening.",
-    countLine,
-    "Every surface not shown as an opening is solid. Do not add a door, window or any glazing at a " +
-      "corner or wall junction that the reference shows as solid. Do not move, resize, add or remove " +
-      "a single opening, even if it would look more balanced or symmetrical — asymmetry in the " +
-      "reference is intentional and must survive.",
-    "Change ONLY surfaces, materials, lighting and furnishing to match the brief below.",
-  ];
-
-  return lines;
-}
-
-/**
- * " Do not render more than 1 door and 2 windows total in this room — extra doors or windows are a
- * defect, not a stylistic choice." Reuses the same counts as greyboxGeometryClause's positive
- * statement — this is a second, negative-framed pass at the identical numbers, not a new source of
- * truth.
- */
-function negativeCountAddendum(openings: UniversalInputOpening[] | undefined): string {
-  const doorCount = openings?.filter((o) => o.type === "door").length ?? 0;
-  const windowCount = openings?.filter((o) => o.type === "window").length ?? 0;
-  const parts: string[] = [];
-  if (doorCount + windowCount > 0) {
-    parts.push(`more than ${countSentence(doorCount, windowCount)} total in this room`);
-  } else {
-    parts.push("any door or window in this room");
-  }
-  return ` Do not render ${parts.join(", or ")} — extra openings are a defect, not a stylistic choice.`;
-}
-
-/** "1 door and 2 windows" / "3 doors" / "1 window" — omitting whichever count is zero. */
-function countSentence(doorCount: number, windowCount: number): string {
-  const parts: string[] = [];
-  if (doorCount > 0) parts.push(`${doorCount} ${doorCount === 1 ? "door" : "doors"}`);
-  if (windowCount > 0) parts.push(`${windowCount} ${windowCount === 1 ? "window" : "windows"}`);
-  return parts.join(" and ");
-}
-
-/** Translates structured openings into natural language — only place this happens. */
-function describeOpenings(openings: UniversalInputOpening[]): string {
-  return openings
-    .map((o) => {
-      const where = `a ${o.type} on the ${o.side} wall`;
-      if (!o.connectsTo || o.connectsTo === "exterior") return `${where} (exterior)`;
-      return `${where} connecting to the ${o.connectsTo}`;
-    })
-    .join("; ");
+  // Section 1, R3.
+  console.log(`[prompt-builder] room="${room.name}" chars=${prompt.length} hash=${fnv1a(prompt)}`);
+  return prompt;
 }
