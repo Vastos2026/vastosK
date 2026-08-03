@@ -1,5 +1,5 @@
 import { ProviderError } from "@/lib/ai/errors";
-import type { LuxuryLevel, UniversalInput, UniversalInputFurniture, UniversalInputOpening } from "./types";
+import type { LuxuryLevel, UniversalInput, UniversalInputOpening } from "./types";
 
 /**
  * Universal Input Schema builder — turns the frontend's room/style selections
@@ -32,8 +32,6 @@ export interface RoomSelection {
   heightFt?: number;
   additionalNotes?: string;
   openings?: UniversalInputOpening[];
-  /** Already resolved to labels/rough positions — see furniture-layout.ts's describeFurnitureForPrompt. */
-  furniture?: UniversalInputFurniture[];
 }
 
 export interface DesignSelection {
@@ -128,7 +126,6 @@ export function buildUniversalInput(
           ...(r.type?.trim() ? { type: r.type.trim() } : {}),
           ...(notes ? { additional_notes: notes } : {}),
           ...(r.openings?.length ? { openings: r.openings } : {}),
-          ...(r.furniture?.length ? { furniture: r.furniture } : {}),
         };
       }),
     },

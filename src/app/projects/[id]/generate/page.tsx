@@ -7,7 +7,6 @@ import { useProject, useVasto } from "@/lib/store";
 import { RetryImg } from "@/components/ui/retry-img";
 import { generateRoomImage } from "@/lib/design-plan-client";
 import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
-import { describeFurnitureForPrompt } from "@/lib/greybox/furniture-layout";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
@@ -113,7 +112,6 @@ export default function GeneratePage() {
             .filter(Boolean)
             .join(". ") || undefined,
           openings: room.openings,
-          furniture: room.furniture?.length ? describeFurnitureForPrompt(room.furniture) : undefined,
         },
         designSpec,
         greyboxKey,

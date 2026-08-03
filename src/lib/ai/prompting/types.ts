@@ -45,20 +45,6 @@ export interface UniversalInputRoom {
    * before the Prompt Builder translates it to natural language.
    */
   openings?: UniversalInputOpening[];
-  /**
-   * Phase B: furniture placed in the 3D greybox editor (src/app/projects/[id]/furnish/[roomId]),
-   * already resolved to human-readable labels ("Sofa", not the catalogue key "sofa") — see
-   * furniture-catalogue.ts. Reinforces what the greybox reference image already shows (the shape
-   * identifies the item); this is never a substitute for the image, only text support for it.
-   */
-  furniture?: UniversalInputFurniture[];
-}
-
-export interface UniversalInputFurniture {
-  label: string;
-  /** Coarse, camera-relative-agnostic description, e.g. "near the north wall" — see
-   *  prompt-builder.ts's describeFurniture for how this is derived from placement. */
-  roughPosition: string;
 }
 
 export type LuxuryLevel = "Standard" | "Premium" | "Ultra Luxury";

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnitureEditorCanvas, footprintClampMargins } from "@/components/project/furniture-editor-canvas";
 import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
-import { defaultFurnitureFor, describeFurnitureForPrompt, toWorldFurniture } from "@/lib/greybox/furniture-layout";
+import { defaultFurnitureFor, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import { renderGreyboxBundle } from "@/lib/greybox/render-mask";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { generateRoomImage } from "@/lib/design-plan-client";
@@ -217,7 +217,6 @@ function FurnishContent({
           ...(size ? { size } : {}),
           additional_notes: universalInput.layout.rooms.find((r) => r.name === room.name)?.additional_notes,
           openings: room.openings,
-          furniture: furniture.length ? describeFurnitureForPrompt(furniture) : undefined,
         },
         designSpec,
         greyboxKey,

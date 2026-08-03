@@ -87,6 +87,16 @@ export interface FurnitureCatalogueEntry {
   roomTypes: string[];
   /** Returns a new Group, centred at its own local origin, floor at y=0, facing +Z. */
   build(): THREE.Group;
+  /**
+   * What this item is MADE OF, never where it is. Section 2.5: once furniture
+   * is in the render, the render is the single source of spatial truth, and
+   * positional prose creates a second source that can disagree with it.
+   * {wood}/{soft}/{stone} interpolate from the design brief so the line
+   * inherits the palette rather than restating it.
+   */
+  materialPhrase: string;
+  /** Lower is dropped first when the furniture line exceeds its 200-char budget. */
+  promptPriority: number;
 }
 
 /**
@@ -320,6 +330,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 6.5, d: 4.5 },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildBed,
+    materialPhrase: "upholstered bed in {soft}",
+    promptPriority: 100,
   },
   {
     kind: "nightstand",
@@ -327,6 +339,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.3, d: 1.3 },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildNightstand,
+    materialPhrase: "{wood} nightstands",
+    promptPriority: 50,
   },
   {
     kind: "wardrobe",
@@ -334,6 +348,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 2, d: 2 },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildWardrobe,
+    materialPhrase: "{wood} wardrobe",
+    promptPriority: 85,
   },
   {
     kind: "dresser",
@@ -341,6 +357,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 3.5, d: 1.6 },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildDresser,
+    materialPhrase: "{wood} dresser",
+    promptPriority: 65,
   },
   {
     kind: "sofa",
@@ -348,6 +366,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 7, d: 3 },
     roomTypes: ["Living Room", "Lounge"],
     build: buildSofa,
+    materialPhrase: "{soft} sofa",
+    promptPriority: 95,
   },
   {
     kind: "armchair",
@@ -355,6 +375,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 2.8, d: 2.8 },
     roomTypes: ["Living Room", "Lounge"],
     build: buildArmchair,
+    materialPhrase: "{soft} armchair",
+    promptPriority: 70,
   },
   {
     kind: "coffee-table",
@@ -362,6 +384,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 3.5, d: 1.8 },
     roomTypes: ["Living Room", "Lounge"],
     build: buildCoffeeTable,
+    materialPhrase: "{wood} coffee table",
+    promptPriority: 55,
   },
   {
     kind: "tv-unit",
@@ -369,6 +393,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 4.5, d: 1.3 },
     roomTypes: ["Living Room", "Lounge"],
     build: buildTvUnit,
+    materialPhrase: "low {wood} media console with a black screen",
+    promptPriority: 75,
   },
   {
     kind: "dining-table",
@@ -376,6 +402,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 5.5, d: 3 },
     roomTypes: ["Dining Room"],
     build: buildDiningTable,
+    materialPhrase: "{wood} dining table",
+    promptPriority: 90,
   },
   {
     kind: "dining-chair",
@@ -383,6 +411,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.5, d: 1.5 },
     roomTypes: ["Dining Room", "Meeting Room", "Conference Room", "Open Workspace"],
     build: buildDiningChair,
+    materialPhrase: "{soft} dining chairs",
+    promptPriority: 70,
   },
   {
     kind: "sideboard",
@@ -390,6 +420,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 4, d: 1.4 },
     roomTypes: ["Dining Room"],
     build: buildSideboard,
+    materialPhrase: "{wood} sideboard",
+    promptPriority: 65,
   },
   {
     kind: "desk",
@@ -397,6 +429,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 4, d: 2 },
     roomTypes: ["Study", "Cabin", "Open Workspace"],
     build: buildDesk,
+    materialPhrase: "{wood} desk",
+    promptPriority: 80,
   },
   {
     kind: "office-chair",
@@ -404,6 +438,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.8, d: 1.8 },
     roomTypes: ["Study", "Cabin", "Open Workspace"],
     build: buildOfficeChair,
+    materialPhrase: "dark task chair",
+    promptPriority: 45,
   },
   {
     kind: "bookshelf",
@@ -411,6 +447,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 3, d: 1 },
     roomTypes: ["Study", "Cabin"],
     build: buildBookshelf,
+    materialPhrase: "{wood} open shelving",
+    promptPriority: 60,
   },
   {
     kind: "kitchen-island",
@@ -418,6 +456,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 5, d: 2.5 },
     roomTypes: ["Kitchen", "Pantry"],
     build: buildKitchenIsland,
+    materialPhrase: "{stone}-topped island",
+    promptPriority: 90,
   },
   {
     kind: "bar-stool",
@@ -425,6 +465,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.3, d: 1.3 },
     roomTypes: ["Kitchen", "Pantry"],
     build: buildBarStool,
+    materialPhrase: "{wood} bar stools",
+    promptPriority: 45,
   },
   {
     kind: "pooja-mandir",
@@ -432,6 +474,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 2, d: 1.5 },
     roomTypes: ["Pooja Room"],
     build: buildPoojaMandir,
+    materialPhrase: "carved {wood} pooja mandir",
+    promptPriority: 55,
   },
   {
     kind: "console-table",
@@ -439,6 +483,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 4, d: 0.9 },
     roomTypes: ["Foyer", "Reception"],
     build: buildConsoleTable,
+    materialPhrase: "slim {wood} console",
+    promptPriority: 40,
   },
   {
     kind: "bench",
@@ -446,6 +492,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 3.5, d: 1.3 },
     roomTypes: ["Foyer", "Reception", "Master Bedroom", "Bedroom", "Guest Room"],
     build: buildBench,
+    materialPhrase: "{wood} bench",
+    promptPriority: 35,
   },
   {
     kind: "conference-table",
@@ -453,6 +501,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 9, d: 4 },
     roomTypes: ["Meeting Room", "Conference Room"],
     build: buildConferenceTable,
+    materialPhrase: "{wood} conference table",
+    promptPriority: 85,
   },
   {
     kind: "outdoor-chair",
@@ -460,6 +510,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 2, d: 2 },
     roomTypes: ["Balcony"],
     build: buildOutdoorChair,
+    materialPhrase: "woven outdoor chair",
+    promptPriority: 35,
   },
   {
     kind: "side-table",
@@ -467,6 +519,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.5, d: 1.5 },
     roomTypes: ["Living Room", "Lounge", "Balcony"],
     build: buildSideTable,
+    materialPhrase: "{wood} side table",
+    promptPriority: 30,
   },
   {
     kind: "rug",
@@ -474,6 +528,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 6, d: 8 },
     roomTypes: [],
     build: buildRug,
+    materialPhrase: "a soft neutral rug",
+    promptPriority: 20,
   },
   {
     kind: "plant",
@@ -481,6 +537,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 2.2, d: 2.2 },
     roomTypes: [],
     build: buildPlant,
+    materialPhrase: "a potted green plant",
+    promptPriority: 15,
   },
 ];
 

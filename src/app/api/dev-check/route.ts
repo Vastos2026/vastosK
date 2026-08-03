@@ -25,6 +25,7 @@ import sharp from "sharp";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
+import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -533,6 +534,44 @@ export async function GET() {
       Math.abs(flat.maxX - flat.minX - (turned.maxZ - turned.minZ)) < 1e-6,
       "a 90-degree turn should swap the extents",
     );
+  });
+
+  // ---- buildFurnitureMaterials ----
+  const tokens = { wood: "walnut", soft: "cream boucle", stone: "marble" };
+  const f = (id: string, kind: string) => ({ id, kind, x: 0.5, z: 0.5, rotation: 0 });
+
+  check("an empty furniture list omits the line entirely", () => {
+    eq(buildFurnitureMaterials([], tokens), "", "empty string, not 'zero pieces'");
+  });
+
+  check("phrases interpolate the brief's material tokens", () => {
+    const line = buildFurnitureMaterials([f("1", "wardrobe")], tokens);
+    assert(line.includes("walnut wardrobe"), `expected interpolation, got: ${line}`);
+    assert(!line.includes("{wood}"), "token left uninterpolated");
+  });
+
+  check("output is stable catalogue order, not insertion order", () => {
+    const a = buildFurnitureMaterials([f("1", "bed"), f("2", "plant")], tokens);
+    const b = buildFurnitureMaterials([f("2", "plant"), f("1", "bed")], tokens);
+    eq(a, b, "byte-identical regardless of insertion order");
+  });
+
+  check("duplicates of one type collapse to a single phrase", () => {
+    const line = buildFurnitureMaterials([f("1", "nightstand"), f("2", "nightstand")], tokens);
+    eq((line.match(/nightstand/g) ?? []).length, 1, "one mention");
+  });
+
+  check("the line never exceeds its budget and never truncates mid-phrase", () => {
+    const many = ["bed", "wardrobe", "dresser", "nightstand", "bookshelf"].map((k, i) => f(String(i), k));
+    const line = buildFurnitureMaterials(many, tokens, 80);
+    assert(line.length <= 80, `over budget: ${line.length} chars — ${line}`);
+    assert(line.endsWith("."), `truncated mid-phrase: ${line}`);
+  });
+
+  check("the lowest-priority item is dropped first under budget", () => {
+    const line = buildFurnitureMaterials([f("1", "bed"), f("2", "plant")], tokens, 60);
+    assert(line.includes("bed"), `bed (priority 100) should survive: ${line}`);
+    assert(!line.includes("plant"), `plant (priority 15) should be dropped: ${line}`);
   });
 
   const failed = results.filter((r) => !r.ok);

@@ -1,12 +1,6 @@
 import "server-only";
 import { getBuilderTemplate, withSystemPreamble } from "./templates";
-import type {
-  DesignSpecification,
-  UniversalInput,
-  UniversalInputFurniture,
-  UniversalInputOpening,
-  UniversalInputRoom,
-} from "./types";
+import type { DesignSpecification, UniversalInput, UniversalInputOpening, UniversalInputRoom } from "./types";
 
 /**
  * The Prompt Builder — deterministic, no AI call. Assembles the final
@@ -74,18 +68,18 @@ export async function buildRoomPrompt(
   if (room.additional_notes?.trim()) lines.push(`Additional requirement: ${room.additional_notes.trim()}`);
 
   if (opts.hasGreybox) {
-    lines.push(...greyboxGeometryClause(room.openings, room.furniture));
+    lines.push(...greyboxGeometryClause(room.openings));
   } else if (room.openings?.length) {
     lines.push("", `Real openings, respect them exactly: ${describeOpenings(room.openings)}.`);
   }
 
-  // Furniture (Phase B): reinforces what the greybox reference image already shows — the proxy
-  // SHAPE identifies the item, this text just names it so the model isn't guessing from shape
-  // alone. Applies whether or not hasGreybox is set (a room can have furniture without ever
-  // having gone through the Plan Editor, though in practice the 3D editor requires a shape).
-  if (room.furniture?.length) {
-    lines.push("", `Furniture already placed, keep it in these positions: ${describeFurniture(room.furniture)}.`);
-  }
+  // Furniture (Phase B) is deliberately NOT described in words here. Once the
+  // greybox reference image shows furniture proxies, the render is the single
+  // source of spatial truth — a text restatement (even a coarse "near the
+  // north wall") is a second source that can disagree with it, and geometry
+  // is what the model reconciles against when the two conflict. What the
+  // furniture is MADE OF (materials, not position) is a separate clause —
+  // see buildFurnitureMaterials (furniture-layout.ts), wired in by Task 12.
 
   // With a greybox, the camera is already fixed by the reference image —
   // restating it in words too invites the two to disagree, so only mood/
@@ -97,14 +91,14 @@ export async function buildRoomPrompt(
     lines.push("", `${builder.cameraPrefix} ${spec.cameraGuidelines}`);
   }
 
-  // A second, negative-framed statement of the same door/window/furniture
-  // counts already asserted (positively) in greyboxGeometryClause above.
+  // A second, negative-framed statement of the same door/window counts
+  // already asserted (positively) in greyboxGeometryClause above.
   // Requested directly by the user after observing the positive framing
   // alone still let the model add an extra opening on some runs — stating
   // the same numbers as a hard cap in the negative-constraints line gives
   // the model two independent, differently-framed passes at the same
   // checkable fact rather than one.
-  const negativeCounts = opts.hasGreybox ? negativeCountAddendum(room.openings, room.furniture) : "";
+  const negativeCounts = opts.hasGreybox ? negativeCountAddendum(room.openings) : "";
   lines.push(`${builder.negativePrefix} ${spec.negativeConstraints}${negativeCounts}`);
 
   return withSystemPreamble(lines.join("\n"));
@@ -133,10 +127,7 @@ export async function buildRoomPrompt(
  * — this is reinforcement, not a new source of truth) since a stated size is
  * one more thing the model can check itself against rather than invent.
  */
-function greyboxGeometryClause(
-  openings: UniversalInputOpening[] | undefined,
-  furniture: UniversalInputFurniture[] | undefined,
-): string[] {
+function greyboxGeometryClause(openings: UniversalInputOpening[] | undefined): string[] {
   const doorCount = openings?.filter((o) => o.type === "door").length ?? 0;
   const windowCount = openings?.filter((o) => o.type === "window").length ?? 0;
   const totalCount = doorCount + windowCount;
@@ -164,27 +155,16 @@ function greyboxGeometryClause(
     "Change ONLY surfaces, materials, lighting and furnishing to match the brief below.",
   ];
 
-  if (furniture?.length) {
-    lines.push(
-      `The reference also shows exactly ${furniture.length} furniture ${furniture.length === 1 ? "piece" : "pieces"} ` +
-        "already placed — keep exactly that many, in the same positions, styled per the furniture brief below. " +
-        "Do not add, remove, or duplicate any piece.",
-    );
-  }
-
   return lines;
 }
 
 /**
- * " Do not render more than 1 door and 2 windows total in this room, and no more than 3 furniture
- * pieces — extra doors, windows or furniture are a defect, not a stylistic choice." Reuses the same
- * counts as greyboxGeometryClause's positive statement — this is a second, negative-framed pass at
- * the identical numbers, not a new source of truth.
+ * " Do not render more than 1 door and 2 windows total in this room — extra doors or windows are a
+ * defect, not a stylistic choice." Reuses the same counts as greyboxGeometryClause's positive
+ * statement — this is a second, negative-framed pass at the identical numbers, not a new source of
+ * truth.
  */
-function negativeCountAddendum(
-  openings: UniversalInputOpening[] | undefined,
-  furniture: UniversalInputFurniture[] | undefined,
-): string {
+function negativeCountAddendum(openings: UniversalInputOpening[] | undefined): string {
   const doorCount = openings?.filter((o) => o.type === "door").length ?? 0;
   const windowCount = openings?.filter((o) => o.type === "window").length ?? 0;
   const parts: string[] = [];
@@ -193,8 +173,7 @@ function negativeCountAddendum(
   } else {
     parts.push("any door or window in this room");
   }
-  if (furniture?.length) parts.push(`more than ${furniture.length} furniture ${furniture.length === 1 ? "piece" : "pieces"}`);
-  return ` Do not render ${parts.join(", or ")} — extra openings or furniture are a defect, not a stylistic choice.`;
+  return ` Do not render ${parts.join(", or ")} — extra openings are a defect, not a stylistic choice.`;
 }
 
 /** "1 door and 2 windows" / "3 doors" / "1 window" — omitting whichever count is zero. */
@@ -203,11 +182,6 @@ function countSentence(doorCount: number, windowCount: number): string {
   if (doorCount > 0) parts.push(`${doorCount} ${doorCount === 1 ? "door" : "doors"}`);
   if (windowCount > 0) parts.push(`${windowCount} ${windowCount === 1 ? "window" : "windows"}`);
   return parts.join(" and ");
-}
-
-/** Translates structured furniture placements into natural language — only place this happens. */
-function describeFurniture(furniture: UniversalInputFurniture[]): string {
-  return furniture.map((f) => `a ${f.label.toLowerCase()} ${f.roughPosition}`).join("; ");
 }
 
 /** Translates structured openings into natural language — only place this happens. */

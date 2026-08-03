@@ -5,7 +5,7 @@
  * wall openings. Framework-free, like that file.
  */
 
-import { catalogueEntry, furnitureForRoomType } from "./furniture-catalogue";
+import { catalogueEntry, FURNITURE_CATALOGUE, furnitureForRoomType } from "./furniture-catalogue";
 import type { GreyboxFurniturePlacement } from "./types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -37,43 +37,65 @@ export function worldToLocal(x: number, z: number, width: number, depth: number)
   return { x: width > 0 ? x / width + 0.5 : 0.5, z: depth > 0 ? z / depth + 0.5 : 0.5 };
 }
 
-/**
- * A coarse, human-readable position from room-local [0,1] coordinates — "near the north wall",
- * "in the centre", etc. Same reading-order convention as openings' "side" (plan's up-is-north,
- * z=0 is north/-Z). Used to build the furniture prompt clause (prompt-builder.ts) — text support
- * for what the greybox reference image already shows, never a substitute for it.
- */
-export function describeFurniturePosition(x: number, z: number): string {
-  const ns = z < 0.33 ? "north" : z > 0.66 ? "south" : null;
-  const ew = x < 0.33 ? "west" : x > 0.66 ? "east" : null;
-  if (ns && ew) return `near the ${ns}${ew} corner`;
-  if (ns) return `near the ${ns} wall`;
-  if (ew) return `near the ${ew} wall`;
-  return "in the centre of the room";
-}
-
 let seq = 0;
 /** Timestamp+counter id, same shape as the Plan Editor's opening ids (plan-editor-canvas.tsx). */
 function furnitureId(): string {
   return `f-${Date.now()}-${(seq++).toString(36)}`;
 }
 
+export interface MaterialTokens {
+  wood: string;
+  soft: string;
+  stone: string;
+}
+
 /**
- * Resolves a room's furniture list into the label+rough-position pairs the prompt clause needs
- * (UniversalInputFurniture, ai/prompting/types.ts) — the one place PlacedFurniture's catalogue
- * `kind` becomes a human-readable label. An unknown `kind` (stale data) is silently dropped,
- * same as toWorldFurniture.
+ * Section 4.3. The furniture prompt line, derived from the SET OF TYPES
+ * PRESENT — never from a hand-maintained string, and never from position.
+ * Add a plant or remove a wardrobe and this line changes because the
+ * derivation re-runs.
+ *
+ * Ordering is stable catalogue order, not insertion order: moving a piece in
+ * the editor must not change the prompt text, or caches bust and A/B
+ * comparisons stop being comparable.
  */
-export function describeFurnitureForPrompt(
+export function buildFurnitureMaterials(
   furniture: PlacedFurniture[],
-): { label: string; roughPosition: string }[] {
-  return furniture
-    .map((f) => {
-      const entry = catalogueEntry(f.kind);
-      if (!entry) return null;
-      return { label: entry.label, roughPosition: describeFurniturePosition(f.x, f.z) };
-    })
-    .filter((x): x is { label: string; roughPosition: string } => x !== null);
+  tokens: MaterialTokens,
+  budget = 200,
+): string {
+  const present = new Map<string, number>();
+  for (const f of furniture) {
+    if (!catalogueEntry(f.kind)) continue;
+    present.set(f.kind, (present.get(f.kind) ?? 0) + 1);
+  }
+  // Section 4.3: an empty array omits the line ENTIRELY, never "zero furniture pieces".
+  if (present.size === 0) return "";
+
+  let entries = FURNITURE_CATALOGUE.filter((e) => present.has(e.kind));
+  const render = (list: typeof entries) =>
+    `The dark massing volumes are furniture: ${joinList(list.map((e) => interpolate(e.materialPhrase, tokens)))}.`;
+
+  // Drop lowest promptPriority first. Never truncate mid-phrase.
+  while (render(entries).length > budget && entries.length > 1) {
+    let worst = 0;
+    for (let i = 1; i < entries.length; i++) {
+      if (entries[i].promptPriority < entries[worst].promptPriority) worst = i;
+    }
+    entries = entries.filter((_, i) => i !== worst);
+  }
+
+  return render(entries);
+}
+
+function interpolate(phrase: string, t: MaterialTokens): string {
+  return phrase.replace(/\{wood\}/g, t.wood).replace(/\{soft\}/g, t.soft).replace(/\{stone\}/g, t.stone);
+}
+
+function joinList(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
 /**
