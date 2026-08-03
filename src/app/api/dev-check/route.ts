@@ -24,6 +24,7 @@ import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import sharp from "sharp";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
+import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -438,6 +439,90 @@ export async function GET() {
     // span 0.25 on a 40ft-wide / 4ft-deep room: 1ft on the east wall -> too narrow.
     const v = validateOpenings([op("a", "east", 0.5, 0.25)], 40, 4);
     assert(v.some((x) => x.message.includes("niche")), `east wall must use depth, got ${JSON.stringify(v)}`);
+  });
+
+  // ---- resolvePlacement / footprintAabb (section 6) ----
+  // Shared by every check below. `farCamera` sits near the room's SE corner
+  // (matching camera.ts's corner-camera convention) but far enough from the
+  // origin/negative-quadrant positions the other fixtures use below that it
+  // never trips their camera-exclusion check by accident — verified by hand
+  // for each fixture, see task-9-report.md.
+  const room = { width: 12, depth: 10 };
+  const farCamera = { x: 5.7, z: 4.7 };
+
+  check("a legal move is accepted unchanged", () => {
+    const r = resolvePlacement(
+      { kind: "bed", rotation: 0, x: 0, z: 0, fromX: -1, fromZ: -1 },
+      [],
+      room,
+      farCamera,
+    );
+    eq(r, { x: 0, z: 0 }, "unchanged");
+  });
+
+  check("a move outside the room is refused", () => {
+    const r = resolvePlacement(
+      { kind: "bed", rotation: 0, x: 100, z: 100, fromX: 0, fromZ: 0 },
+      [],
+      room,
+      farCamera,
+    );
+    eq(r, { x: 0, z: 0 }, "held at the previous position");
+  });
+
+  check("overlapping another item falls back to one axis", () => {
+    // side-table (1.5x1.5ft) moves diagonally from (0,2) onto a sofa
+    // (7x3ft) centred at (-2,-3): the full move overlaps the sofa, the
+    // x-only candidate (-2,2) clears it (z stays out of the sofa's
+    // [-4.5,-1.5] span), and the z-only candidate (0,-3) does NOT clear it
+    // (x stays inside the sofa's [-5.5,1.5] span) — a genuinely
+    // axis-discriminating fixture. (A fromX equal to the proposed x, as in
+    // an earlier draft of this fixture, makes the "diagonal" move and the
+    // "x-only" move identical and proves nothing about axis fallback.)
+    const r = resolvePlacement(
+      { kind: "side-table", rotation: 0, x: -2, z: -3, fromX: 0, fromZ: 2 },
+      [{ kind: "sofa", x: -2, z: -3, rotation: 0 }],
+      room,
+      farCamera,
+    );
+    eq(r, { x: -2, z: 2 }, "x accepted at the proposed value, z held at the last-good value");
+  });
+
+  check("a rug may overlap other furniture", () => {
+    const r = resolvePlacement(
+      { kind: "rug", rotation: 0, x: 0, z: 0, fromX: -2, fromZ: -2 },
+      [{ kind: "coffee-table", x: 0, z: 0, rotation: 0 }],
+      room,
+      farCamera,
+    );
+    eq(r, { x: 0, z: 0 }, "rug is overlap-exempt");
+  });
+
+  check("furniture cannot be placed inside the camera exclusion zone", () => {
+    // A bed (reach 3.25ft) at (2.5, 2.5): fully inside room bounds on its
+    // own (so the room-bounds check never fires and can't be mistaken for
+    // the mechanism under test), but within CAMERA_EXCLUSION_FT (2.6) +
+    // reach (3.25) = 5.85ft of farCamera (distance ~3.88ft). Both axis
+    // fallbacks — (2.5, 0) at ~5.69ft and (1, 2.5) at ~5.19ft from the
+    // camera — are also inside that 5.85ft disk, so all three candidates
+    // are refused purely by the exclusion rule and the position holds at
+    // (1, 0).
+    const r = resolvePlacement(
+      { kind: "bed", rotation: 0, x: 2.5, z: 2.5, fromX: 1, fromZ: 0 },
+      [],
+      room,
+      farCamera,
+    );
+    eq(r, { x: 1, z: 0 }, "refused within the camera exclusion disk on every candidate axis");
+  });
+
+  check("rotation widens the footprint box", () => {
+    const flat = footprintAabb("bed", 0, 0, 0);
+    const turned = footprintAabb("bed", 0, 0, Math.PI / 2);
+    assert(
+      Math.abs(flat.maxX - flat.minX - (turned.maxZ - turned.minZ)) < 1e-6,
+      "a 90-degree turn should swap the extents",
+    );
   });
 
   const failed = results.filter((r) => !r.ok);
