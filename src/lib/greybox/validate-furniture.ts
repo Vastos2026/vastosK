@@ -69,6 +69,23 @@ export interface PlacementInput {
  * The nearest legal position to `proposed`. Tries the full move, then each
  * axis alone, then holds. Axis fallback is what makes dragging along a wall
  * past a sofa feel like sliding rather than sticking.
+ *
+ * PRECONDITION — read before wiring this into a caller (Task 14/15): the
+ * first three candidates below are each re-validated by `legal()` (room
+ * bounds, camera exclusion, overlap), but the LAST resort — `{ x: fromX,
+ * z: fromZ }` at the bottom — is returned completely unconditionally, with
+ * no check of its own. This function therefore requires `input.fromX`/
+ * `input.fromZ` to already be a legal position: either a value THIS
+ * function previously returned, or a position otherwise confirmed legal
+ * before the first call (e.g. Task 15's `firstFreeSlot` for an initial
+ * spawn). It has no history and no way to verify that on its own.
+ *
+ * If a caller ever breaks that invariant — seeds `fromX`/`fromZ` from an
+ * unchecked spawn point, or carries forward a position that was legal
+ * before the room was resized or the camera moved (an openings edit can
+ * move the locked camera) — this function will hand that illegal position
+ * straight back with no error, no warning, and nothing in its return value
+ * to signal the problem.
  */
 export function resolvePlacement(
   input: PlacementInput,

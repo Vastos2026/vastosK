@@ -476,9 +476,19 @@ export async function GET() {
     // x-only candidate (-2,2) clears it (z stays out of the sofa's
     // [-4.5,-1.5] span), and the z-only candidate (0,-3) does NOT clear it
     // (x stays inside the sofa's [-5.5,1.5] span) — a genuinely
-    // axis-discriminating fixture. (A fromX equal to the proposed x, as in
-    // an earlier draft of this fixture, makes the "diagonal" move and the
-    // "x-only" move identical and proves nothing about axis fallback.)
+    // axis-discriminating fixture.
+    //
+    // An earlier draft had fromX equal to the proposed x (both 3). That
+    // collapses candidate 3 (legal(fromX, z), the z-only move) into
+    // candidate 1 (legal(x, z), the full move) — both evaluate legal(3,3) —
+    // which is already a real defect. But the fixture-killing defect is
+    // that it also makes candidate 2's RESULT ({x: input.x, z: input.fromZ}
+    // = {3,-2}) numerically identical to the unconditional final
+    // fallback's result ({x: fromX, z: fromZ} = {3,-2}), since
+    // input.x === fromX. So the old `assert(r.z === -2)` would have passed
+    // even with the entire axis-fallback mechanism deleted and the
+    // function falling straight through to the trivial hold — it could
+    // not distinguish "axis fallback works" from "axis fallback is gone."
     const r = resolvePlacement(
       { kind: "side-table", rotation: 0, x: -2, z: -3, fromX: 0, fromZ: 2 },
       [{ kind: "sofa", x: -2, z: -3, rotation: 0 }],
