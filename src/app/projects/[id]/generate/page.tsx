@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { RetryImg } from "@/components/ui/retry-img";
 import { generateRoomImage } from "@/lib/design-plan-client";
-import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
+import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
 import { describeFurnitureForPrompt } from "@/lib/greybox/furniture-layout";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
@@ -78,20 +78,23 @@ export default function GeneratePage() {
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
     try {
-      // Renders + uploads a fresh greybox only the first time; a room that
-      // already has one (from an earlier generation of the SAME room) reuses
-      // its stored key, so "Generate More" doesn't re-render on every call.
-      // A room never placed in the Plan Editor (no `shape`) resolves to
-      // undefined here, falling back to the text-only openings clause
-      // exactly as before this feature existed.
-      const greyboxKey = await ensureGreyboxKey(id, room).catch((e) => {
+      // Renders + uploads a fresh greybox only when the room's content hash
+      // has changed since the last cached one (see ensure-greybox-key.ts), so
+      // "Generate More" doesn't re-render on every call but still picks up an
+      // edited door/window from the Plan editor. Falling back to the
+      // text-only openings clause now only happens if the render/upload call
+      // itself fails (caught below) — a room never placed in the Plan editor
+      // still gets a real greybox, with seeded opening positions and the
+      // layout default box size when its own dimensions are unknown.
+      const gb = await ensureGreybox(id, room).catch((e) => {
         console.warn(
           `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
           e instanceof Error ? e.message : e,
         );
         return undefined;
       });
-      if (greyboxKey && greyboxKey !== room.greyboxKey) updateRoom(id, room.id, { greyboxKey });
+      if (gb) updateRoom(id, room.id, gb);
+      const greyboxKey = gb?.greyboxKey;
 
       // Omit size entirely when a dimension is still missing, rather than
       // sending a literal "undefined x undefined ft" into the render

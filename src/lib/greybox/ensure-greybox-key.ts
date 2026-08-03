@@ -1,53 +1,68 @@
 "use client";
 
-import { renderGreyboxToDataUri } from "./render-to-data-uri";
+import { renderGreyboxBundle } from "./render-mask";
+import { greyboxHashFor } from "./greybox-hash";
 import { toWorldFurniture } from "./furniture-layout";
+import { seedPlacedOpenings } from "@/lib/plan-editor/geometry";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import type { Room } from "@/lib/types";
 
-/**
- * Returns this room's greybox reference storage key, rendering + uploading
- * one now if it doesn't have one yet. A room with no `shape` (never placed
- * in the Plan Editor) has nothing to render and returns undefined, so the
- * caller falls back to the text-only openings clause exactly as it did
- * before this feature existed.
- *
- * Deliberately does NOT write the key onto the store itself — that's the
- * caller's job (it already has the store in scope at every call site), so
- * this stays a plain, easily-followed I/O function: render, upload, return.
- */
-export async function ensureGreyboxKey(projectId: string, room: Room): Promise<string | undefined> {
-  if (room.greyboxKey) return room.greyboxKey;
-  if (!room.shape) return undefined;
+export type GreyboxResult = Pick<Room, "greyboxKey" | "greyboxMaskKey" | "greyboxHash" | "greyboxLedger">;
 
-  // `room.shape` is a rect NORMALISED TO THE PLAN IMAGE, not feet — its
-  // absolute magnitude (e.g. 0.2) carries no real-world size, only the
-  // positions/spans of openings placed on it (already unitless 0..1
-  // fractions of each wall, unaffected by this). The greybox's ceiling
-  // height and camera eye height are fixed FEET-scale constants
-  // (build-scene.ts/camera.ts), so the room footprint handed to it must be
-  // feet-scale too — layoutSize gives the room's real printed/entered
-  // dimensions when known, or the same flat default every other geometry
-  // fallback in this app already uses when they aren't. layoutSize's own
-  // doc comment warns not to use it to build an AI prompt or display a size
-  // as fact — this doesn't: the greybox's contract is camera + openings
-  // only (see the design spec), never a claim about the room's real size,
-  // so an internal rendering proportion is a deliberate narrow exception,
-  // not an oversight of that warning.
+/**
+ * Returns this room's greybox reference, rendering and uploading a fresh one
+ * whenever the cached hash no longer matches the room's current geometry.
+ *
+ * The hash check replaces a plain `if (room.greyboxKey) return it` short
+ * circuit. Nothing in src/ ever cleared greyboxKey, so editing a door in the
+ * Plan editor after generating silently reused the stale reference image.
+ *
+ * Deliberately does NOT write to the store — that's the caller's job (every
+ * call site already has the store in scope), so this stays a plain, easily
+ * followed I/O function: render, upload, return.
+ */
+export async function ensureGreybox(projectId: string, room: Room): Promise<GreyboxResult | undefined> {
+  const openings = room.placedOpenings?.length
+    ? room.placedOpenings
+    : // A manually-entered room never passed through the Plan editor, so it has
+      // door/window counts per side but no positions. Spreading them evenly along
+      // their walls gives real opening conditioning instead of falling back to
+      // text-only. room.shape is NOT required: it is the rectangle on the plan
+      // IMAGE, which the greybox never reads.
+      seedPlacedOpenings(room.openings ?? [], room.width, room.height);
+
+  const hash = greyboxHashFor({ ...room, placedOpenings: openings });
+  if (room.greyboxKey && room.greyboxHash === hash) {
+    return {
+      greyboxKey: room.greyboxKey,
+      greyboxMaskKey: room.greyboxMaskKey,
+      greyboxHash: room.greyboxHash,
+      greyboxLedger: room.greyboxLedger,
+    };
+  }
+
+  // See layoutSize's own doc comment: it must not be used to build an AI
+  // prompt or display a size as fact. This doesn't — the greybox's contract is
+  // camera + openings only, never a claim about the room's real size — so an
+  // internal rendering proportion is a deliberate narrow exception.
   const { width, height } = layoutSize(room);
-  const dataUri = renderGreyboxToDataUri({
+  const { dataUri, maskDataUri, projected } = renderGreyboxBundle({
     width,
     depth: height,
-    openings: room.placedOpenings ?? [],
+    openings,
     furniture: toWorldFurniture(room.furniture ?? [], width, height),
   });
 
   const res = await fetch("/api/upload-greybox", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, dataUri }),
+    body: JSON.stringify({ projectId, dataUri, maskDataUri, projected }),
   });
   if (!res.ok) throw new Error(`Greybox upload failed (${res.status})`);
-  const { key } = (await res.json()) as { key: string };
-  return key;
+  const { key, maskKey, ledger } = (await res.json()) as {
+    key: string;
+    maskKey: string;
+    ledger: { doors: number; windows: number };
+  };
+  return { greyboxKey: key, greyboxMaskKey: maskKey, greyboxHash: hash, greyboxLedger: ledger };
 }

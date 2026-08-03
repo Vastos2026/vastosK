@@ -7,7 +7,7 @@ import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnitureEditorCanvas, footprintClampMargins } from "@/components/project/furniture-editor-canvas";
 import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
 import { defaultFurnitureFor, describeFurnitureForPrompt, toWorldFurniture } from "@/lib/greybox/furniture-layout";
-import { renderGreyboxToDataUri } from "@/lib/greybox/render-to-data-uri";
+import { renderGreyboxBundle } from "@/lib/greybox/render-mask";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { generateRoomImage } from "@/lib/design-plan-client";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
@@ -151,7 +151,7 @@ function FurnishContent({
    * image.
    */
   const saveArrangement = async (): Promise<string> => {
-    const dataUri = renderGreyboxToDataUri({
+    const { dataUri, maskDataUri, projected } = renderGreyboxBundle({
       width,
       depth,
       openings,
@@ -160,11 +160,15 @@ function FurnishContent({
     const res = await fetch("/api/upload-greybox", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, dataUri }),
+      body: JSON.stringify({ projectId, dataUri, maskDataUri, projected }),
     });
     if (!res.ok) throw new Error(`Greybox upload failed (${res.status})`);
-    const { key } = (await res.json()) as { key: string };
-    updateRoom(projectId, room.id, { furniture, greyboxKey: key });
+    const { key, maskKey, ledger } = (await res.json()) as {
+      key: string;
+      maskKey: string;
+      ledger: { doors: number; windows: number };
+    };
+    updateRoom(projectId, room.id, { furniture, greyboxKey: key, greyboxMaskKey: maskKey, greyboxLedger: ledger });
     return key;
   };
 

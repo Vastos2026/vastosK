@@ -7,7 +7,7 @@ import { useProject, useVasto } from "@/lib/store";
 import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
-import { ensureGreyboxKey } from "@/lib/greybox/ensure-greybox-key";
+import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
 import { describeFurnitureForPrompt } from "@/lib/greybox/furniture-layout";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
@@ -156,16 +156,15 @@ export default function DesignPage() {
         // to finish before the actual generation call for that one room.
         (async () => {
           try {
-            const greyboxKey = await ensureGreyboxKey(id, room).catch((e) => {
+            const gb = await ensureGreybox(id, room).catch((e) => {
               console.warn(
                 `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
                 e instanceof Error ? e.message : e,
               );
               return undefined;
             });
-            if (greyboxKey && greyboxKey !== room.greyboxKey) {
-              useVasto.getState().updateRoom(id, room.id, { greyboxKey });
-            }
+            if (gb) useVasto.getState().updateRoom(id, room.id, gb);
+            const greyboxKey = gb?.greyboxKey;
             const gen = await generateRoomImage({
               projectId: id,
               universalInput,

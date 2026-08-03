@@ -26,7 +26,7 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
     plan: (project?.floorPlan?.rooms ?? []).some((r) => !!r.shape),
     review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
     // furnish is done when at least one room has furniture. greyboxKey is not the signal
-    // because it's set by the Generate flow as a side effect (via ensureGreyboxKey),
+    // because it's set by the Generate flow as a side effect (via ensureGreybox),
     // regardless of whether anyone actually furnished the room.
     furnish: (project?.floorPlan?.rooms ?? []).some((r) => (r.furniture?.length ?? 0) > 0),
     design: !!project?.designSpec,
