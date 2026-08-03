@@ -13,12 +13,22 @@ const DESIGN_SPEC_SCHEMA = {
     furnitureLanguage: { type: "STRING" },
     cameraGuidelines: { type: "STRING" },
     negativeConstraints: { type: "STRING" },
+    compactBrief: { type: "STRING" },
+    materialTokens: {
+      type: "OBJECT",
+      properties: { wood: { type: "STRING" }, soft: { type: "STRING" }, stone: { type: "STRING" } },
+      required: ["wood", "soft", "stone"],
+    },
     roomGuidelines: {
       type: "ARRAY",
       items: {
         type: "OBJECT",
-        properties: { room: { type: "STRING" }, guidance: { type: "STRING" } },
-        required: ["room", "guidance"],
+        properties: {
+          room: { type: "STRING" },
+          guidance: { type: "STRING" },
+          compactGuidance: { type: "STRING" },
+        },
+        required: ["room", "guidance", "compactGuidance"],
       },
     },
   },
@@ -30,6 +40,8 @@ const DESIGN_SPEC_SCHEMA = {
     "furnitureLanguage",
     "cameraGuidelines",
     "negativeConstraints",
+    "compactBrief",
+    "materialTokens",
     "roomGuidelines",
   ],
 } as const;
@@ -64,8 +76,35 @@ finishes); the lighting strategy; the colour strategy (how the chosen colour pal
 furniture language (style/era/materials of furniture across the space); camera guidelines for how each \
 room should be framed and shot; negative constraints (what must never appear); and one guidance entry \
 per room in the brief (covering that room's furniture, layout and focal point), for EVERY room named: \
-${roomNames}.`;
+${roomNames}.
+
+Additionally return, for a strict character budget in a downstream image prompt:
+- compactBrief: AT MOST 240 characters. One or two sentences naming the palette, the two or three \
+key materials, and the quality of light. No preamble, no room names, no furniture.
+- materialTokens: three short noun phrases, at most three words each, naming the specific dominant \
+wood ("walnut", "light oak"), the dominant soft/upholstery material ("cream boucle", "charcoal linen") \
+and the dominant stone ("carrara marble", "honed granite") for this project.
+- compactGuidance, per room: AT MOST 120 characters. The single most important thing about THAT \
+room's materials, colour or light. No furniture positions — a separate reference image already \
+fixes those.`;
 
   const prompt = await withSystemPreamble(body);
-  return generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx);
+  const spec = await generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx);
+  // The prompt asks for these limits; a hard clamp is what guarantees them.
+  // buildRoomPrompt's 1800-char assert throws and fails the job, so an
+  // overlong brief must not be able to reach it.
+  return {
+    ...spec,
+    compactBrief: clamp(spec.compactBrief, 240),
+    roomGuidelines: spec.roomGuidelines.map((g) => ({ ...g, compactGuidance: clamp(g.compactGuidance, 120) })),
+  };
+}
+
+/** Trims to `max` chars at the last sentence or word boundary, so a clamp never cuts mid-word. */
+export function clamp(s: string | undefined, max: number): string {
+  const t = (s ?? "").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(" "));
+  return (stop > max * 0.6 ? cut.slice(0, stop) : cut).trim().replace(/[,;]$/, "");
 }

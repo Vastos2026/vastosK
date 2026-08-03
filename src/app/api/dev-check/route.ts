@@ -26,6 +26,7 @@ import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
+import { clamp } from "@/lib/ai/prompting/design-planning";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -582,6 +583,47 @@ export async function GET() {
     );
     const pair = buildFurnitureMaterials([f("1", "nightstand"), f("2", "nightstand")], tokens);
     assert(pair.includes("walnut nightstands"), `expected the plural phrase for two nightstands, got: ${pair}`);
+  });
+
+  // ---- clamp (design-planning.ts) ----
+  check("clamp: a string already under the limit is trimmed but otherwise unchanged", () => {
+    eq(clamp("  Hello world  ", 50), "Hello world", "surrounding whitespace trimmed, content untouched");
+  });
+
+  check("clamp: an overlong string is cut at a word boundary, never mid-word", () => {
+    // 20 space-joined "wordN" tokens; max=15 lands inside "word2" (the third
+    // token), so a correct clamp backs up to the last full token ("word1")
+    // instead of returning the partial "...wor" fragment.
+    const s = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
+    const out = clamp(s, 15);
+    eq(out, "word0 word1", "cut lands after the last complete word, dropping the partial one");
+    assert(out.length <= 15, `over budget: ${out.length}`);
+  });
+
+  check("clamp: falls back to a hard cut when the only boundary is before 60% of max", () => {
+    // Single space at index 2, then an unbroken 40-char run with no further
+    // boundary. At max=20 the only candidate boundary (that space) sits at
+    // stop=2, well under max*0.6=12 — so the `stop > max * 0.6` guard must
+    // reject it and fall back to the raw 20-char hard cut ("ab " + 17 x's).
+    // Without the guard, clamp would instead cut at that early boundary and
+    // return the near-useless "ab" (2 chars) — a very different, much
+    // shorter result, so this fixture genuinely distinguishes the two paths.
+    const s = "ab " + "x".repeat(40);
+    const out = clamp(s, 20);
+    eq(out, "ab " + "x".repeat(17), "hard cut used, not the early word boundary");
+    eq(out.length, 20, "uses the full budget rather than backing up to the early boundary");
+  });
+
+  check("clamp: a trailing comma or semicolon left by the cut is stripped", () => {
+    // max=8 lands the word-boundary cut exactly on "Alpha," (comma included);
+    // clamp must strip the trailing punctuation the boundary cut leaves behind.
+    const out = clamp("Alpha, beta gamma delta epsilon zeta eta theta iota kappa", 8);
+    eq(out, "Alpha", "trailing comma stripped");
+  });
+
+  check("clamp: undefined or empty input returns an empty string", () => {
+    eq(clamp(undefined, 240), "", "undefined input");
+    eq(clamp("", 240), "", "empty input");
   });
 
   const failed = results.filter((r) => !r.ok);

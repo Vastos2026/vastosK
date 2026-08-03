@@ -9,6 +9,14 @@
  * provider call.
  */
 
+// Type-only: MaterialTokens is a plain `{wood,soft,stone}` shape declared in
+// furniture-layout.ts, but that module transitively imports
+// furniture-catalogue.ts, which imports three.js and builds meshes. This
+// prompting-layer module is server-side and must not acquire a runtime
+// three.js dependency — `import type` is erased at compile time, so only the
+// type survives here, never the module's runtime code.
+import type { MaterialTokens } from "@/lib/greybox/furniture-layout";
+
 export interface UniversalInputOpening {
   type: "door" | "window";
   side: "north" | "south" | "east" | "west";
@@ -72,6 +80,12 @@ export interface RoomGuideline {
   room: string;
   /** dense guidance for this room: furniture, layout, focal point, materials */
   guidance: string;
+  /**
+   * Section 4.4: the image prompt's per-room share is small, and `guidance`
+   * routinely runs several hundred characters. This is the same intent
+   * compressed to what fits.
+   */
+  compactGuidance: string;
 }
 
 /**
@@ -82,6 +96,9 @@ export interface RoomGuideline {
  * "generate more", not regenerated per room.
  */
 export interface DesignSpecification {
+  // Verbose fields — what the Design page shows the user and what makes a
+  // spec auditable. Deliberately NO LONGER pasted into the image prompt:
+  // together they exceed the whole 1800-char cap on their own.
   designLanguage: string;
   materialPalette: string;
   lightingStrategy: string;
@@ -89,5 +106,9 @@ export interface DesignSpecification {
   furnitureLanguage: string;
   cameraGuidelines: string;
   negativeConstraints: string;
+  /** Section 4.4's 240-char room brief: palette, key materials, light quality. */
+  compactBrief: string;
+  /** Interpolated into furniture material phrases (furniture-layout.ts). */
+  materialTokens: MaterialTokens;
   roomGuidelines: RoomGuideline[];
 }
