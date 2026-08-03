@@ -4,6 +4,15 @@
  * GreyboxPreview) and returns its storage key, which the caller saves onto
  * the room (Room.greyboxKey) and later passes to /api/generate-room-image.
  *
+ * Also stores the section 7.1 Pass B mask rendered through the same camera
+ * (see render-mask.ts) and derives a `GreyboxLedger` (door/window counts)
+ * from it via `countOpenings` — the mask, not `room.placedOpenings`, is
+ * ground truth for what the locked camera can actually see. The ledger
+ * returned here is for immediate UI display only: /api/generate-room-image
+ * (Task 13) re-derives its own ledger from the stored mask rather than
+ * trusting this response, so a stale or tampered client value can't leak
+ * into the prompt.
+ *
  * No AI/provider cost here — this is a plain storage PUT — so no `checkUsage`,
  * just auth + a modest rate limit against abuse.
  */
@@ -12,17 +21,36 @@ import { randomUUID } from "node:crypto";
 import { putObject } from "@/lib/pipeline/storage";
 import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject } from "@/lib/supabase/projects";
+import { countOpenings } from "@/lib/greybox/count-openings";
+import type { ProjectedOpening } from "@/lib/greybox/render-mask";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
+interface Body {
+  projectId?: string;
+  dataUri?: string;
+  maskDataUri?: string;
+  projected?: ProjectedOpening[];
+}
+
+const PNG_RE = /^data:image\/png;base64,(.+)$/;
+
+function decodePng(dataUri: string | undefined, label: string): Buffer | Response {
+  const m = PNG_RE.exec(dataUri ?? "");
+  if (!m) return Response.json({ error: `${label} must be a base64 image/png data URI` }, { status: 400 });
+  const bytes = Buffer.from(m[1], "base64");
+  if (bytes.length > MAX_BYTES) return Response.json({ error: `${label} too large` }, { status: 400 });
+  return bytes;
+}
+
 export async function POST(request: Request) {
   const guard = await assertAllowed(request, { rateLimit: { key: "upload-greybox", limit: 60, windowMs: 60_000 } });
   if (guard instanceof Response) return guard;
 
-  let body: { projectId?: string; dataUri?: string };
+  let body: Body;
   try {
     body = await request.json();
   } catch {
@@ -33,12 +61,20 @@ export async function POST(request: Request) {
   const owned = await requireOwnedProject(guard.id, body.projectId);
   if (owned instanceof Response) return owned;
 
-  const m = /^data:image\/png;base64,(.+)$/.exec(body.dataUri ?? "");
-  if (!m) return Response.json({ error: "dataUri must be a base64 image/png data URI" }, { status: 400 });
-  const bytes = Buffer.from(m[1], "base64");
-  if (bytes.length > MAX_BYTES) return Response.json({ error: "Reference image too large" }, { status: 400 });
+  const image = decodePng(body.dataUri, "dataUri");
+  if (image instanceof Response) return image;
+  const maskBytes = decodePng(body.maskDataUri, "maskDataUri");
+  if (maskBytes instanceof Response) return maskBytes;
 
   const key = `renders/${body.projectId}/greybox/${randomUUID()}.png`;
-  await putObject(key, bytes, "image/png");
-  return Response.json({ key });
+  const maskKey = `${key}-mask`;
+  await putObject(key, image, "image/png");
+  await putObject(maskKey, maskBytes, "image/png");
+
+  // Derived here because the server already holds the bytes. /api/generate-room-image
+  // re-derives from the stored mask rather than trusting a client-sent count,
+  // so this value is for immediate UI display only.
+  const ledger = await countOpenings(maskBytes, body.projected ?? []);
+
+  return Response.json({ key, maskKey, ledger });
 }

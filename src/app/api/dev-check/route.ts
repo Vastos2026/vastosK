@@ -21,6 +21,8 @@ import { assertHistogram, GreyboxHistogramError } from "@/lib/greybox/histogram"
 import { greyboxCamera, projectOpenings } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "@/lib/greybox/dimensions";
 import type { GreyboxRoomSpec } from "@/lib/greybox/types";
+import sharp from "sharp";
+import { countOpenings } from "@/lib/greybox/count-openings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -157,6 +159,15 @@ export async function GET() {
   function check(name: string, fn: () => void) {
     try {
       fn();
+      results.push({ name, ok: true });
+    } catch (e) {
+      results.push({ name, ok: false, detail: (e as Error).message });
+    }
+  }
+
+  async function checkAsync(name: string, fn: () => Promise<void>) {
+    try {
+      await fn();
       results.push({ name, ok: true });
     } catch (e) {
       results.push({ name, ok: false, detail: (e as Error).message });
@@ -337,6 +348,48 @@ export async function GET() {
       spec.openings.map((o) => o.id),
       "order preserved",
     );
+  });
+
+  // ---- countOpenings ----
+  const mask = async (w: number, h: number, rects: [number, number, number, number][]) => {
+    const raw = Buffer.alloc(w * h, 0);
+    for (const [x0, y0, rw, rh] of rects) {
+      for (let y = y0; y < y0 + rh; y++) for (let x = x0; x < x0 + rw; x++) raw[y * w + x] = 255;
+    }
+    return sharp(raw, { raw: { width: w, height: h, channels: 1 } }).png().toBuffer();
+  };
+
+  await checkAsync("counts two separate components as two openings", async () => {
+    const png = await mask(200, 100, [[10, 10, 30, 40], [120, 10, 30, 40]]);
+    const ledger = await countOpenings(png, [
+      { id: "a", type: "door", px: 25, py: 30 },
+      { id: "b", type: "window", px: 135, py: 30 },
+    ]);
+    eq(ledger, { doors: 1, windows: 1 }, "one door, one window");
+  });
+
+  await checkAsync("an off-frame opening is not counted", async () => {
+    const png = await mask(200, 100, [[10, 10, 30, 40]]);
+    const ledger = await countOpenings(png, [
+      { id: "a", type: "window", px: 25, py: 30 },
+      { id: "b", type: "window", px: -1, py: -1 },
+    ]);
+    eq(ledger, { doors: 0, windows: 1 }, "behind-camera opening dropped");
+  });
+
+  await checkAsync("an occluded opening (no white pixels) is not counted", async () => {
+    const png = await mask(200, 100, []);
+    const ledger = await countOpenings(png, [{ id: "a", type: "door", px: 25, py: 30 }]);
+    eq(ledger, { doors: 0, windows: 0 }, "fully occluded opening dropped");
+  });
+
+  await checkAsync("antialiasing crumbs below the area floor are ignored", async () => {
+    const png = await mask(200, 100, [[10, 10, 30, 40], [180, 90, 3, 3]]);
+    const ledger = await countOpenings(png, [
+      { id: "a", type: "window", px: 25, py: 30 },
+      { id: "b", type: "window", px: 181, py: 91 },
+    ]);
+    eq(ledger, { doors: 0, windows: 1 }, "9px component dropped");
   });
 
   const failed = results.filter((r) => !r.ok);
