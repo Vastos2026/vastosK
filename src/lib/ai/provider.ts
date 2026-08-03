@@ -638,7 +638,22 @@ async function generateImageWithGemini(
 export async function generateImage(
   prompt: string,
   ctx?: CallContext,
-  opts?: { referenceImages?: string[]; referenceImageUrls?: string[] },
+  opts?: {
+    referenceImages?: string[];
+    referenceImageUrls?: string[];
+    /**
+     * Task 13: explicit output dimensions, overriding the FLUX call's own
+     * resolution-tier default. The caller (generate-room-image/route.ts)
+     * passes the greybox render's own W/H whenever a greybox reference is
+     * attached, so the generation aspect exactly matches the camera the
+     * reference was rendered from — only generateImageWithRunware reads
+     * these; the Nano Banana/direct-Google fallback tiers already match a
+     * reference's aspect on their own (see runware-client.ts's
+     * generateImageWithRunwareGemini doc comment) and take no width/height.
+     */
+    width?: number;
+    height?: number;
+  },
 ): Promise<GeneratedImage> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const primary = await resolveProvider("image_gen", process.env.IMAGE_PROVIDER);
@@ -694,7 +709,7 @@ export async function generateImage(
           model: slugs.imageGen.runware,
           provider: "runware",
           run: async () => {
-            const out = await generateImageWithRunware(prompt, refs);
+            const out = await generateImageWithRunware(prompt, refs, opts?.width, opts?.height);
             setCost(out.costUsd);
             return out;
           },

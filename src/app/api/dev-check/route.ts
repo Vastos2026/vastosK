@@ -29,6 +29,9 @@ import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
 import { clamp } from "@/lib/ai/prompting/design-planning";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
+// Pure aspect-tolerance guard (Task 13, section 3.4) — no network call, safe
+// to import here even though the rest of runware-client.ts does real HTTP.
+import { assertGenerationAspect } from "@/lib/render/runware-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -790,6 +793,67 @@ export async function GET() {
     // must instead stop at the sentence, WITH its period.
     const out = clamp("Warm walnut and stone. Soft light everywhere across the room", 30);
     eq(out, "Warm walnut and stone.", "cuts at the sentence, period included, not the later word boundary");
+  });
+
+  // ---- assertGenerationAspect (Task 13, section 3.4: the FLUX camera-match guard) ----
+  check("assertGenerationAspect: the greybox's own 1376x768 passes", () => {
+    assertGenerationAspect(GREYBOX_RENDER_W, GREYBOX_RENDER_H); // must not throw
+  });
+
+  check(
+    "assertGenerationAspect: 1280x704 (IMAGE_DIMENSIONS.sd — the real, currently-shipping mismatch) throws, naming both aspects",
+    () => {
+      let threw = false;
+      let message = "";
+      try {
+        assertGenerationAspect(1280, 704);
+      } catch (e) {
+        threw = true;
+        message = (e as Error).message;
+      }
+      assert(threw, "expected assertGenerationAspect(1280, 704) to throw — this is the mismatch the guard exists to catch");
+      assert(message.includes("1280x704"), `error must name the offending dimensions, got: ${message}`);
+      assert(
+        message.includes(GREYBOX_ASPECT.toFixed(4)),
+        `error must name the greybox aspect a human can compare against, got: ${message}`,
+      );
+    },
+  );
+
+  check(
+    "assertGenerationAspect: a pair inside the 0.002 tolerance but not exactly equal passes (proves this is a tolerance check, not an equality check)",
+    () => {
+      // 1380x770 is deliberately NOT 1376x768 (nor any integer multiple of
+      // it) but its ratio (1.79221) sits well inside the 0.002 tolerance
+      // band around GREYBOX_ASPECT (1.79167, drift ~0.00054). A stricter
+      // `width / height === GREYBOX_ASPECT` equality check would reject this
+      // exact pair (confirmed live: 1380/770 !== 1376/768 as floats) — so a
+      // fixture that passed under BOTH an equality check and this tolerance
+      // check would prove nothing about which one is actually implemented.
+      const width = 1380;
+      const height = 770;
+      assert(
+        width / height !== GREYBOX_ASPECT,
+        "fixture must not be an exact match to GREYBOX_ASPECT, or this proves nothing about tolerance vs equality",
+      );
+      const drift = Math.abs(width / height - GREYBOX_ASPECT);
+      assert(drift > 0 && drift <= 0.002, `fixture must actually sit inside tolerance, drift was ${drift}`);
+      assertGenerationAspect(width, height); // must not throw
+    },
+  );
+
+  check("GREYBOX_ASPECT is derived from GREYBOX_RENDER_W/GREYBOX_RENDER_H, not a separately hardcoded literal", () => {
+    // If GREYBOX_ASPECT were ever replaced with a hardcoded `1.7917` (the
+    // rounded value someone might reasonably hand-copy), this fails: 1376/768
+    // is 1.7916666666666667 in floating point, not 1.7917 — proving the
+    // documented "change the two W/H numbers and nothing else moves" claim
+    // actually holds, rather than silently relying on a second copy agreeing
+    // by coincidence.
+    eq(
+      GREYBOX_ASPECT,
+      GREYBOX_RENDER_W / GREYBOX_RENDER_H,
+      "GREYBOX_ASPECT must equal a live division of the two exported dimensions",
+    );
   });
 
   const failed = results.filter((r) => !r.ok);

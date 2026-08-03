@@ -23,6 +23,10 @@ import { getObject, putObject } from "@/lib/pipeline/storage";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject } from "@/lib/supabase/projects";
+import { countOpenings } from "@/lib/greybox/count-openings";
+import type { ProjectedOpening } from "@/lib/greybox/render-mask";
+import { GREYBOX_RENDER_W, GREYBOX_RENDER_H } from "@/lib/greybox/dimensions";
+import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +44,12 @@ interface Body {
   designSpec?: DesignSpecification;
   /** Room.greyboxKey — this room's rendered perspective reference, if the user placed it in the Plan Editor. */
   greyboxKey?: string;
+  /** Room.greyboxMaskKey — the Pass B opening mask stored beside greyboxKey (see upload-greybox/route.ts), used to re-derive the ledger server-side rather than trusting a client-sent count. */
+  greyboxMaskKey?: string;
+  /** Each opening's pixel projected through the locked camera (camera.ts's projectOpenings) — types each mask component when re-deriving the ledger from greyboxMaskKey. */
+  projected?: ProjectedOpening[];
+  /** Phase B furniture proxies placed in this room's greybox, if any — see furniture-layout.ts. */
+  furniture?: PlacedFurniture[];
 }
 
 async function loadGreyboxDataUri(key: string): Promise<string> {
@@ -62,7 +72,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, universalInput, room, designSpec, greyboxKey } = body;
+  const { projectId, universalInput, room, designSpec, greyboxKey, greyboxMaskKey, projected, furniture } = body;
   if (!projectId || !universalInput || !room || !designSpec) {
     return Response.json(
       { error: "projectId, universalInput, room and designSpec are required" },
@@ -85,10 +95,35 @@ export async function POST(request: Request) {
   if (owned instanceof Response) return owned;
 
   try {
-    const prompt = await buildRoomPrompt(universalInput, room, designSpec, { hasGreybox: !!greyboxKey });
+    // Re-derived from the stored mask rather than trusting a client-sent
+    // count: section 4.1 requires the prompt to be a pure function of
+    // persisted artifacts. One getObject plus one sharp decode, a few ms.
+    let ledger: GreyboxLedger | undefined;
+    if (greyboxKey && greyboxMaskKey) {
+      ledger = await countOpenings(await getObject(greyboxMaskKey), projected ?? []);
+    }
+
+    const prompt = await buildRoomPrompt(universalInput, room, designSpec, {
+      hasGreybox: !!greyboxKey,
+      ledger,
+      furniture,
+    });
     const referenceImages = greyboxKey ? [await loadGreyboxDataUri(greyboxKey)] : undefined;
     const referenceImageUrls = greyboxKey ? [`/api/render?key=${encodeURIComponent(greyboxKey)}`] : undefined;
-    const image = await generateImage(prompt, { projectId, userId: guard.id }, { referenceImages, referenceImageUrls });
+    const image = await generateImage(
+      prompt,
+      { projectId, userId: guard.id },
+      {
+        referenceImages,
+        referenceImageUrls,
+        // Section 3.4: only lock dimensions to the greybox's own W/H when
+        // there's actually a reference to match — otherwise this would pin
+        // every plain text-to-image generation to the greybox aspect and
+        // silently override the RUNWARE_IMAGE_RESOLUTION sd/hd toggle for
+        // rooms that never went through the Plan Editor at all.
+        ...(greyboxKey ? { width: GREYBOX_RENDER_W, height: GREYBOX_RENDER_H } : {}),
+      },
+    );
     const ext = image.contentType === "image/jpeg" ? "jpg" : "png";
     const key = `renders/${projectId}/${randomUUID()}.${ext}`;
     await putObject(key, image.bytes, image.contentType);

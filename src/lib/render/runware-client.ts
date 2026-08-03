@@ -70,6 +70,7 @@
 import { randomUUID } from "node:crypto";
 import { sleep, ProviderError } from "@/lib/ai/errors";
 import { planCropEdit, compositeCrop, parseDataUri } from "@/lib/render/gemini-image";
+import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import type { DesignStyle } from "@/lib/types";
 
 const API_BASE = "https://api.runware.ai/v1";
@@ -124,6 +125,33 @@ const GEMINI_IMAGE_DIMENSIONS = { sd: { width: 1376, height: 768 }, hd: { width:
 
 export function runwareConfigured(): boolean {
   return !!process.env.RUNWARE_API_KEY?.trim();
+}
+
+/** Section 3.4: how far the generation aspect may drift from the greybox render's aspect before FLUX would visibly letterbox or crop. */
+const ASPECT_TOLERANCE = 0.002;
+
+/**
+ * Section 3.4: the generation aspect must equal the greybox render's aspect
+ * (within a small tolerance — the two are computed from independent
+ * width/height pairs, so exact float equality isn't the right test) whenever
+ * a reference image is attached. Any real mismatch and FLUX letterboxes or
+ * crops the output, which destroys the camera match the whole greybox
+ * pipeline depends on.
+ *
+ * Pure and exported (rather than inlined in generateImageWithRunware) so
+ * dev-check can exercise it directly without a network call — the guard is
+ * only worth having if something actually verifies it fires. Callers must
+ * only invoke this when reference images are present: plain text-to-image
+ * generation has no camera to match and must not be constrained by it.
+ */
+export function assertGenerationAspect(width: number, height: number): void {
+  const drift = Math.abs(width / height - GREYBOX_ASPECT);
+  if (drift > ASPECT_TOLERANCE) {
+    throw new Error(
+      `Generation aspect ${width}x${height} (${(width / height).toFixed(4)}) does not match the greybox aspect ` +
+        `${GREYBOX_ASPECT.toFixed(4)} (tolerance ${ASPECT_TOLERANCE})`,
+    );
+  }
 }
 
 function apiKey(): string {
@@ -244,17 +272,34 @@ async function finishDownload(
  * Text-to-image via FLUX.2 — reference-conditioned (a greybox render) when
  * `referenceImages` is given, plain text-to-image otherwise. Synchronous —
  * Runware returns the imageURL directly.
+ *
+ * `width`/`height` are optional explicit overrides for the resolution-tier
+ * lookup below — Task 13: when a greybox reference is attached, the caller
+ * (provider.ts, threading through from generate-room-image/route.ts) passes
+ * the greybox's own render dimensions so the generation aspect exactly
+ * matches the camera the reference was rendered from. Positional, not an
+ * options object, matching this function's existing (prompt, referenceImages)
+ * shape.
  */
 export async function generateImageWithRunware(
   prompt: string,
   referenceImages?: string[],
+  width?: number,
+  height?: number,
 ): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
-  const { width, height } = IMAGE_DIMENSIONS[resolutionTier()];
+  const dims = width && height ? { width, height } : IMAGE_DIMENSIONS[resolutionTier()];
+  // Only constrained when a reference image is present — see
+  // assertGenerationAspect's own comment: plain text-to-image has no camera
+  // to match and must stay free to use whatever resolution tier is active.
+  if (referenceImages?.length) {
+    assertGenerationAspect(dims.width, dims.height);
+  }
   const bfl = isBflModel(IMAGE_MODEL);
-  // No separate negativePrompt channel on this model (see isBflModel's
-  // comment) — fold the same realism guidance into the positive prompt as an
-  // explicit "avoid" clause instead of silently dropping it.
-  const positivePrompt = bfl ? `${prompt}\n\nAvoid: ${REALISM_NEGATIVE_PROMPT}.` : prompt;
+  // Section 2.4: there is no negativePrompt on bfl:5@1 or bfl:6@1. Writing
+  // exclusions into the POSITIVE prompt supplies the concept with no negation
+  // channel — it makes the excluded thing more likely, not less. Modern
+  // interior-photography priors already exclude people, text and watermarks.
+  const positivePrompt = prompt;
   const [result] = await submit([
     {
       taskType: "imageInference",
@@ -269,8 +314,8 @@ export async function generateImageWithRunware(
       // output there (documented valid range 1-50). CFGScale is left unset
       // to keep Runware's own documented default (4), already reasonable.
       ...(bfl ? {} : { steps: 35 }),
-      width,
-      height,
+      width: dims.width,
+      height: dims.height,
       outputType: "URL",
       outputFormat: "PNG",
       includeCost: true,

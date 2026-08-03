@@ -7,11 +7,18 @@ import { buildGreyboxScene, CEILING_H } from "@/lib/greybox/build-scene";
 import { greyboxCamera } from "@/lib/greybox/camera";
 import { catalogueEntry } from "@/lib/greybox/furniture-catalogue";
 import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
+import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import type { GreyboxOpening } from "@/lib/greybox/types";
 import type { PlacedFurniture } from "@/lib/types";
 
-/** Aspect used only to draw the framing indicator — matches render-to-data-uri.ts's export aspect. */
-const FRAME_ASPECT = 1376 / 768;
+/**
+ * Aspect used only to draw the framing indicator. Was a hand-copied literal
+ * (`1376 / 768`) that would have silently gone stale the moment Task 13's
+ * documented one-line fallback (GREYBOX_RENDER_W/H -> 1280x704) ever landed —
+ * importing the derived constant instead makes dimensions.ts genuinely the
+ * only place these numbers are decided.
+ */
+const FRAME_ASPECT = GREYBOX_ASPECT;
 /** Fallback clamp margin for an item with no catalogue entry (stale/unknown kind). */
 const FALLBACK_CLAMP_MARGIN = 0.05;
 /** Never let a footprint-derived margin exceed this, so min < max always holds even for an item as big as (or bigger than) the room. */
