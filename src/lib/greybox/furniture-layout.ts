@@ -73,8 +73,17 @@ export function buildFurnitureMaterials(
   if (present.size === 0) return "";
 
   let entries = FURNITURE_CATALOGUE.filter((e) => present.has(e.kind));
+  // Use the plural phrase only when this kind's count is >1 AND a plural form
+  // was hand-written for it; otherwise the singular materialPhrase covers
+  // both the one-item and (for entries without a plural) the many-item case.
   const render = (list: typeof entries) =>
-    `The dark massing volumes are furniture: ${joinList(list.map((e) => interpolate(e.materialPhrase, tokens)))}.`;
+    `The dark massing volumes are furniture: ${joinList(
+      list.map((e) => {
+        const count = present.get(e.kind) ?? 0;
+        const phrase = count > 1 && e.materialPhrasePlural ? e.materialPhrasePlural : e.materialPhrase;
+        return interpolate(phrase, tokens);
+      }),
+    )}.`;
 
   // Drop lowest promptPriority first. Never truncate mid-phrase.
   while (render(entries).length > budget && entries.length > 1) {

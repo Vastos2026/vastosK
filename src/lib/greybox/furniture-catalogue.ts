@@ -95,6 +95,15 @@ export interface FurnitureCatalogueEntry {
    * inherits the palette rather than restating it.
    */
   materialPhrase: string;
+  /**
+   * Used when more than one of this type is placed (e.g. two nightstands). Falls back to
+   * materialPhrase when absent — most entries don't need one because duplicates are either
+   * implausible (a second bed, a second kitchen island) or the singular phrase already reads
+   * fine repeated implicitly. Fixed, hand-written text, not a pluralisation algorithm: this is a
+   * 24-entry catalogue, not a grammar engine, and "add an s" breaks entries like `rug` ("a soft
+   * neutral rug" -> "a soft neutral rugs") that don't inflect that way.
+   */
+  materialPhrasePlural?: string;
   /** Lower is dropped first when the furniture line exceeds its 200-char budget. */
   promptPriority: number;
 }
@@ -339,7 +348,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.3, d: 1.3 },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildNightstand,
-    materialPhrase: "{wood} nightstands",
+    materialPhrase: "{wood} nightstand",
+    materialPhrasePlural: "{wood} nightstands",
     promptPriority: 50,
   },
   {
@@ -376,6 +386,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: ["Living Room", "Lounge"],
     build: buildArmchair,
     materialPhrase: "{soft} armchair",
+    materialPhrasePlural: "{soft} armchairs",
     promptPriority: 70,
   },
   {
@@ -411,7 +422,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.5, d: 1.5 },
     roomTypes: ["Dining Room", "Meeting Room", "Conference Room", "Open Workspace"],
     build: buildDiningChair,
-    materialPhrase: "{soft} dining chairs",
+    materialPhrase: "{soft} dining chair",
+    materialPhrasePlural: "{soft} dining chairs",
     promptPriority: 70,
   },
   {
@@ -465,7 +477,8 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     footprintFt: { w: 1.3, d: 1.3 },
     roomTypes: ["Kitchen", "Pantry"],
     build: buildBarStool,
-    materialPhrase: "{wood} bar stools",
+    materialPhrase: "{wood} bar stool",
+    materialPhrasePlural: "{wood} bar stools",
     promptPriority: 45,
   },
   {
@@ -493,6 +506,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: ["Foyer", "Reception", "Master Bedroom", "Bedroom", "Guest Room"],
     build: buildBench,
     materialPhrase: "{wood} bench",
+    materialPhrasePlural: "{wood} benches",
     promptPriority: 35,
   },
   {
@@ -511,6 +525,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: ["Balcony"],
     build: buildOutdoorChair,
     materialPhrase: "woven outdoor chair",
+    materialPhrasePlural: "woven outdoor chairs",
     promptPriority: 35,
   },
   {
@@ -520,6 +535,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: ["Living Room", "Lounge", "Balcony"],
     build: buildSideTable,
     materialPhrase: "{wood} side table",
+    materialPhrasePlural: "{wood} side tables",
     promptPriority: 30,
   },
   {
@@ -529,6 +545,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: [],
     build: buildRug,
     materialPhrase: "a soft neutral rug",
+    materialPhrasePlural: "soft neutral rugs",
     promptPriority: 20,
   },
   {
@@ -538,6 +555,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     roomTypes: [],
     build: buildPlant,
     materialPhrase: "a potted green plant",
+    materialPhrasePlural: "potted green plants",
     promptPriority: 15,
   },
 ];

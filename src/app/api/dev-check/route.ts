@@ -574,6 +574,16 @@ export async function GET() {
     assert(!line.includes("plant"), `plant (priority 15) should be dropped: ${line}`);
   });
 
+  check("a single nightstand renders singular; two render the plural form", () => {
+    const single = buildFurnitureMaterials([f("1", "nightstand")], tokens);
+    assert(
+      single.includes("walnut nightstand") && !single.includes("nightstands"),
+      `expected the singular phrase for one nightstand, got: ${single}`,
+    );
+    const pair = buildFurnitureMaterials([f("1", "nightstand"), f("2", "nightstand")], tokens);
+    assert(pair.includes("walnut nightstands"), `expected the plural phrase for two nightstands, got: ${pair}`);
+  });
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     { passed: results.length - failed.length, failed: failed.length, results },
