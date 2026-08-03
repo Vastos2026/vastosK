@@ -372,7 +372,17 @@ export async function GET() {
     const png = await mask(200, 100, [[10, 10, 30, 40]]);
     const ledger = await countOpenings(png, [
       { id: "a", type: "window", px: 25, py: 30 },
-      { id: "b", type: "window", px: -1, py: -1 },
+      // (-1,-1) is deliberately kept close to the rect (Chebyshev distance 11
+      // to its (10,10) corner, inside SEARCH_RADIUS) rather than moved far
+      // away: real off-frame projections always land on this exact sentinel
+      // (camera.ts), never a proportional off-screen coordinate, so a real
+      // opening near the frame's top-left corner is exactly the case this
+      // guards against. `b` is given a DIFFERENT type than `a` on purpose —
+      // if the px<0/py<0 guard is ever deleted, labelNear(-1,-1) finds this
+      // same rect and overwrites `a`'s entry with "door", flipping the
+      // ledger to {doors:1,windows:0}. Giving both openings the same type
+      // would let that overwrite go unnoticed (same value written twice).
+      { id: "b", type: "door", px: -1, py: -1 },
     ]);
     eq(ledger, { doors: 0, windows: 1 }, "behind-camera opening dropped");
   });

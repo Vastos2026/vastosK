@@ -23,6 +23,7 @@ import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject } from "@/lib/supabase/projects";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import type { ProjectedOpening } from "@/lib/greybox/render-mask";
+import type { GreyboxLedger } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,15 +67,26 @@ export async function POST(request: Request) {
   const maskBytes = decodePng(body.maskDataUri, "maskDataUri");
   if (maskBytes instanceof Response) return maskBytes;
 
+  // Decode + count BEFORE either putObject call below. sharp only actually
+  // parses the PNG here — base64-valid-but-not-a-real-PNG bytes pass
+  // decodePng's regex and size check untouched — so counting first means a
+  // corrupt mask is rejected with a clean 400 and nothing gets persisted,
+  // instead of surfacing as a generic 500 with two orphaned objects already
+  // sitting in storage. Derived here (rather than deferred to the caller)
+  // because the server already holds the bytes; /api/generate-room-image
+  // re-derives its own ledger from the stored mask rather than trusting this
+  // response, so this value is for immediate UI display only.
+  let ledger: GreyboxLedger;
+  try {
+    ledger = await countOpenings(maskBytes, body.projected ?? []);
+  } catch {
+    return Response.json({ error: "maskDataUri is not a readable PNG" }, { status: 400 });
+  }
+
   const key = `renders/${body.projectId}/greybox/${randomUUID()}.png`;
   const maskKey = `${key}-mask`;
   await putObject(key, image, "image/png");
   await putObject(maskKey, maskBytes, "image/png");
-
-  // Derived here because the server already holds the bytes. /api/generate-room-image
-  // re-derives from the stored mask rather than trusting a client-sent count,
-  // so this value is for immediate UI display only.
-  const ledger = await countOpenings(maskBytes, body.projected ?? []);
 
   return Response.json({ key, maskKey, ledger });
 }
