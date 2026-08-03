@@ -9,7 +9,11 @@
  * must never do anything that costs money or touches user data.
  */
 import { greyboxHashFor } from "@/lib/greybox/greybox-hash";
-import { openingFaceSamples } from "@/lib/greybox/build-scene";
+import { openingFaceSamples, type GreyboxClass } from "@/lib/greybox/build-scene";
+// Imported from ./histogram, NOT ./render-to-data-uri — the latter is
+// "use client" (WebGL rendering) and this route runs server-side. histogram.ts
+// carries no directive specifically so this pure-function check can import it.
+import { assertHistogram, GreyboxHistogramError } from "@/lib/greybox/histogram";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +33,59 @@ function eq<T>(actual: T, expected: T, msg: string) {
     JSON.stringify(actual) === JSON.stringify(expected),
     `${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
   );
+}
+
+/**
+ * Builds a synthetic `ImageData`-shaped object plus the `Map<GreyboxClass,
+ * number[]>` region map that assertHistogram consumes — the same two-argument
+ * shape a real render + label pass produce, without needing a browser. Each
+ * region is a flat run of `count` pixels all set to the same grey `value`
+ * (so its luma is exactly value/255); a region with `cls: null` still
+ * occupies pixel slots (and so counts toward assertHistogram's clipping
+ * denominator) but is left out of the label map, standing in for background
+ * pixels that a label pass didn't map to a named class. Counts are in the
+ * hundreds so percentiles reflect an actual distribution, not a handful of
+ * arbitrary samples.
+ */
+function buildHistogramFixture(
+  regions: { cls: GreyboxClass | null; value: number; count: number }[],
+): { real: ImageData; labels: Map<GreyboxClass, number[]> } {
+  const total = regions.reduce((sum, r) => sum + r.count, 0);
+  const data = new Uint8ClampedArray(total * 4);
+  const labels = new Map<GreyboxClass, number[]>();
+  let idx = 0;
+  for (const r of regions) {
+    const indices: number[] = [];
+    for (let i = 0; i < r.count; i++) {
+      data[idx * 4] = r.value;
+      data[idx * 4 + 1] = r.value;
+      data[idx * 4 + 2] = r.value;
+      data[idx * 4 + 3] = 255;
+      indices.push(idx);
+      idx++;
+    }
+    if (r.cls) labels.set(r.cls, [...(labels.get(r.cls) ?? []), ...indices]);
+  }
+  // width/height are meaningless for this flat synthetic buffer — assertHistogram
+  // only reads `.data` — but width * height * 4 must equal data.length, so shape
+  // it as a single row of `total` pixels.
+  const real = { data, width: total, height: 1 } as ImageData;
+  return { real, labels };
+}
+
+/** Asserts `fn` throws a GreyboxHistogramError whose message matches `pattern`. */
+function assertThrowsHistogram(fn: () => void, pattern: RegExp, msg: string) {
+  try {
+    fn();
+  } catch (e) {
+    assert(e instanceof GreyboxHistogramError, `${msg}: expected a GreyboxHistogramError, got ${e}`);
+    assert(
+      pattern.test((e as Error).message),
+      `${msg}: error message did not match ${pattern}: "${(e as Error).message}"`,
+    );
+    return;
+  }
+  assert(false, `${msg}: expected assertHistogram to throw, but it did not`);
 }
 
 export async function GET() {
@@ -109,6 +166,85 @@ export async function GET() {
       assert(Math.abs(p.x) <= (0.4 * 12) / 2 + 1e-6, `sample outside the span: x=${p.x}`);
       assert(p.y >= 3 && p.y <= 7, `sample outside the window's vertical extent: y=${p.y}`);
     }
+  });
+
+  // ---- assertHistogram (section 3.7 value ladder) ----
+  // Baseline "healthy" greys, reused with one deliberately broken per check:
+  // wall 150, window 250 (brightest), furniture 70 (darkest), door 110.
+  check("healthy value ladder passes assertHistogram", () => {
+    const { real, labels } = buildHistogramFixture([
+      { cls: "wall", value: 150, count: 2000 },
+      { cls: "window", value: 250, count: 500 },
+      { cls: "furniture", value: 70, count: 500 },
+      { cls: "door", value: 110, count: 500 },
+    ]);
+    assertHistogram(real, labels); // must not throw
+  });
+
+  check("window darker than wall throws (condition 1)", () => {
+    const { real, labels } = buildHistogramFixture([
+      { cls: "wall", value: 150, count: 2000 },
+      // 100 < wall's 150: window p05 <= wall p99, the exact collapse this
+      // check exists to catch (e.g. the window filler losing its unlit
+      // MeshBasicMaterial and picking up scene lighting like every other surface).
+      { cls: "window", value: 100, count: 500 },
+      { cls: "furniture", value: 70, count: 500 },
+      { cls: "door", value: 110, count: 500 },
+    ]);
+    assertThrowsHistogram(
+      () => assertHistogram(real, labels),
+      /brightest/i,
+      "window not brighter than wall must throw",
+    );
+  });
+
+  check("furniture within 0.15 luma of wall throws (condition 2)", () => {
+    const { real, labels } = buildHistogramFixture([
+      { cls: "wall", value: 150, count: 2000 },
+      { cls: "window", value: 250, count: 500 }, // stays healthy so this check, not the window one, fires
+      // 140 vs wall's 150 is a ~0.04 median gap, well under the 0.15 floor.
+      { cls: "furniture", value: 140, count: 500 },
+      { cls: "door", value: 110, count: 500 },
+    ]);
+    assertThrowsHistogram(
+      () => assertHistogram(real, labels),
+      /separate from the walls/i,
+      "furniture too close to wall must throw",
+    );
+  });
+
+  check("door within 0.10 luma of furniture throws (condition 4)", () => {
+    const { real, labels } = buildHistogramFixture([
+      { cls: "wall", value: 150, count: 2000 },
+      { cls: "window", value: 250, count: 500 }, // healthy
+      { cls: "furniture", value: 70, count: 500 }, // healthy gap to wall
+      // 90 vs furniture's 70 is a ~0.08 gap, under the 0.10 floor.
+      { cls: "door", value: 90, count: 500 },
+    ]);
+    assertThrowsHistogram(
+      () => assertHistogram(real, labels),
+      /too close in value/i,
+      "door too close to furniture must throw",
+    );
+  });
+
+  check("over 0.5% of non-window pixels clipped at 255 throws (condition 3)", () => {
+    const { real, labels } = buildHistogramFixture([
+      { cls: "wall", value: 150, count: 2000 }, // all otherwise-healthy
+      { cls: "window", value: 250, count: 500 },
+      { cls: "furniture", value: 70, count: 500 },
+      { cls: "door", value: 110, count: 500 },
+      // Unlabeled (no greyboxClass in the label pass) but still real,
+      // non-window pixels — exactly what a blown-out highlight off an
+      // unclassified surface looks like. 50 of 3050 non-window pixels is
+      // 1.6%, over the 0.5% ceiling.
+      { cls: null, value: 255, count: 50 },
+    ]);
+    assertThrowsHistogram(
+      () => assertHistogram(real, labels),
+      /clipped at 255/i,
+      "over-threshold clipping must throw",
+    );
   });
 
   const failed = results.filter((r) => !r.ok);
