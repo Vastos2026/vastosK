@@ -626,6 +626,17 @@ export async function GET() {
     eq(clamp("", 240), "", "empty input");
   });
 
+  check("clamp: a late sentence boundary wins over a later word boundary, period included", () => {
+    // max=30: "Warm walnut and stone. Soft li" is the raw cut. Its ". "
+    // boundary sits at index 21 (past max*0.6=18, so it's late enough to
+    // prefer), and a LATER plain-space word boundary sits at index 27
+    // (after "Soft"). A clamp that (wrongly) always picks the word boundary
+    // would return "Warm walnut and stone. Soft" — the sentence-aware clamp
+    // must instead stop at the sentence, WITH its period.
+    const out = clamp("Warm walnut and stone. Soft light everywhere across the room", 30);
+    eq(out, "Warm walnut and stone.", "cuts at the sentence, period included, not the later word boundary");
+  });
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     { passed: results.length - failed.length, failed: failed.length, results },

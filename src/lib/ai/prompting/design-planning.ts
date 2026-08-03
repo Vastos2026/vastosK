@@ -105,6 +105,7 @@ export function clamp(s: string | undefined, max: number): string {
   const t = (s ?? "").trim();
   if (t.length <= max) return t;
   const cut = t.slice(0, max);
-  const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(" "));
+  const sentence = cut.lastIndexOf(". ");
+  const stop = sentence > max * 0.6 ? sentence + 1 : cut.lastIndexOf(" ");
   return (stop > max * 0.6 ? cut.slice(0, stop) : cut).trim().replace(/[,;]$/, "");
 }
