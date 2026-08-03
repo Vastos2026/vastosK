@@ -630,6 +630,27 @@ export async function GET() {
     assert(!/\b[0-9]+ (window|door)/.test(p), "digits used for opening counts");
   });
 
+  await checkAsync("the furniture-placed clause agrees in number: singular noun+verb for one piece, plural for more", async () => {
+    // Correction 3 fixed subject-verb agreement in openingLedger ("One
+    // furniture piece IS already placed." vs "Two furniture pieces ARE
+    // already placed.") — this is the assertion that actually protects it.
+    // Asserting the full clause, not just the verb in isolation, so a
+    // regression in either the noun or the verb fails this.
+    const single = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed")],
+    });
+    assert(single.includes("One furniture piece is already placed."), `expected singular noun+verb, got: ${single}`);
+
+    const many = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed"), f("2", "nightstand")],
+    });
+    assert(many.includes("Two furniture pieces are already placed."), `expected plural noun+verb, got: ${many}`);
+  });
+
   await checkAsync("no deleted phrasing survives", async () => {
     const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
       hasGreybox: true,
