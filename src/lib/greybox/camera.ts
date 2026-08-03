@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { openingCentre } from "./build-scene";
+import { GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "./dimensions";
 import type { GreyboxRoomSpec } from "./types";
 
 /** Eye height, feet. */
@@ -89,4 +90,39 @@ export function greyboxCamera(spec: GreyboxRoomSpec, aspect: number): THREE.Pers
 
   // `candidates` is non-empty, so `best` is always set by the loop above.
   return best!.camera;
+}
+
+/** One opening's centre, projected to pixel coordinates in the locked camera's frame. */
+export interface ProjectedOpening {
+  id: string;
+  type: "door" | "window";
+  /** Pixel x in [0, GREYBOX_RENDER_W). -1 when the opening is behind the camera or off-frame. */
+  px: number;
+  /** Pixel y in [0, GREYBOX_RENDER_H). -1 when the opening is behind the camera or off-frame. */
+  py: number;
+}
+
+/**
+ * Projects each opening's centre through the locked camera to a pixel.
+ *
+ * The explicit in-front dot-product test is not optional: Vector3.project()
+ * mirrors points BEHIND the camera back into NDC range instead of erroring —
+ * exactly the hazard the scorer above already guards against (see its own
+ * comment), so a previous spike that skipped this test produced pure
+ * abstract garbage from an opening the camera was facing away from.
+ */
+export function projectOpenings(spec: GreyboxRoomSpec, camera: THREE.Camera): ProjectedOpening[] {
+  const forward = camera.getWorldDirection(new THREE.Vector3());
+  return spec.openings.map((o) => {
+    const world = openingCentre(spec, o);
+    const inFront = world.clone().sub(camera.position).dot(forward) > 0;
+    const p = world.clone().project(camera);
+    const onScreen = inFront && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1;
+    return {
+      id: o.id,
+      type: o.type,
+      px: onScreen ? Math.round(((p.x + 1) / 2) * GREYBOX_RENDER_W) : -1,
+      py: onScreen ? Math.round(((1 - p.y) / 2) * GREYBOX_RENDER_H) : -1,
+    };
+  });
 }

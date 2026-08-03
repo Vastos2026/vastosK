@@ -3,6 +3,7 @@
 import * as THREE from "three";
 import { buildGreyboxScene } from "./build-scene";
 import { greyboxCamera } from "./camera";
+import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "./dimensions";
 import type { GreyboxRoomSpec } from "./types";
 
 // Pure pixel statistics live in ./histogram, which carries no "use client"
@@ -12,21 +13,12 @@ import type { GreyboxRoomSpec } from "./types";
 // assertHistogram from here) keep working unchanged.
 export { assertHistogram, GreyboxHistogramError } from "./histogram";
 
-/**
- * The ONE place greybox output dimensions are decided. Section 3.4 requires
- * the generation width/height to produce exactly this aspect — any mismatch
- * and FLUX letterboxes or crops, which breaks the camera match the whole
- * pipeline depends on. runware-client.ts imports these rather than keeping
- * its own numbers, so the two cannot drift.
- *
- * 1376x768 is section 3.4's stated target (both divisible by 16). If Runware
- * rejects it on bfl:5@1 with invalidWidth — FLUX.1-dev required divisibility
- * by 64 and the ControlNet spike hit exactly this — change these two numbers
- * to 1280x704 and nothing else needs to move. Task 13 verifies which applies.
- */
-export const GREYBOX_RENDER_W = 1376;
-export const GREYBOX_RENDER_H = 768;
-export const GREYBOX_ASPECT = GREYBOX_RENDER_W / GREYBOX_RENDER_H;
+// The three render-dimension constants now live in ./dimensions (no "use
+// client"), so camera.ts's projectOpenings and other server-side code (the
+// section 7.1 mask/label passes, runware-client.ts) can import them without
+// pulling in this module's WebGL client boundary. Re-exported here so every
+// existing `from "./render-to-data-uri"` import keeps working unchanged.
+export { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "./dimensions";
 
 /** Supersample factor. One extra offscreen render, no aliasing speckle for the model to read as texture. */
 const SS = 2;

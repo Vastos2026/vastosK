@@ -14,6 +14,13 @@ import { openingFaceSamples, type GreyboxClass } from "@/lib/greybox/build-scene
 // "use client" (WebGL rendering) and this route runs server-side. histogram.ts
 // carries no directive specifically so this pure-function check can import it.
 import { assertHistogram, GreyboxHistogramError } from "@/lib/greybox/histogram";
+// greyboxCamera/projectOpenings (camera.ts) and the render dimensions
+// (dimensions.ts) carry no "use client" directive either — camera math is
+// pure THREE.Vector3/PerspectiveCamera arithmetic, no WebGLRenderer, no
+// canvas, no DOM — so it runs here exactly as it would in the browser.
+import { greyboxCamera, projectOpenings } from "@/lib/greybox/camera";
+import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "@/lib/greybox/dimensions";
+import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,6 +78,53 @@ function buildHistogramFixture(
   // it as a single row of `total` pixels.
   const real = { data, width: total, height: 1 } as ImageData;
   return { real, labels };
+}
+
+/**
+ * Shared fixture for the projectOpenings checks below (section 7.1's ledger
+ * projection). `camera` is the same one `renderGreyboxBundle` would derive
+ * from `anchorSpec` — this reconstructs only the math half (no WebGL).
+ *
+ * `anchorSpec` has exactly ONE opening: a window dead-centre (t=0.5) on the
+ * south wall. A window's vertical centre — (WINDOW_SILL+WINDOW_HEAD)/2 = 5 —
+ * happens to equal camera.ts's EYE_H (also 5), so the candidate that faces
+ * this opening head-on down the room's Z axis (the north-wall midpoint)
+ * projects its centre to NDC (0, 0) exactly: horizontally centred because
+ * that candidate's X coincides with the opening's X, vertically centred
+ * because the opening sits exactly at eye height. (0, 0) is the minimum
+ * possible value of camera.ts's tie-break "spread", and camera.ts tries the
+ * north-wall midpoint FIRST — so once it claims that minimum, no later
+ * candidate's tie (spread can't go negative) can ever displace it. That
+ * makes the resulting viewpoint deterministic without hand-simulating all 8
+ * candidates for every spec that reuses this fixture, and — since it faces
+ * south — means the returned camera backs onto the NORTH wall.
+ *
+ * `spec` is the one actually handed to projectOpenings: the same anchor
+ * opening (renamed, and as a door rather than a window — proving the
+ * function reports each opening's own type, not a fixed one) plus a second
+ * opening on the NORTH wall, the wall the camera backs onto — provably
+ * behind it, which is the one case Vector3.project() gets wrong on its own
+ * (see projectOpenings' own comment).
+ */
+function projectionFixture(): { spec: GreyboxRoomSpec; camera: ReturnType<typeof greyboxCamera> } {
+  const width = 20;
+  const depth = 16;
+  const anchorSpec: GreyboxRoomSpec = {
+    width,
+    depth,
+    openings: [{ id: "anchor", type: "window", wall: "south", t: 0.5, span: 0.3 }],
+  };
+  const camera = greyboxCamera(anchorSpec, GREYBOX_ASPECT);
+
+  const spec: GreyboxRoomSpec = {
+    width,
+    depth,
+    openings: [
+      { id: "visible-south", type: "door", wall: "south", t: 0.5, span: 0.3 },
+      { id: "behind-north", type: "window", wall: "north", t: 0.5, span: 0.3 },
+    ],
+  };
+  return { spec, camera };
 }
 
 /** Asserts `fn` throws a GreyboxHistogramError whose message matches `pattern`. */
@@ -244,6 +298,44 @@ export async function GET() {
       () => assertHistogram(real, labels),
       /clipped at 255/i,
       "over-threshold clipping must throw",
+    );
+  });
+
+  // ---- projectOpenings (section 7.1 ledger projection) ----
+  check("projectOpenings: a visible opening lands inside the frame with its own id/type", () => {
+    const { spec, camera } = projectionFixture();
+    const [visible] = projectOpenings(spec, camera);
+    eq(visible.id, "visible-south", "id carried through");
+    eq(visible.type, "door", "type carried through, not a fixed constant");
+    assert(
+      visible.px >= 0 && visible.px < GREYBOX_RENDER_W,
+      `px out of [0, ${GREYBOX_RENDER_W}): got ${visible.px}`,
+    );
+    assert(
+      visible.py >= 0 && visible.py < GREYBOX_RENDER_H,
+      `py out of [0, ${GREYBOX_RENDER_H}): got ${visible.py}`,
+    );
+  });
+
+  check("projectOpenings: an opening behind the camera returns px=-1, py=-1", () => {
+    const { spec, camera } = projectionFixture();
+    const [, behind] = projectOpenings(spec, camera);
+    eq(behind.id, "behind-north", "sanity: this is the wall the camera backs onto");
+    // The important case: without the explicit in-front dot-product test,
+    // Vector3.project() mirrors this behind-camera point back into valid NDC
+    // range and it would score as visible instead.
+    eq(behind.px, -1, "px must be the off-frame sentinel");
+    eq(behind.py, -1, "py must be the off-frame sentinel");
+  });
+
+  check("projectOpenings: every opening appears in the output, in order", () => {
+    const { spec, camera } = projectionFixture();
+    const projected = projectOpenings(spec, camera);
+    eq(projected.length, spec.openings.length, "no opening silently dropped");
+    eq(
+      projected.map((p) => p.id),
+      spec.openings.map((o) => o.id),
+      "order preserved",
     );
   });
 
