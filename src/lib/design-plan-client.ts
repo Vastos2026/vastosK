@@ -7,6 +7,8 @@
 
 import type { DesignSelection, RoomSelection } from "./ai/prompting/build-universal-input";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./ai/prompting/types";
+import type { ProjectedOpening } from "./greybox/render-mask";
+import type { PlacedFurniture } from "./types";
 
 async function postJson<T>(url: string, payload: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -44,6 +46,12 @@ export function generateRoomImage(input: {
   designSpec: DesignSpecification;
   /** This room's rendered greybox reference key, if it was placed in the Plan Editor — see ensure-greybox-key.ts. */
   greyboxKey?: string;
+  /** The Pass B opening mask stored beside greyboxKey — see upload-greybox/route.ts. Required alongside greyboxKey for the server to re-derive the opening ledger itself rather than trust a client-sent count. */
+  greyboxMaskKey?: string;
+  /** Each opening's pixel projected through the locked camera (ensure-greybox-key.ts's ensureGreybox now returns this on both cache hit and miss) — types each mask component when the server re-derives the ledger from greyboxMaskKey. */
+  projected?: ProjectedOpening[];
+  /** Phase B furniture proxies placed in this room's greybox, if any — see furniture-layout.ts. */
+  furniture?: PlacedFurniture[];
 }): Promise<{ imageUrl: string; key: string; prompt: string }> {
   return postJson("/api/generate-room-image", input);
 }

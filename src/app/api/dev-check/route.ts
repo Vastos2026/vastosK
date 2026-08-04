@@ -26,6 +26,8 @@ import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
+import { firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
+import type { PlacedFurniture } from "@/lib/types";
 import { clamp } from "@/lib/ai/prompting/design-planning";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
@@ -902,6 +904,76 @@ export async function GET() {
     eq(a.position.toArray(), b.position.toArray(), "position");
     eq(a.quaternion.toArray(), b.quaternion.toArray(), "orientation (the lookAt target)");
     eq(a.fov, b.fov, "fov");
+  });
+
+  // ---- firstFreeSlot / isInFrame (Task 15: the Furnish sidebar's deterministic Add-button placement) ----
+  // A plain 10x10ft box, no openings — seen=0 for every camera candidate
+  // (greyboxCamera.ts's own scoring loop), so the FIRST candidate (north-wall
+  // midpoint) wins by construction, matching that function's documented
+  // tie-break: deterministic, no hand-picking needed for this fixture.
+  const slotSpec: GreyboxRoomSpec = { width: 10, depth: 10, openings: [] };
+  const slotCamera = greyboxCamera(slotSpec, GREYBOX_ASPECT);
+
+  check("firstFreeSlot: an empty room returns a valid, in-frame, legal slot for a real catalogue kind", () => {
+    const result = firstFreeSlot("nightstand", [], slotSpec, slotCamera);
+    assert(result !== null, "expected a slot in an empty room, got null");
+    const { x: lx, z: lz } = result!;
+    // Must be one of the 6 scanned grid fractions (k/7, k=1..6) — not an
+    // arbitrary or hardcoded value a broken implementation could return.
+    const isGridFraction = (v: number) => [1, 2, 3, 4, 5, 6].some((k) => Math.abs(v - k / 7) < 1e-9);
+    assert(
+      isGridFraction(lx) && isGridFraction(lz),
+      `slot ${JSON.stringify(result)} is not one of the scanned grid fractions`,
+    );
+    // Re-derive the world position and independently re-check BOTH
+    // postconditions the function's own contract promises — in frame, and
+    // legal (resolvePlacement leaves it unmoved) — using the real exported
+    // checkers, not a stub. A regression that dropped either check inside
+    // firstFreeSlot (e.g. returning the first grid-order point without
+    // verifying isInFrame) would return a DIFFERENT point that fails one of
+    // these, not silently pass.
+    const wx = (lx - 0.5) * slotSpec.width;
+    const wz = (lz - 0.5) * slotSpec.depth;
+    assert(isInFrame(wx, wz, slotCamera), `returned slot ${JSON.stringify(result)} is not actually in frame`);
+    const resolved = resolvePlacement(
+      { kind: "nightstand", rotation: 0, x: wx, z: wz, fromX: NaN, fromZ: NaN },
+      [],
+      { width: slotSpec.width, depth: slotSpec.depth },
+      { x: slotCamera.position.x, z: slotCamera.position.z },
+    );
+    eq(resolved, { x: wx, z: wz }, "returned slot is not actually legal (resolvePlacement moved it)");
+  });
+
+  check("firstFreeSlot: a room whose every grid cell is blocked returns null, not a wrong-but-present slot", () => {
+    // A conference-table (9x4ft, the catalogue's largest footprint) rotated
+    // 45 degrees has an AABB half-extent of (9*cos45 + 4*sin45)/2 ≈ 4.6ft on
+    // BOTH axes (footprintAabb folds rotation into the box extents — see its
+    // own comment). The scanned grid's farthest point from centre in a 10ft
+    // room is only 0.5*(6/7 - 0.5)*10*2 ≈ 3.57ft out, and even padding that
+    // by a nightstand's own 0.65ft half-extent (3.57+0.65=4.22ft) stays
+    // inside the blocker's 4.6ft reach — so this ONE item, sitting at the
+    // room's centre, fully contains every one of the 36 scanned grid points
+    // for a small candidate kind. The other 4 items are padding to literally
+    // match MAX_FURNITURE (5 — a real "room is full" furniture count); they
+    // are not load-bearing for the coverage proof, which rests entirely on
+    // the first item's geometry (worked by hand in task-15-report.md).
+    const full: PlacedFurniture[] = [
+      { id: "b1", kind: "conference-table", x: 0.5, z: 0.5, rotation: Math.PI / 4 },
+      { id: "b2", kind: "nightstand", x: 0.2, z: 0.2, rotation: 0 },
+      { id: "b3", kind: "nightstand", x: 0.8, z: 0.2, rotation: 0 },
+      { id: "b4", kind: "nightstand", x: 0.2, z: 0.8, rotation: 0 },
+      { id: "b5", kind: "nightstand", x: 0.8, z: 0.8, rotation: 0 },
+    ];
+    const result = firstFreeSlot("nightstand", full, slotSpec, slotCamera);
+    eq(result, null, `expected null in a fully-blocked room, got ${JSON.stringify(result)}`);
+  });
+
+  check("firstFreeSlot: the same room, furniture, and kind return the identical slot on a second call", () => {
+    const furnitureForDeterminism: PlacedFurniture[] = [{ id: "f1", kind: "nightstand", x: 0.2, z: 0.2, rotation: 0 }];
+    const a = firstFreeSlot("wardrobe", furnitureForDeterminism, slotSpec, slotCamera);
+    const b = firstFreeSlot("wardrobe", furnitureForDeterminism, slotSpec, slotCamera);
+    assert(a !== null, "expected a slot for this fixture, got null");
+    eq(a, b, "the same inputs must scan the fixed grid order to the same result every call");
   });
 
   const failed = results.filter((r) => !r.ok);

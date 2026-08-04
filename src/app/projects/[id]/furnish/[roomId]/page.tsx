@@ -1,17 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
-import {
-  FurnitureEditorCanvas,
-  footprintClampMargins,
-  type FurnitureCommitPatch,
-} from "@/components/project/furniture-editor-canvas";
-import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
-import { defaultFurnitureFor, toWorldFurniture } from "@/lib/greybox/furniture-layout";
-import { renderGreyboxBundle } from "@/lib/greybox/render-mask";
+import { FurnitureEditorCanvas, type FurnitureCommitPatch } from "@/components/project/furniture-editor-canvas";
+import { furnitureForRoomType, catalogueEntry } from "@/lib/greybox/furniture-catalogue";
+import { defaultFurnitureFor } from "@/lib/greybox/furniture-layout";
+import { ensureGreybox, type GreyboxResult } from "@/lib/greybox/ensure-greybox-key";
+import { firstFreeSlot } from "@/lib/greybox/first-free-slot";
+import { MAX_FURNITURE, resolveOcclusion, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
+import { validateOpenings } from "@/lib/greybox/validate-openings";
+import { greyboxCamera } from "@/lib/greybox/camera";
+import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { generateRoomImage } from "@/lib/design-plan-client";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
@@ -19,23 +20,33 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { RetryImg } from "@/components/ui/retry-img";
 import { cn, uid } from "@/lib/utils";
-import type { PlacedFurniture, Room } from "@/lib/types";
+import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
+import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { DesignSpecification, UniversalInput } from "@/lib/ai/prompting/types";
 
-/** New items spread along x (room-local), wrapping before they'd clamp to nothing but overlap. */
-const NEW_ITEM_STEP = 0.15;
-const NEW_ITEM_MIN = 0.1;
-const NEW_ITEM_MAX = 0.9;
 const ROTATE_STEP = Math.PI / 12; // 15 degrees
+/** Stable reference so `room.placedOpenings ?? EMPTY_OPENINGS` doesn't allocate (and bust memoization) on every render. */
+const EMPTY_OPENINGS: PlacedOpening[] = [];
 
 /**
- * Furniture placement editor (Phase B) — an interactive, orbit-controlled
- * companion to the Plan Editor's locked greybox export view. Lets the user
- * drop and arrange furniture proxies in a room's 3D greybox before
- * generation, then re-renders + re-uploads the greybox reference image so
- * the placement actually reaches the image model.
+ * Furniture placement editor (Phase B) — hosts Task 14's fixed-camera 3D
+ * canvas: a sidebar to add/list/cap furniture, live occlusion warnings, a
+ * save-time occlusion gate, and the `?from=` return contract Task 17 wires
+ * the rest of the flow around.
+ *
+ * Wrapped in Suspense because FurnishContent reads useSearchParams() (the
+ * `from` query param), which Next requires a Suspense boundary for — see
+ * login-form.tsx for the same pattern.
  */
 export default function FurnishPage() {
+  return (
+    <Suspense fallback={null}>
+      <FurnishPageInner />
+    </Suspense>
+  );
+}
+
+function FurnishPageInner() {
   const { id, roomId } = useParams<{ id: string; roomId: string }>();
   const hydrated = useHydrated();
   const project = useProject(id);
@@ -67,28 +78,36 @@ export default function FurnishPage() {
     );
   }
 
-  // A room only gets a feet-scale footprint + wall openings once it's been
-  // placed in the Plan Editor (Room.shape) — without that there is nothing
-  // to build a greybox from, so furnishing it would crash rather than help.
-  if (!room.shape) {
-    return (
-      <div className="grid h-full place-items-center text-center">
-        <div>
-          <Icon name="CircleAlert" className="mx-auto size-7 text-muted" />
-          <p className="mt-3 max-w-xs text-sm text-muted">
-            {room.name} hasn&apos;t been placed in the Plan Editor yet, so it has no shape or openings to furnish.
-          </p>
-          <Link href={`/projects/${id}/plan`}>
-            <Button className="mt-4" variant="outline" icon="ArrowLeft">
-              Go to Plan Editor
-            </Button>
-          </Link>
-        </div>
-      </div>
-    );
-  }
+  return (
+    <FurnishContent
+      projectId={id}
+      room={room}
+      universalInput={project.universalInput}
+      designSpec={project.designSpec}
+    />
+  );
+}
 
-  return <FurnishContent projectId={id} room={room} universalInput={project.universalInput} designSpec={project.designSpec} />;
+function CentredMessage({
+  icon,
+  spin,
+  children,
+  action,
+}: {
+  icon: string;
+  spin?: boolean;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="grid h-full place-items-center text-center">
+      <div>
+        <Icon name={icon} className={cn("mx-auto size-7 text-muted", spin && "animate-spin")} />
+        <p className="mt-3 max-w-xs text-sm text-muted">{children}</p>
+        {action}
+      </div>
+    </div>
+  );
 }
 
 function FurnishContent({
@@ -103,35 +122,90 @@ function FurnishContent({
   designSpec: DesignSpecification | undefined;
 }) {
   const updateRoom = useVasto((s) => s.updateRoom);
+  const setRoomGreybox = useVasto((s) => s.setRoomGreybox);
   const addGeneration = useVasto((s) => s.addGeneration);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const from = searchParams.get("from");
 
   const [furniture, setFurniture] = useState<PlacedFurniture[]>(
     () => room.furniture ?? defaultFurnitureFor(room.type),
   );
+  // Captures the arrangement the editor MOUNTED with, once — used only by
+  // the readiness-gate effect below so it runs a single renderability probe
+  // per room rather than re-firing (and re-uploading) on every furniture
+  // edit. A ref, not a dependency, so it never forces that effect to re-run.
+  const initialFurnitureRef = useRef(furniture);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [occlusion, setOcclusion] = useState<OcclusionViolation[]>([]);
+  const [notice, setNotice] = useState<string[]>([]);
+  const [addError, setAddError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [lastGeneration, setLastGeneration] = useState<{ imageUrl: string; createdAt: string } | null>(null);
+  const [readiness, setReadiness] = useState<"checking" | "ready" | "unavailable">("checking");
 
   const { width, height: depth } = layoutSize(room);
-  const openings = room.placedOpenings ?? [];
+  const openings = room.placedOpenings ?? EMPTY_OPENINGS;
   const catalogue = furnitureForRoomType(room.type);
 
+  const spec = useMemo<GreyboxRoomSpec>(() => ({ width, depth, openings }), [width, depth, openings]);
+  const camera = useMemo(() => greyboxCamera(spec, GREYBOX_ASPECT), [spec]);
+
+  // Section 5 — openings are read-only here (they're placed in the Plan
+  // Editor); a violation blocks the whole editor rather than letting a user
+  // furnish a room whose door/window geometry is already invalid.
+  const openingViolations = useMemo(() => validateOpenings(openings, width, depth), [openings, width, depth]);
+
+  // Gap 1's replacement for the old `if (!room.shape) return <...>` gate,
+  // which Task 7 made obsolete (ensureGreybox no longer requires room.shape).
+  // The only thing that can make a room genuinely unfurnishable now is
+  // ensureGreybox itself coming back undefined — a render/upload failure,
+  // since layoutSize/seedPlacedOpenings mean every OTHER room gets at least
+  // a plain box. Runs once per room (not on every furniture edit — Save/
+  // Generate are this editor's own deliberate points of contact with
+  // ensureGreybox) using the arrangement the canvas mounted with, and
+  // persists a success so a following Save has a real shot at a cache hit
+  // instead of re-rendering the same thing twice.
+  useEffect(() => {
+    if (openingViolations.length > 0) return; // already blocked; nothing to check yet
+    let cancelled = false;
+    ensureGreybox(projectId, { ...room, furniture: initialFurnitureRef.current })
+      .then((gb) => {
+        if (cancelled) return;
+        if (gb) {
+          updateRoom(projectId, room.id, {
+            greyboxKey: gb.greyboxKey,
+            greyboxMaskKey: gb.greyboxMaskKey,
+            greyboxHash: gb.greyboxHash,
+            greyboxLedger: gb.greyboxLedger,
+          });
+          setReadiness("ready");
+        } else {
+          setReadiness("unavailable");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setReadiness("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, room.id, openingViolations.length]);
+
   const addFurniture = (kind: string) => {
-    const step = furniture.length % Math.round((NEW_ITEM_MAX - NEW_ITEM_MIN) / NEW_ITEM_STEP + 1);
-    const rawX = Math.min(NEW_ITEM_MAX, Math.max(NEW_ITEM_MIN, NEW_ITEM_MIN + NEW_ITEM_STEP * step));
-    // Clamp the new item's default spot by its actual footprint (feet), not
-    // the flat NEW_ITEM_MIN/MAX margin — a large item (e.g. a 9ft conference
-    // table) dropped near NEW_ITEM_MIN/MAX in a small room would otherwise
-    // start already clipping a wall, same footprint-vs-flat-margin issue the
-    // live drag clamp below has to account for.
-    const { mx, mz } = footprintClampMargins(kind, width, depth);
-    const x = Math.min(1 - mx, Math.max(mx, rawX));
-    const z = Math.min(1 - mz, Math.max(mz, 0.5));
-    const item: PlacedFurniture = { id: uid("furn"), kind, x, z, rotation: 0 };
+    if (furniture.length >= MAX_FURNITURE) return; // buttons are disabled at the cap; stay safe if called anyway
+    const slot = firstFreeSlot(kind, furniture, spec, camera);
+    if (!slot) {
+      setAddError("No free space left in this room");
+      return;
+    }
+    setAddError(null);
+    const item: PlacedFurniture = { id: uid("furn"), kind, x: slot.x, z: slot.z, rotation: 0 };
     setFurniture((prev) => [...prev, item]);
     setSelectedId(item.id);
   };
@@ -158,42 +232,52 @@ function FurnishContent({
     setFurniture((prev) => prev.map((f) => (f.id === itemId ? { ...f, ...patch } : f)));
   };
 
+  function occlusionMessage(v: OcclusionViolation): string {
+    const opening = openings.find((o) => o.id === v.openingId);
+    const wallLabel = opening ? `${opening.wall} ` : "";
+    const blocker = furniture.find((f) => f.id === v.blockerId);
+    const label = blocker ? (catalogueEntry(blocker.kind)?.label ?? blocker.kind) : "Something";
+    return `${label} blocks the ${wallLabel}${v.openingType}. Move it or the generated room may show a wall there instead.`;
+  }
+
   /**
-   * Renders + uploads the current arrangement's greybox and writes it (plus
-   * the furniture list) onto the room in the store. Shared by both the plain
-   * Save button and Generate below, since Generate needs to do everything
-   * Save does before it can kick off a render with the up-to-date reference
-   * image.
+   * Section 6.1's save-time gate for anything the live warnings did not get
+   * fixed. Furniture always yields; an opening never moves. Also the point
+   * of contact that (re-)renders the greybox reference for the CURRENT
+   * arrangement and persists it — shared by Save and Generate, since
+   * Generate needs everything Save does before it can kick off a render.
    */
-  const saveArrangement = async (): Promise<string> => {
-    const { dataUri, maskDataUri, projected } = renderGreyboxBundle({
-      width,
-      depth,
-      openings,
-      furniture: toWorldFurniture(furniture, width, depth),
+  async function save(): Promise<{ furniture: PlacedFurniture[]; gb: GreyboxResult } | undefined> {
+    const { furniture: resolved, changes } = resolveOcclusion(furniture, occlusion);
+    if (changes.length) {
+      setNotice(changes);
+      setFurniture(resolved);
+      setSelectedId((cur) => (cur && resolved.some((f) => f.id === cur) ? cur : null));
+      updateRoom(projectId, room.id, { furniture: resolved });
+    }
+    const gb = await ensureGreybox(projectId, { ...room, furniture: resolved });
+    if (!gb) return undefined;
+    setRoomGreybox(projectId, room.id, {
+      furniture: resolved,
+      greyboxKey: gb.greyboxKey,
+      greyboxMaskKey: gb.greyboxMaskKey,
+      greyboxHash: gb.greyboxHash,
+      greyboxLedger: gb.greyboxLedger,
     });
-    const res = await fetch("/api/upload-greybox", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, dataUri, maskDataUri, projected }),
-    });
-    if (!res.ok) throw new Error(`Greybox upload failed (${res.status})`);
-    const { key, maskKey, ledger } = (await res.json()) as {
-      key: string;
-      maskKey: string;
-      ledger: { doors: number; windows: number };
-    };
-    updateRoom(projectId, room.id, { furniture, greyboxKey: key, greyboxMaskKey: maskKey, greyboxLedger: ledger });
-    return key;
-  };
+    return { furniture: resolved, gb };
+  }
 
   const handleSave = async () => {
     if (busy || generating) return;
     setBusy(true);
     setError(null);
     try {
-      await saveArrangement();
-      router.push(`/projects/${projectId}/review`);
+      const result = await save();
+      if (!result) {
+        setError("Could not save this arrangement — try again.");
+        return;
+      }
+      router.push(from === "generate" ? `/projects/${projectId}/generate` : `/projects/${projectId}/furnish`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -208,20 +292,24 @@ function FurnishContent({
 
   /**
    * Save, then immediately generate a real image for this room using the
-   * CURRENT furniture arrangement — the exact same mechanism
-   * generate/page.tsx's `generateMore` uses (generateRoomImage +
+   * CURRENT (post-occlusion-resolve) furniture arrangement — the exact same
+   * mechanism generate/page.tsx's `generateMore` uses (generateRoomImage +
    * addGeneration), so the result lands in the same roomCards/generations
    * data Approve, the profile renders list, and Walkthrough all read from.
    * Stays on this page afterward (no navigation) so the freshly generated
-   * image can render inline in the sidebar via `lastGeneration` — the user
-   * asked to see the result land here rather than being sent to the gallery.
+   * image can render inline in the sidebar via `lastGeneration`.
    */
   const handleGenerate = async () => {
     if (busy || generating || !canGenerate || !universalInput || !designSpec) return;
     setGenerating(true);
     setGenerateError(null);
     try {
-      const greyboxKey = await saveArrangement();
+      const result = await save();
+      if (!result) {
+        setGenerateError("Could not prepare this room's 3D reference — try again.");
+        return;
+      }
+      const { furniture: savedFurniture, gb } = result;
       const size = formatRoomSize(room.width, room.height);
       const gen = await generateRoomImage({
         projectId,
@@ -234,7 +322,10 @@ function FurnishContent({
           openings: room.openings,
         },
         designSpec,
-        greyboxKey,
+        greyboxKey: gb.greyboxKey,
+        greyboxMaskKey: gb.greyboxMaskKey,
+        projected: gb.projected,
+        furniture: savedFurniture,
       });
       const createdAt = new Date().toISOString();
       addGeneration(projectId, room.id, {
@@ -251,6 +342,73 @@ function FurnishContent({
       setGenerating(false);
     }
   };
+
+  // Section 5 fails closed: a room whose placed openings are already invalid
+  // (overlapping, too close to a corner, etc.) cannot be furnished at all —
+  // openings are read-only here, so the fix has to happen back where they
+  // were placed.
+  if (openingViolations.length > 0) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex items-center gap-3 border-b border-border px-5 py-2.5">
+          <Link
+            href={`/projects/${projectId}/generate`}
+            className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-muted hover:text-foreground"
+          >
+            <Icon name="ArrowLeft" className="size-4 shrink-0" />
+            <span className="truncate">{room.name}</span>
+          </Link>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto bg-bg p-6">
+          <div className="mx-auto max-w-2xl rounded-2xl border border-danger/30 bg-danger/5 p-6">
+            <div className="flex items-start gap-3">
+              <Icon name="CircleAlert" className="mt-0.5 size-5 shrink-0 text-danger" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground">
+                  This room&apos;s doors and windows need fixing before it can be furnished
+                </p>
+                <ul className="mt-3 space-y-1.5 text-sm text-muted">
+                  {openingViolations.map((v, i) => (
+                    <li key={i}>{v.message}</li>
+                  ))}
+                </ul>
+                <Link href={`/projects/${projectId}/plan`}>
+                  <Button className="mt-4" variant="outline" icon="ArrowLeft">
+                    Go to Plan Editor
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (readiness === "checking") {
+    return (
+      <CentredMessage icon="Loader2" spin>
+        Preparing this room&apos;s 3D view…
+      </CentredMessage>
+    );
+  }
+
+  if (readiness === "unavailable") {
+    return (
+      <CentredMessage
+        icon="CircleAlert"
+        action={
+          <Link href={`/projects/${projectId}/review`}>
+            <Button className="mt-4" variant="outline" icon="ArrowLeft">
+              Go to Room Confirmation
+            </Button>
+          </Link>
+        }
+      >
+        Add this room&apos;s dimensions in Room Confirmation to arrange furniture in 3D
+      </CentredMessage>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -286,32 +444,75 @@ function FurnishContent({
 
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
         <div className="mx-auto flex h-full max-w-6xl gap-5">
-          <div className="relative min-w-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
-            <FurnitureEditorCanvas
-              spec={{ width, depth, openings }}
-              furniture={furniture}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onCommit={handleFurnitureCommit}
-              // Task 15 wires this into the sidebar; Task 14's canvas only
-              // needs a valid callback to satisfy the props contract.
-              onOcclusionChange={() => {}}
-            />
-            <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
-              Drag to orbit. Click an item to select, then drag it to move. The wireframe box shows the exported view.
-            </p>
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
+              <FurnitureEditorCanvas
+                spec={spec}
+                furniture={furniture}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onCommit={handleFurnitureCommit}
+                onOcclusionChange={setOcclusion}
+              />
+              <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
+                Click an item to select it, then drag to move. Arrow keys nudge, [ ] rotates, Delete removes.
+              </p>
+            </div>
+
+            {occlusion.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-2xl border border-warning/30 bg-warning/10 p-3">
+                {occlusion.map((v) => (
+                  <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
+                    <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
+                    <span>{occlusionMessage(v)}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {notice.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-2xl border border-border bg-surface-2 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs font-medium text-foreground">Adjusted on save</p>
+                  <button
+                    type="button"
+                    onClick={() => setNotice([])}
+                    className="shrink-0 text-faint hover:text-muted cursor-pointer"
+                    aria-label="Dismiss"
+                  >
+                    <Icon name="X" className="size-3.5" />
+                  </button>
+                </div>
+                {notice.map((n, i) => (
+                  <p key={i} className="text-xs text-muted">
+                    {n}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
 
           <aside className="w-96 shrink-0 space-y-4 overflow-y-auto">
             <div className="rounded-2xl border border-border bg-surface-2 p-4">
-              <p className="mb-3 text-xs font-semibold text-foreground">Add furniture</p>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-foreground">Add furniture</p>
+                {furniture.length >= MAX_FURNITURE && (
+                  <span className="text-[11px] font-medium text-muted">
+                    Room is full ({furniture.length} of {MAX_FURNITURE})
+                  </span>
+                )}
+              </div>
               <div className="flex flex-wrap gap-2">
                 {catalogue.map((entry) => (
                   <button
                     key={entry.kind}
                     type="button"
+                    disabled={furniture.length >= MAX_FURNITURE}
                     onClick={() => addFurniture(entry.kind)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg px-3 py-2 text-sm font-medium text-muted transition hover:border-accent/50 hover:bg-surface-3 hover:text-foreground cursor-pointer"
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg px-3 py-2 text-sm font-medium text-muted transition hover:border-accent/50 hover:bg-surface-3 hover:text-foreground cursor-pointer",
+                      furniture.length >= MAX_FURNITURE && "cursor-not-allowed opacity-50 hover:border-border hover:bg-bg hover:text-muted",
+                    )}
                   >
                     <Icon name="Plus" className="size-4" />
                     {entry.label}
@@ -321,6 +522,7 @@ function FurnishContent({
                   <p className="text-xs text-faint">No catalogue items for this room type.</p>
                 )}
               </div>
+              {addError && <p className="mt-2 text-xs text-danger">{addError}</p>}
             </div>
 
             <div className="rounded-2xl border border-border bg-surface-2 p-4">
