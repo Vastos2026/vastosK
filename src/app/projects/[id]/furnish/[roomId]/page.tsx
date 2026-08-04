@@ -127,6 +127,10 @@ function FurnishContent({
   const router = useRouter();
   const searchParams = useSearchParams();
   const from = searchParams.get("from");
+  // Same branch handleSave already uses to decide where Save lands — the
+  // back-link arrow must agree, or a room opened from the Furnish gallery
+  // (no ?from) sends the user to /generate, a phase they haven't reached yet.
+  const backHref = from === "generate" ? `/projects/${projectId}/generate` : `/projects/${projectId}/furnish`;
 
   const [furniture, setFurniture] = useState<PlacedFurniture[]>(
     () => room.furniture ?? defaultFurnitureFor(room.type),
@@ -376,7 +380,7 @@ function FurnishContent({
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-3 border-b border-border px-5 py-2.5">
           <Link
-            href={`/projects/${projectId}/generate`}
+            href={backHref}
             className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-muted hover:text-foreground"
           >
             <Icon name="ArrowLeft" className="size-4 shrink-0" />
@@ -438,7 +442,7 @@ function FurnishContent({
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-2.5">
         <Link
-          href={`/projects/${projectId}/generate`}
+          href={backHref}
           className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-muted hover:text-foreground"
         >
           <Icon name="ArrowLeft" className="size-4 shrink-0" />

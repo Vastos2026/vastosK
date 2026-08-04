@@ -11,6 +11,7 @@ import {
   type EditorTool,
 } from "@/components/project/plan-editor-canvas";
 import { deriveOpenings, seedPlacedOpenings, type EditorShape } from "@/lib/plan-editor/geometry";
+import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { DEFAULT_ROOM_SIZE_FT } from "@/lib/pipeline/empty-plan";
 import { ROOM_PALETTE, uid } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -143,6 +144,18 @@ function PlanEditorContent({
     }));
   const unplacedRooms = rooms.filter((r) => !r.shape);
 
+  // Section 5's validateOpenings is otherwise only consumed downstream (the
+  // Furnish gallery badge, the per-room Furnish editor's hard block) — this
+  // is the one screen that can actually move an opening, so it needs to
+  // surface violations too, or a user hits the Furnish block with nothing
+  // here telling them what's wrong. Same `?? 10` fallback wallLengthFtFor
+  // (plan-editor-canvas.tsx) uses, so the two never disagree about a room
+  // whose real dimensions aren't known yet.
+  const selectedRoom = placedRooms.find((r) => r.id === selectedId);
+  const selectedRoomViolations = selectedRoom
+    ? validateOpenings(selectedRoom.placedOpenings, selectedRoom.widthFt ?? 10, selectedRoom.depthFt ?? 10)
+    : [];
+
   const patchRoom = (roomId: string, patch: Partial<Room>) =>
     setRooms((prev) => prev.map((r) => (r.id === roomId ? { ...r, ...patch } : r)));
 
@@ -260,39 +273,59 @@ function PlanEditorContent({
               />
             </div>
 
-            <div
-              className="relative w-full overflow-hidden rounded-2xl border border-border bg-grid bg-surface"
-              style={{ aspectRatio: aspect ?? 4 / 3 }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                key={imgAttempt}
-                src={referenceImage}
-                alt="Uploaded floor plan"
-                draggable={false}
-                className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill"
-                onError={() => {
-                  if (imgAttempt >= IMG_RETRY_SCHEDULE_MS.length) {
-                    setImageFailed(true);
-                    return;
-                  }
-                  imgRetryRef.current = setTimeout(() => setImgAttempt((a) => a + 1), IMG_RETRY_SCHEDULE_MS[imgAttempt]);
-                }}
-                onLoad={(e) => {
-                  const img = e.currentTarget;
-                  if (img.naturalWidth && img.naturalHeight) setAspect(img.naturalWidth / img.naturalHeight);
-                }}
-              />
-              <PlanEditorCanvas
-                rooms={placedRooms}
-                selectedId={selectedId}
-                tool={tool}
-                onSelect={setSelectedId}
-                onShapeChange={(roomId, shape) => patchRoom(roomId, { shape })}
-                onOpeningsChange={(roomId, placedOpenings) => patchRoom(roomId, { placedOpenings })}
-                onInteractionStart={handleInteractionStart}
-                onCommit={handleCommit}
-              />
+            <div className="flex min-w-0 flex-col gap-3">
+              <div
+                className="relative w-full overflow-hidden rounded-2xl border border-border bg-grid bg-surface"
+                style={{ aspectRatio: aspect ?? 4 / 3 }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  key={imgAttempt}
+                  src={referenceImage}
+                  alt="Uploaded floor plan"
+                  draggable={false}
+                  className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill"
+                  onError={() => {
+                    if (imgAttempt >= IMG_RETRY_SCHEDULE_MS.length) {
+                      setImageFailed(true);
+                      return;
+                    }
+                    imgRetryRef.current = setTimeout(() => setImgAttempt((a) => a + 1), IMG_RETRY_SCHEDULE_MS[imgAttempt]);
+                  }}
+                  onLoad={(e) => {
+                    const img = e.currentTarget;
+                    if (img.naturalWidth && img.naturalHeight) setAspect(img.naturalWidth / img.naturalHeight);
+                  }}
+                />
+                <PlanEditorCanvas
+                  rooms={placedRooms}
+                  selectedId={selectedId}
+                  tool={tool}
+                  onSelect={setSelectedId}
+                  onShapeChange={(roomId, shape) => patchRoom(roomId, { shape })}
+                  onOpeningsChange={(roomId, placedOpenings) => patchRoom(roomId, { placedOpenings })}
+                  onInteractionStart={handleInteractionStart}
+                  onCommit={handleCommit}
+                />
+              </div>
+
+              {selectedRoomViolations.length > 0 && (
+                <div className="rounded-2xl border border-danger/30 bg-danger/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <Icon name="CircleAlert" className="mt-0.5 size-5 shrink-0 text-danger" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground">
+                        {selectedRoom?.name || "This room"}&apos;s doors and windows need fixing
+                      </p>
+                      <ul className="mt-3 space-y-1.5 text-sm text-muted">
+                        {selectedRoomViolations.map((v, i) => (
+                          <li key={i}>{v.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -319,6 +352,7 @@ function PlanEditorContent({
                   {placedRooms.map((r) => {
                     const doors = r.placedOpenings.filter((o) => o.type === "door").length;
                     const windows = r.placedOpenings.filter((o) => o.type === "window").length;
+                    const violations = validateOpenings(r.placedOpenings, r.widthFt ?? 10, r.depthFt ?? 10);
                     return (
                       <div
                         key={r.id}
@@ -337,6 +371,15 @@ function PlanEditorContent({
                         <span className="shrink-0 text-faint">
                           {doors}D · {windows}W
                         </span>
+                        {violations.length > 0 && (
+                          <span
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-danger/30 bg-danger px-1.5 py-0.5 text-[10px] font-medium text-white"
+                            title="This room's doors/windows need fixing before it can be furnished"
+                          >
+                            <Icon name="CircleAlert" className="size-3" />
+                            Fix openings
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {
