@@ -253,3 +253,34 @@ export async function requireOwnedKey(userId: string, key: string): Promise<true
   const owned = await isOwnedStorageKey(userId, key);
   return owned ? true : Response.json({ error: "Not found" }, { status: 403 });
 }
+
+/**
+ * Whether `key` (a client-supplied greybox render/mask key) is provably owned by
+ * `projectId` — no DB lookup needed, unlike `requireOwnedKey` above. `/api/upload-greybox`
+ * always constructs these keys as `renders/<projectId>/greybox/<uuid>.png` (and
+ * `<that key>-mask` for the Pass B mask), so a caller who has already proven ownership of
+ * `projectId` (via `requireOwnedProject`) is provably the owner of any key with that exact
+ * prefix, and NOT the owner of a key whose prefix names a DIFFERENT project.
+ *
+ * Deliberately NOT `requireOwnedKey`: that helper depends on either an `isRecordedGeneration`
+ * row (never written for greybox keys — `/api/upload-greybox` is the one route in this app
+ * that doesn't call `recordGeneration`) or a `getOwnedProjectSnapshot` lookup whose
+ * `allProjectStorageKeys` set never even includes `greyboxMaskKey` (only `greyboxKey` —
+ * see `approved-rooms.ts`). Either gap alone makes `requireOwnedKey` return false — and
+ * therefore reject with 403 — for every real, legitimate greybox key, not just a forged
+ * one. Even fixing both gaps would leave a second problem: on a cache MISS (a brand-new
+ * greybox render), the client uploads it and calls this route with the new key in the same
+ * tick, before the 800ms-debounced `project_snapshots` sync `getOwnedProjectSnapshot` reads
+ * has had any chance to land — the exact race `isRecordedGeneration` exists to close for
+ * `/api/render`'s OWN keys, but nothing analogous exists for a just-uploaded greybox key.
+ * A prefix check anchored to the projectId already proven via `requireOwnedProject` has
+ * none of these problems: no DB round-trip, no dependency on sync timing.
+ *
+ * Exact prefix match (`String.startsWith`, including the trailing `/` right after
+ * `projectId`) — NOT a loose substring/`.includes` check: without that trailing slash,
+ * `projectId = "abc"` would incorrectly match a real DIFFERENT project's key like
+ * `renders/abc2/greybox/...`, since that string also starts with `renders/abc`.
+ */
+export function isOwnedGreyboxKey(key: string, projectId: string): boolean {
+  return key.startsWith(`renders/${projectId}/greybox/`);
+}

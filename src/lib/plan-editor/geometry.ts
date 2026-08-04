@@ -249,12 +249,16 @@ export function openingBoxToPlaced(
   const extentAlongWall = wall === "north" || wall === "south" ? ob.w : ob.h;
   const rawSpanFraction = extentAlongWall / wallLenNorm;
 
-  // clampOpeningSpan only clamps the POSITION here (keeping the whole span on the wall) — its
-  // returned span fraction is discarded; widthFt is derived separately below.
-  const { t } = clampOpeningSpan(rawT, rawSpanFraction);
+  // clampOpeningSpan clamps BOTH the position (keeping the whole span on the wall) AND the
+  // span fraction itself (into [0.04, 0.9]) — widthFt below is derived from the SAME
+  // clamped fraction it returns, not the raw pre-clamp one, so `t` and `widthFt` stay
+  // consistent with each other. Using the raw fraction here would let an oversized Gemini
+  // box produce a widthFt wider than the wall allows even though `t` was clamped as if it
+  // weren't (Fix round 1).
+  const { t, span: clampedFraction } = clampOpeningSpan(rawT, rawSpanFraction);
   const widthFt =
     roomWidthFt && roomDepthFt
-      ? rawSpanFraction * wallLengthFt(wall, roomWidthFt, roomDepthFt)
+      ? clampedFraction * wallLengthFt(wall, roomWidthFt, roomDepthFt)
       : type === "door"
         ? STANDARD_DOOR_WIDTH_FT
         : STANDARD_WINDOW_WIDTH_FT;

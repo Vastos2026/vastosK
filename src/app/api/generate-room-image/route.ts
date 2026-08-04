@@ -22,7 +22,7 @@ import { ProviderError, toErrorResponse } from "@/lib/ai/errors";
 import { getObject, putObject } from "@/lib/pipeline/storage";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
-import { requireOwnedProject, requireOwnedKey } from "@/lib/supabase/projects";
+import { requireOwnedProject, isOwnedGreyboxKey } from "@/lib/supabase/projects";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import type { ProjectedOpening } from "@/lib/greybox/render-mask";
 import { GREYBOX_RENDER_W, GREYBOX_RENDER_H } from "@/lib/greybox/dimensions";
@@ -95,18 +95,26 @@ export async function POST(request: Request) {
   if (owned instanceof Response) return owned;
 
   // greyboxKey/greyboxMaskKey are client-supplied storage keys, independent
-  // of the projectId check above — without this, any authenticated caller
-  // could pass a key string pointing at a DIFFERENT project's stored render
-  // and have it loaded server-side (getObject/loadGreyboxDataUri below) and
-  // fed to the image model as a reference, a cross-tenant data leak. Same
-  // check /api/render uses for exactly this, same error shape.
-  if (greyboxKey) {
-    const ownedKey = await requireOwnedKey(guard.id, greyboxKey);
-    if (ownedKey instanceof Response) return ownedKey;
+  // of the projectId ownership just proven above — without this, any
+  // authenticated caller could pass a key string pointing at a DIFFERENT
+  // project's stored render and have it loaded server-side (getObject/
+  // loadGreyboxDataUri below) and fed to the image model as a reference, a
+  // cross-tenant data leak. Validated by PREFIX against the already-proven
+  // projectId (isOwnedGreyboxKey — /api/upload-greybox always constructs
+  // these keys as `renders/<projectId>/greybox/<uuid>.png`/`<key>-mask`),
+  // deliberately NOT requireOwnedKey/`/api/render`'s DB-lookup approach: a
+  // prior version of this fix used requireOwnedKey here and it 403'd EVERY
+  // real, legitimate greybox-conditioned generation, because
+  // greyboxMaskKey is never in allProjectStorageKeys (approved-rooms.ts)
+  // and /api/upload-greybox never calls recordGeneration for either key —
+  // see isOwnedGreyboxKey's own doc comment (supabase/projects.ts) for the
+  // full explanation, including the debounced-sync race a DB lookup would
+  // ALSO have hit even with those two gaps fixed.
+  if (greyboxKey && !isOwnedGreyboxKey(greyboxKey, projectId)) {
+    return Response.json({ error: "Not found" }, { status: 403 });
   }
-  if (greyboxMaskKey) {
-    const ownedMaskKey = await requireOwnedKey(guard.id, greyboxMaskKey);
-    if (ownedMaskKey instanceof Response) return ownedMaskKey;
+  if (greyboxMaskKey && !isOwnedGreyboxKey(greyboxMaskKey, projectId)) {
+    return Response.json({ error: "Not found" }, { status: 403 });
   }
 
   try {

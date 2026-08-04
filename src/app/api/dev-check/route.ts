@@ -38,6 +38,9 @@ import { assertGenerationAspect } from "@/lib/render/runware-client";
 // network call); ProviderError is the plain error class it inspects.
 import { runChain, type ChainStep } from "@/lib/ai/provider";
 import { ProviderError } from "@/lib/ai/errors";
+// Pure prefix check (Fix round 1 — B5 critical regression fix), no DB call — see its
+// own doc comment (supabase/projects.ts) for why this replaced requireOwnedKey here.
+import { isOwnedGreyboxKey } from "@/lib/supabase/projects";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -896,6 +899,23 @@ export async function GET() {
     },
   );
 
+  check(
+    "assertGenerationAspect: the thrown error is marked nonRecoverable (Fix round 1 — B3: without this flag, runChain silently swallows an aspect mismatch again, the original bug)",
+    () => {
+      let caught: unknown;
+      try {
+        assertGenerationAspect(1280, 704);
+      } catch (e) {
+        caught = e;
+      }
+      assert(caught instanceof ProviderError, `expected a ProviderError, got ${caught}`);
+      assert(
+        (caught as ProviderError).nonRecoverable === true,
+        "assertGenerationAspect's thrown error must be nonRecoverable, or runChain falls through to the next tier on an aspect mismatch instead of failing the job",
+      );
+    },
+  );
+
   check("GREYBOX_ASPECT is derived from GREYBOX_RENDER_W/GREYBOX_RENDER_H, not a separately hardcoded literal", () => {
     // If GREYBOX_ASPECT were ever replaced with a hardcoded `1.7917` (the
     // rounded value someone might reasonably hand-copy), this fails: 1376/768
@@ -907,6 +927,43 @@ export async function GET() {
       GREYBOX_ASPECT,
       GREYBOX_RENDER_W / GREYBOX_RENDER_H,
       "GREYBOX_ASPECT must equal a live division of the two exported dimensions",
+    );
+  });
+
+  // ---- isOwnedGreyboxKey (Fix round 1 — B5 critical regression fix: prefix-based greybox
+  // key ownership, replacing a requireOwnedKey call that 403'd every legitimate request) ----
+  check("isOwnedGreyboxKey: a key with the caller's own project prefix is owned", () => {
+    assert(
+      isOwnedGreyboxKey("renders/proj-a/greybox/abc123.png", "proj-a"),
+      "a same-project greybox key must be recognized as owned",
+    );
+  });
+
+  check("isOwnedGreyboxKey: a key with a DIFFERENT project's prefix is rejected", () => {
+    assert(
+      !isOwnedGreyboxKey("renders/proj-b/greybox/abc123.png", "proj-a"),
+      "a different project's greybox key must not be recognized as owned",
+    );
+  });
+
+  check("isOwnedGreyboxKey: the mask key's different suffix shape still passes (same prefix)", () => {
+    // upload-greybox/route.ts constructs the mask key as `${key}-mask` — a different
+    // SUFFIX shape (uuid.png-mask, not uuid.png) but the identical prefix, and must be
+    // owned exactly like the render key itself.
+    assert(
+      isOwnedGreyboxKey("renders/proj-a/greybox/abc123.png-mask", "proj-a"),
+      "the mask key's -mask suffix must not affect the prefix check",
+    );
+  });
+
+  check("isOwnedGreyboxKey: the prefix boundary is exact, not a loose substring match", () => {
+    // "proj-a" must NOT match a key actually belonging to "proj-ab" — a naive
+    // `key.startsWith('renders/' + projectId)` WITHOUT the trailing slash after
+    // projectId would wrongly accept this, since "renders/proj-ab/..." does start
+    // with the literal string "renders/proj-a".
+    assert(
+      !isOwnedGreyboxKey("renders/proj-ab/greybox/abc123.png", "proj-a"),
+      "a project id that is a string-prefix of another project's id must not match its keys",
     );
   });
 

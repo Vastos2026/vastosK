@@ -5,6 +5,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import { useSyncExternalStore } from "react";
 import type {
   Door,
+  PlacedOpening,
   Project,
   ProjectStatus,
   PropertyType,
@@ -15,6 +16,7 @@ import type {
   Window,
 } from "./types";
 import { uid } from "./utils";
+import { STANDARD_DOOR_WIDTH_FT, STANDARD_WINDOW_WIDTH_FT } from "./plan-editor/geometry";
 
 interface VastoState {
   projects: Project[];
@@ -487,14 +489,24 @@ export const useVasto = create<VastoState>()(
     {
       name: "vasto-store-v1",
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       partialize: (s) => ({ projects: s.projects }),
       // v2: drop the old seeded demo projects so only real, user-created
       // projects remain. v3: the Workstream 8.5 rebuild destroyed the 3D
       // furniture-placement studio and the multi-view render pipeline —
       // `placedItems`/`renders` on any persisted project are stale shapes
       // the new code no longer reads or writes; drop them rather than carry
-      // dead fields forward indefinitely.
+      // dead fields forward indefinitely. v4: PlacedOpening.span (a 0..1
+      // wall-length fraction) was renamed to widthFt (a fixed real-world
+      // width, in feet — see lib/types.ts's doc comment). No shipped build
+      // on main ever persisted the old field (PlacedOpening didn't exist
+      // there yet), so this isn't a real migration path — it's a safety
+      // net for a dev/tester browser that ran this WORKTREE branch before
+      // the rename: any placedOpening still carrying the stale `span`
+      // field (and lacking `widthFt`) gets a STANDARD_*_WIDTH_FT default
+      // instead of silently NaN-ing out downstream (Math.min(L, undefined)
+      // etc. everywhere widthFt is now read) — re-adjustable by hand in
+      // the Plan Editor afterward, same as any other placed opening.
       migrate: (persisted, fromVersion) => {
         const state = persisted as { projects?: (Project & { placedItems?: unknown; renders?: unknown })[] } | undefined;
         if (fromVersion < 2 && state?.projects) {
@@ -505,6 +517,29 @@ export const useVasto = create<VastoState>()(
           state.projects = state.projects.map((p) => {
             const { placedItems: _placedItems, renders: _renders, ...rest } = p;
             return { ...rest, roomCards: rest.roomCards ?? [] };
+          });
+        }
+        if (fromVersion < 4 && state?.projects) {
+          state.projects = state.projects.map((p) => {
+            if (!p.floorPlan) return p;
+            return {
+              ...p,
+              floorPlan: {
+                ...p.floorPlan,
+                rooms: p.floorPlan.rooms.map((r) => {
+                  if (!r.placedOpenings?.length) return r;
+                  return {
+                    ...r,
+                    placedOpenings: r.placedOpenings.map((o) => {
+                      const legacy = o as PlacedOpening & { span?: number };
+                      if (typeof legacy.widthFt === "number") return o;
+                      const { span: _span, ...rest } = legacy;
+                      return { ...rest, widthFt: legacy.type === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT };
+                    }),
+                  };
+                }),
+              },
+            };
           });
         }
         return state as VastoState;
