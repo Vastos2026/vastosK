@@ -62,10 +62,17 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   // (reported bug). Those two are the only sub-routes with their own header.
   const hasOwnBackNav = (step === "generate" || step === "furnish") && !!subSegment;
 
-  // Match the phase whose segment appears in the path — "furnish" maps to
-  // "generate" (see comment above) rather than being matched generically.
+  // Match the phase whose segment appears in the path — "furnish/[roomId]"
+  // (subSegment present) maps to "generate", same as "generate/[roomId]"
+  // View & Edit (see comment above), since it's a sub-route reached FROM
+  // Generate. The top-level "/furnish" gallery has no subSegment, so it
+  // falls through to the normal PHASES lookup and correctly resolves to
+  // "furnish" — mapping it to "generate" too used to highlight the wrong
+  // stepper pill on the gallery page (reported bug).
   const currentPhase = (
-    step === "furnish" ? "generate" : (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload")
+    step === "furnish" && subSegment
+      ? "generate"
+      : (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload")
   ) as Phase;
 
   const backHref = (() => {

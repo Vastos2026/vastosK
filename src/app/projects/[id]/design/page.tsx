@@ -152,6 +152,11 @@ export default function DesignPage() {
         // parallel, matching the .then/.catch/.finally chain this replaces)
         // — it just needs its OWN await for the greybox render/upload step
         // to finish before the actual generation call for that one room.
+        //
+        // The Furnish gallery (Task 16) already renders every room's greybox
+        // before the user ever reaches this page, so ensureGreybox here is
+        // normally a cache hit. It stays as a fallback for a room reached by
+        // a route that skipped Furnish entirely (e.g. a stale bookmark).
         (async () => {
           try {
             const gb = await ensureGreybox(id, room).catch((e) => {
@@ -161,8 +166,20 @@ export default function DesignPage() {
               );
               return undefined;
             });
-            if (gb) useVasto.getState().updateRoom(id, room.id, gb);
-            const greyboxKey = gb?.greyboxKey;
+            // Never spread the whole ensureGreybox result into the store —
+            // `projected` is derived fresh on every call (see GreyboxResult's
+            // own doc comment) and is not one of Room's persisted fields.
+            // Only the four real fields go to updateRoom; `gb.projected` and
+            // `gb.greyboxKey`/etc. stay in local scope for the
+            // generateRoomImage call below.
+            if (gb) {
+              useVasto.getState().updateRoom(id, room.id, {
+                greyboxKey: gb.greyboxKey,
+                greyboxMaskKey: gb.greyboxMaskKey,
+                greyboxHash: gb.greyboxHash,
+                greyboxLedger: gb.greyboxLedger,
+              });
+            }
             const gen = await generateRoomImage({
               projectId: id,
               universalInput,
@@ -174,7 +191,10 @@ export default function DesignPage() {
                 openings: room.openings,
               },
               designSpec,
-              greyboxKey,
+              greyboxKey: gb?.greyboxKey,
+              greyboxMaskKey: gb?.greyboxMaskKey,
+              projected: gb?.projected,
+              furniture: room.furniture,
             });
             useVasto.getState().addGeneration(id, room.id, {
               id: uid("gen"),

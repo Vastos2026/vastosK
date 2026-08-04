@@ -57,7 +57,7 @@ export default function ReviewPage() {
         ? `/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`
         : plan?.previewUrl;
 
-  const goToDesign = () => router.push(`/projects/${id}/design`);
+  const goToFurnish = () => router.push(`/projects/${id}/furnish`);
 
   const confirmDelete = (roomId: string) => {
     removeRoom(id, roomId);
@@ -283,8 +283,8 @@ export default function ReviewPage() {
         </div>
 
         <div className="mt-8 flex justify-end">
-          <Button iconRight="ArrowRight" disabled={rooms.length === 0} onClick={goToDesign}>
-            Continue to Design
+          <Button iconRight="ArrowRight" disabled={rooms.length === 0} onClick={goToFurnish}>
+            Continue to Furnish
           </Button>
         </div>
       </div>
