@@ -147,9 +147,16 @@ const ASPECT_TOLERANCE = 0.002;
 export function assertGenerationAspect(width: number, height: number): void {
   const drift = Math.abs(width / height - GREYBOX_ASPECT);
   if (drift > ASPECT_TOLERANCE) {
-    throw new Error(
+    // nonRecoverable: this is a correctness invariant, not a transient or
+    // provider-specific failure — a different image model wouldn't fix a
+    // mismatched camera, it would just silently produce a wrong-looking
+    // result instead of failing loudly. See provider.ts's runChain, the
+    // ONLY thing that inspects this flag.
+    throw new ProviderError(
+      "ValidationError",
       `Generation aspect ${width}x${height} (${(width / height).toFixed(4)}) does not match the greybox aspect ` +
         `${GREYBOX_ASPECT.toFixed(4)} (tolerance ${ASPECT_TOLERANCE})`,
+      { nonRecoverable: true },
     );
   }
 }

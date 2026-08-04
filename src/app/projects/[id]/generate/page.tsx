@@ -94,8 +94,20 @@ export default function GeneratePage() {
         );
         return undefined;
       });
-      if (gb) updateRoom(id, room.id, gb);
-      const greyboxKey = gb?.greyboxKey;
+      // Never spread the whole ensureGreybox result into the store —
+      // `projected` is derived fresh on every call (see GreyboxResult's own
+      // doc comment) and is not one of Room's persisted fields. Only the
+      // four real fields go to updateRoom; gb.projected/etc. stay in local
+      // scope for the generateRoomImage call below — matches design/page.tsx's
+      // auto-fire loop exactly.
+      if (gb) {
+        updateRoom(id, room.id, {
+          greyboxKey: gb.greyboxKey,
+          greyboxMaskKey: gb.greyboxMaskKey,
+          greyboxHash: gb.greyboxHash,
+          greyboxLedger: gb.greyboxLedger,
+        });
+      }
 
       // Omit size entirely when a dimension is still missing, rather than
       // sending a literal "undefined x undefined ft" into the render
@@ -116,7 +128,10 @@ export default function GeneratePage() {
           openings: room.openings,
         },
         designSpec,
-        greyboxKey,
+        greyboxKey: gb?.greyboxKey,
+        greyboxMaskKey: gb?.greyboxMaskKey,
+        projected: gb?.projected,
+        furniture: room.furniture,
       });
       addGeneration(id, room.id, {
         id: uid("gen"),

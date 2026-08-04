@@ -22,7 +22,7 @@ import { ProviderError, toErrorResponse } from "@/lib/ai/errors";
 import { getObject, putObject } from "@/lib/pipeline/storage";
 import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
-import { requireOwnedProject } from "@/lib/supabase/projects";
+import { requireOwnedProject, requireOwnedKey } from "@/lib/supabase/projects";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import type { ProjectedOpening } from "@/lib/greybox/render-mask";
 import { GREYBOX_RENDER_W, GREYBOX_RENDER_H } from "@/lib/greybox/dimensions";
@@ -93,6 +93,21 @@ export async function POST(request: Request) {
   // cross-tenant data leak.
   const owned = await requireOwnedProject(guard.id, projectId);
   if (owned instanceof Response) return owned;
+
+  // greyboxKey/greyboxMaskKey are client-supplied storage keys, independent
+  // of the projectId check above — without this, any authenticated caller
+  // could pass a key string pointing at a DIFFERENT project's stored render
+  // and have it loaded server-side (getObject/loadGreyboxDataUri below) and
+  // fed to the image model as a reference, a cross-tenant data leak. Same
+  // check /api/render uses for exactly this, same error shape.
+  if (greyboxKey) {
+    const ownedKey = await requireOwnedKey(guard.id, greyboxKey);
+    if (ownedKey instanceof Response) return ownedKey;
+  }
+  if (greyboxMaskKey) {
+    const ownedMaskKey = await requireOwnedKey(guard.id, greyboxMaskKey);
+    if (ownedMaskKey instanceof Response) return ownedMaskKey;
+  }
 
   try {
     // Re-derived from the stored mask rather than trusting a client-sent

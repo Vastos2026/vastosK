@@ -34,6 +34,10 @@ import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/
 // Pure aspect-tolerance guard (Task 13, section 3.4) — no network call, safe
 // to import here even though the rest of runware-client.ts does real HTTP.
 import { assertGenerationAspect } from "@/lib/render/runware-client";
+// runChain is pure fallback-chain control flow (stub steps below make no
+// network call); ProviderError is the plain error class it inspects.
+import { runChain, type ChainStep } from "@/lib/ai/provider";
+import { ProviderError } from "@/lib/ai/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -905,6 +909,76 @@ export async function GET() {
       "GREYBOX_ASPECT must equal a live division of the two exported dimensions",
     );
   });
+
+  // ---- runChain (Part B / B3: a nonRecoverable ProviderError must skip fallback, not degrade to it) ----
+  await checkAsync(
+    "runChain: a nonRecoverable ProviderError re-throws immediately, skipping every remaining tier",
+    async () => {
+      let secondTierRan = false;
+      const nonRecoverableErr = new ProviderError("ValidationError", "aspect mismatch stub", {
+        nonRecoverable: true,
+      });
+      const steps: ChainStep<string>[] = [
+        {
+          model: "tier-1",
+          provider: "runware",
+          run: async () => {
+            throw nonRecoverableErr;
+          },
+        },
+        {
+          model: "tier-2",
+          provider: "google",
+          run: async () => {
+            secondTierRan = true;
+            return "tier-2 result";
+          },
+        },
+      ];
+      let caught: unknown;
+      try {
+        await runChain(steps, () => {});
+      } catch (e) {
+        caught = e;
+      }
+      assert(!secondTierRan, "the second tier must never run after a nonRecoverable failure");
+      assert(caught === nonRecoverableErr, "the original error object must be re-thrown unchanged, not wrapped or swallowed");
+    },
+  );
+
+  await checkAsync(
+    "runChain: an ordinary (non-nonRecoverable) error still falls through to the next tier, unchanged from before this fix",
+    async () => {
+      let secondTierRan = false;
+      let usedModel: string | undefined;
+      const steps: ChainStep<string>[] = [
+        {
+          model: "tier-1",
+          provider: "runware",
+          run: async () => {
+            // Deliberately a ValidationError, not AiProviderError — proves the
+            // fallthrough still isn't gated on category, only on the explicit
+            // nonRecoverable flag (matches runChain's own doc comment).
+            throw new ProviderError("ValidationError", "ordinary validation failure stub");
+          },
+        },
+        {
+          model: "tier-2",
+          provider: "google",
+          run: async () => {
+            secondTierRan = true;
+            return "tier-2 result";
+          },
+        },
+      ];
+      const result = await runChain(steps, (model) => {
+        usedModel = model;
+      });
+      assert(secondTierRan, "an ordinary error must still fall through to the next tier");
+      eq(result, "tier-2 result", "the second tier's result must be returned");
+      eq(usedModel, "tier-2", "setUsed must record the tier that actually succeeded");
+    },
+  );
 
   // ---- greyboxCamera (Task 14: the fixed-camera editor's aspect contract) ----
   // The editor viewport is locked to GREYBOX_ASPECT rather than the

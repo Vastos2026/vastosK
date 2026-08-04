@@ -166,7 +166,7 @@ async function instrumented<T>(
   }
 }
 
-interface ChainStep<T> {
+export interface ChainStep<T> {
   model: string;
   provider: "google" | "runware";
   run: () => Promise<T>;
@@ -174,16 +174,23 @@ interface ChainStep<T> {
 
 /**
  * Tries each step in order, falling through to the next on ANY failure
- * (including a `ValidationError` — a deterministic failure on Runware's
- * FLUX/Nano-Banana doesn't imply the completely separate Google direct-API
- * path would fail the same way, unlike `withRetry`'s same-provider retry,
- * which correctly stops on `ValidationError`). Returns the first success;
- * throws the LAST step's error if every step fails. Used for the
- * FLUX → Nano Banana 2 → Google-direct fallback chain (`generateImage`/
+ * (including an ordinary `ValidationError` — a deterministic failure on
+ * Runware's FLUX/Nano-Banana doesn't imply the completely separate Google
+ * direct-API path would fail the same way, unlike `withRetry`'s same-provider
+ * retry, which correctly stops on `ValidationError`) — EXCEPT a
+ * `ProviderError` with `nonRecoverable: true` (e.g. assertGenerationAspect's
+ * guard, runware-client.ts), which re-throws immediately instead: that
+ * failure is a correctness invariant a different tier can't route around, so
+ * falling through would just silently mask it. Returns the first success;
+ * throws the LAST step's error if every (fallen-through) step fails. Used for
+ * the FLUX → Nano Banana 2 → Google-direct fallback chain (`generateImage`/
  * `editImage` below) — `generateVideo`/`generateStructured` have only one
  * active backend each and don't need this, see `runOnProvider`.
+ *
+ * Exported so dev-check can exercise both branches (nonRecoverable re-throw,
+ * ordinary fallthrough) with stub steps, no network call.
  */
-async function runChain<T>(
+export async function runChain<T>(
   steps: ChainStep<T>[],
   setUsed: (model: string, provider: "google" | "runware") => void,
 ): Promise<T> {
@@ -194,6 +201,17 @@ async function runChain<T>(
       setUsed(step.model, step.provider);
       return result;
     } catch (e) {
+      // A `nonRecoverable` ProviderError (e.g. assertGenerationAspect's guard,
+      // runware-client.ts) means this tier's failure is a correctness
+      // invariant, not a transient/provider-specific one — falling through to
+      // a different tier wouldn't fix the underlying problem (the generation
+      // dimensions don't match the reference image's aspect), it would just
+      // silently mask it behind a different image model. Re-throw
+      // immediately instead of trying the next tier. Every OTHER error type —
+      // including an ordinary ValidationError — keeps falling through exactly
+      // as before this flag existed; this is a narrow carve-out for one
+      // specific failure class, not a broader retry-semantics change.
+      if (e instanceof ProviderError && e.nonRecoverable) throw e;
       lastErr = e;
       console.warn(
         `[ai-provider-chain] ${step.provider}:${step.model} failed, trying next tier:`,

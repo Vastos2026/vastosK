@@ -14,11 +14,23 @@ export type ErrorCategory =
 
 export class ProviderError extends Error {
   category: ErrorCategory;
+  /**
+   * True for a correctness-invariant failure that a DIFFERENT provider/tier
+   * cannot route around — e.g. runware-client.ts's assertGenerationAspect
+   * guard: a caller-side generation-dimensions mismatch means the reference
+   * image's camera can't be honored, which trying a different image model
+   * would silently mask rather than fix. `runChain` (provider.ts) re-throws
+   * immediately on this marker instead of falling through to the next tier;
+   * every other error (including an ordinary ValidationError) keeps falling
+   * through to the next tier exactly as before this flag existed.
+   */
+  nonRecoverable: boolean;
 
-  constructor(category: ErrorCategory, message: string) {
+  constructor(category: ErrorCategory, message: string, opts?: { nonRecoverable?: boolean }) {
     super(message);
     this.name = "ProviderError";
     this.category = category;
+    this.nonRecoverable = opts?.nonRecoverable ?? false;
   }
 }
 

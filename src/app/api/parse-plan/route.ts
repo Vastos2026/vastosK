@@ -4,6 +4,7 @@ import { putObject } from "@/lib/pipeline/storage";
 import { assertAllowed } from "@/lib/api-guard";
 import { toErrorResponse } from "@/lib/ai/errors";
 import { recordGeneration } from "@/lib/supabase/generations";
+import { requireOwnedProject } from "@/lib/supabase/projects";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +70,18 @@ export async function POST(request: Request) {
 
     const projectIdParam = form.get("projectId");
     const projectId = typeof projectIdParam === "string" && projectIdParam ? projectIdParam : null;
+
+    // Without this check, an authenticated caller could pass ANY other
+    // project's id and have this upload's storage key plus a `generations`
+    // row recorded against it below — a cross-tenant write, the same class
+    // of bug already guarded against in /api/generate-room-image and
+    // /api/upload-greybox. Skipped when no projectId was sent at all,
+    // matching the existing optional-projectId contract this route already
+    // has for the recordGeneration call further down (older client).
+    if (projectId) {
+      const owned = await requireOwnedProject(guard.id, projectId);
+      if (owned instanceof Response) return owned;
+    }
 
     const roomTypeHintsParam = form.get("roomTypeHints");
     const roomTypeHints =

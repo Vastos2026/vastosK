@@ -6,10 +6,10 @@ import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnitureEditorCanvas, type FurnitureCommitPatch } from "@/components/project/furniture-editor-canvas";
 import { furnitureForRoomType, catalogueEntry } from "@/lib/greybox/furniture-catalogue";
-import { defaultFurnitureFor } from "@/lib/greybox/furniture-layout";
+import { defaultFurnitureFor, toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { ensureGreybox, type GreyboxResult } from "@/lib/greybox/ensure-greybox-key";
 import { firstFreeSlot } from "@/lib/greybox/first-free-slot";
-import { MAX_FURNITURE, resolveOcclusion, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
+import { MAX_FURNITURE, resolveOcclusion, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { greyboxCamera } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
@@ -211,9 +211,33 @@ function FurnishContent({
   };
 
   const rotateItem = (itemId: string, dir: 1 | -1) => {
-    setFurniture((prev) =>
-      prev.map((f) => (f.id === itemId ? { ...f, rotation: f.rotation + dir * ROTATE_STEP } : f)),
-    );
+    setFurniture((prev) => {
+      const item = prev.find((f) => f.id === itemId);
+      if (!item) return prev;
+      const rotation = item.rotation + dir * ROTATE_STEP;
+      // Mirrors furniture-editor-canvas.tsx's own keyboard ([`/`]`) rotate
+      // handler exactly: re-run resolvePlacement at the item's CURRENT
+      // (already-legal) position as both the target and the `from`, at the
+      // NEW rotation — a rotation alone can widen the item's AABB and create
+      // an overlap the position by itself did not have (footprintAabb folds
+      // rotation into the box extents), so resolvePlacement may need to
+      // nudge the position to dodge it.
+      const others = toWorldFurniture(
+        prev.filter((f) => f.id !== itemId),
+        width,
+        depth,
+      );
+      const world = toWorldFurniture([item], width, depth)[0];
+      if (!world) return prev; // unknown/stale kind — nothing to safely rotate
+      const { x, z } = resolvePlacement(
+        { kind: item.kind, rotation, x: world.x, z: world.z, fromX: world.x, fromZ: world.z },
+        others,
+        { width, depth },
+        { x: camera.position.x, z: camera.position.z },
+      );
+      const local = worldToLocal(x, z, width, depth);
+      return prev.map((f) => (f.id === itemId ? { ...f, x: local.x, z: local.z, rotation } : f));
+    });
   };
 
   const deleteItem = (itemId: string) => {
