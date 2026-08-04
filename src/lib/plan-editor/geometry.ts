@@ -40,36 +40,20 @@ const OPPOSITE: Record<GreyboxWall, GreyboxWall> = {
   west: "east",
 };
 
-/** Standard real-world door/window widths, feet — used to size a placed opening as a fraction
- *  of the ACTUAL wall it's on (see toWallFraction below), so a door doesn't scale up on a huge
- *  wall or shrink on a tiny one. Shared with plan-editor-canvas.tsx's interactive click-to-add. */
+/** Standard real-world door/window widths, feet — the FIXED size assigned to a new or seeded
+ *  opening, independent of the wall/room it ends up on (openings no longer scale with the wall
+ *  they sit on — see PlacedOpening.widthFt's doc comment in lib/types.ts). Shared with
+ *  plan-editor-canvas.tsx's interactive click-to-add. */
 export const STANDARD_DOOR_WIDTH_FT = 3;
 export const STANDARD_WINDOW_WIDTH_FT = 4;
 
-/** Fallback along-wall fraction, used only when the room's real feet dimensions are unknown
- *  (so a real-world width can't be converted to a wall fraction at all). */
-const DEFAULT_SPAN: Record<PlacedOpening["type"], number> = { door: 0.12, window: 0.18 };
-
 /** A wall's real length in feet, given the room's real width/depth — matches build-scene.ts's
  *  wallFrame convention: north/south walls run east-west (length = room width); east/west walls
- *  run north-south (length = room depth). */
-function wallLengthFt(wall: GreyboxWall, roomWidthFt: number, roomDepthFt: number): number {
+ *  run north-south (length = room depth). Exported for plan-editor-canvas.tsx's interactive
+ *  create/move/resize handlers and openingBoxToPlaced below, which all need to convert between
+ *  an opening's fixed real-world widthFt and its normalised along-wall position/clamp fraction. */
+export function wallLengthFt(wall: GreyboxWall, roomWidthFt: number, roomDepthFt: number): number {
   return wall === "north" || wall === "south" ? roomWidthFt : roomDepthFt;
-}
-
-/** Standard real-world width, as a fraction of `wall`'s actual length — falls back to
- *  DEFAULT_SPAN[type] when the room's real feet dimensions aren't known. */
-function toWallFraction(
-  type: PlacedOpening["type"],
-  wall: GreyboxWall,
-  roomWidthFt: number | undefined,
-  roomDepthFt: number | undefined,
-): number {
-  if (!roomWidthFt || !roomDepthFt) return DEFAULT_SPAN[type];
-  const lengthFt = wallLengthFt(wall, roomWidthFt, roomDepthFt);
-  if (!(lengthFt > 0)) return DEFAULT_SPAN[type];
-  const targetFt = type === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT;
-  return targetFt / lengthFt;
 }
 
 export function moveShape(shape: EditorShape, dx: number, dy: number): EditorShape {
@@ -234,12 +218,19 @@ const OPENING_BOX_TOLERANCE = 0.12;
  * correction layer for whatever this gets close-but-not-exact, so this doesn't need to be exact.
  * Returns null when the box doesn't plausibly sit on this room's boundary at all (extraction
  * noise), so the caller can fall back to `seedPlacedOpenings`'s even-spread guess instead.
+ *
+ * `roomWidthFt`/`roomDepthFt` (the room's real feet dimensions, when known) convert the box's
+ * measured along-wall fraction into an absolute widthFt ONCE, at extraction time — after that,
+ * like every other opening, its real-world size no longer depends on the room's dimensions.
+ * Falls back to the STANDARD_*_WIDTH_FT constants when the room's real dimensions aren't known.
  */
 export function openingBoxToPlaced(
   roomShape: EditorShape,
   box: GeminiBox,
   type: PlacedOpening["type"],
   id: string,
+  roomWidthFt?: number,
+  roomDepthFt?: number,
 ): PlacedOpening | null {
   const ob = boxToShape(box);
   const centre: Pt = [ob.x + ob.w / 2, ob.y + ob.h / 2];
@@ -251,12 +242,23 @@ export function openingBoxToPlaced(
   if (len2 < 1e-12) return null;
   const rawT = ((centre[0] - a[0]) * (b[0] - a[0]) + (centre[1] - a[1]) * (b[1] - a[1])) / len2;
 
-  const wallLen = Math.sqrt(len2);
+  // Fraction of the wall's IMAGE-space length this box occupies. The plan image is drawn to one
+  // consistent scale, so this fraction equals the real-world along-wall fraction too — len2 was
+  // already checked >= 1e-12 above, so wallLenNorm here is always > 1e-6, never a division risk.
+  const wallLenNorm = Math.sqrt(len2);
   const extentAlongWall = wall === "north" || wall === "south" ? ob.w : ob.h;
-  const rawSpan = wallLen > 1e-9 ? extentAlongWall / wallLen : DEFAULT_SPAN[type];
+  const rawSpanFraction = extentAlongWall / wallLenNorm;
 
-  const { t, span } = clampOpeningSpan(rawT, rawSpan);
-  return { id, type, wall, t, span };
+  // clampOpeningSpan only clamps the POSITION here (keeping the whole span on the wall) — its
+  // returned span fraction is discarded; widthFt is derived separately below.
+  const { t } = clampOpeningSpan(rawT, rawSpanFraction);
+  const widthFt =
+    roomWidthFt && roomDepthFt
+      ? rawSpanFraction * wallLengthFt(wall, roomWidthFt, roomDepthFt)
+      : type === "door"
+        ? STANDARD_DOOR_WIDTH_FT
+        : STANDARD_WINDOW_WIDTH_FT;
+  return { id, type, wall, t, widthFt };
 }
 
 /**
@@ -267,11 +269,7 @@ export function openingBoxToPlaced(
  * openings of the same type on the same wall are spread evenly so they don't
  * start stacked on top of each other.
  */
-export function seedPlacedOpenings(
-  openings: RoomOpening[],
-  roomWidthFt?: number,
-  roomDepthFt?: number,
-): PlacedOpening[] {
+export function seedPlacedOpenings(openings: RoomOpening[]): PlacedOpening[] {
   const byWall = new Map<string, RoomOpening[]>();
   for (const o of openings) {
     const key = `${o.side}:${o.type}`;
@@ -281,10 +279,11 @@ export function seedPlacedOpenings(
   let seq = 0;
   for (const [key, group] of byWall) {
     const [wall, type] = key.split(":") as [GreyboxWall, PlacedOpening["type"]];
-    const span = toWallFraction(type, wall, roomWidthFt, roomDepthFt);
+    // A fixed real-world width, independent of the room's dimensions — no conversion needed.
+    const widthFt = type === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT;
     group.forEach((_, i) => {
       const t = (i + 1) / (group.length + 1);
-      out.push({ id: `seed-${seq++}`, type, wall, t, span });
+      out.push({ id: `seed-${seq++}`, type, wall, t, widthFt });
     });
   }
   return out;

@@ -55,7 +55,7 @@ export async function ensureGreybox(projectId: string, room: Room): Promise<Grey
       // their walls gives real opening conditioning instead of falling back to
       // text-only. room.shape is NOT required: it is the rectangle on the plan
       // IMAGE, which the greybox never reads.
-      seedPlacedOpenings(room.openings ?? [], room.width, room.height);
+      seedPlacedOpenings(room.openings ?? []);
 
   // See layoutSize's own doc comment: it must not be used to build an AI
   // prompt or display a size as fact. This doesn't — the greybox's contract is

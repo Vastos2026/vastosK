@@ -17,8 +17,14 @@ export interface GreyboxOpening {
   wall: GreyboxWall;
   /** 0..1 centre position along the wall, in the plan's left-to-right / top-to-bottom order. */
   t: number;
-  /** 0..1 fraction of the wall's length. */
-  span: number;
+  /**
+   * Fixed real-world width, in feet — never derived from or scaled by the
+   * wall's length, so it survives a later room resize unchanged. Mirrors
+   * PlacedOpening.widthFt exactly (src/lib/types.ts) — ensure-greybox-key.ts
+   * passes room.placedOpenings straight into this field with no per-field
+   * transform, so the two types must change together.
+   */
+  widthFt: number;
 }
 
 /** One furniture proxy, already in world-feet coordinates (see furniture-layout.ts's

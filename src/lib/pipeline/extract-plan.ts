@@ -158,12 +158,14 @@ function toRoom(r: RawExtractedRoom, index: number): Room {
     const unresolved: RoomOpening[] = [];
     const resolved: PlacedOpening[] = [];
     for (const o of r.openings) {
-      const placed = o.box ? openingBoxToPlaced(shape, o.box, o.kind, randomUUID()) : null;
+      const placed = o.box
+        ? openingBoxToPlaced(shape, o.box, o.kind, randomUUID(), r.widthFt, r.heightFt)
+        : null;
       if (placed) resolved.push(placed);
       else unresolved.push(toRoomOpening(o));
     }
     placedOpenings = unresolved.length
-      ? [...resolved, ...seedPlacedOpenings(unresolved, r.widthFt, r.heightFt)]
+      ? [...resolved, ...seedPlacedOpenings(unresolved)]
       : resolved;
   }
 

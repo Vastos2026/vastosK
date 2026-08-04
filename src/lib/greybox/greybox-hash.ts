@@ -51,7 +51,7 @@ export function greyboxHashFor(
   const { width, height } = layoutSize(room);
   const openings = [...(room.placedOpenings ?? [])]
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map((o) => [o.type, o.wall, round(o.t, 4), round(o.span, 4)]);
+    .map((o) => [o.type, o.wall, round(o.t, 4), round(o.widthFt, 4)]);
   const furniture = [...(room.furniture ?? [])]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((f) => [f.kind, round(f.x, 4), round(f.z, 4), round(f.rotation, 4)]);

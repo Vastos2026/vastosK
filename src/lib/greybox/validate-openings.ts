@@ -47,11 +47,16 @@ export function validateOpenings(
   for (const [wall, list] of byWall) {
     const L = wallLen(wall);
     const spans = list
-      .map((o) => ({ o, lo: o.t - o.span / 2, hi: o.t + o.span / 2 }))
+      .map((o) => {
+        // o.widthFt is absolute feet; halve and divide by the wall's length
+        // to get the same normalised half-width fraction `lo`/`hi` need.
+        const halfFrac = o.widthFt / (2 * L);
+        return { o, lo: o.t - halfFrac, hi: o.t + halfFrac };
+      })
       .sort((a, b) => a.lo - b.lo);
 
     for (const s of spans) {
-      const spanFt = s.o.span * L;
+      const spanFt = s.o.widthFt;
       if (spanFt < MIN_SPAN_FT) {
         out.push({
           openingIds: [s.o.id],

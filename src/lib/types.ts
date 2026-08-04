@@ -35,8 +35,15 @@ export interface PlacedOpening {
    * puts this opening on the wrong side of the wall.
    */
   t: number;
-  /** 0..1 fraction of the wall's length. */
-  span: number;
+  /**
+   * Fixed real-world width, in feet — e.g. STANDARD_DOOR_WIDTH_FT /
+   * STANDARD_WINDOW_WIDTH_FT (see plan-editor/geometry.ts). Never derived
+   * from, or scaled by, the room's/wall's current dimensions, so it
+   * survives a later room resize unchanged — the same principle as
+   * PlacedFurniture's footprintFt, already an absolute size never
+   * normalized against room dimensions.
+   */
+  widthFt: number;
 }
 
 export type RenderStatus = "queued" | "processing" | "completed" | "failed";

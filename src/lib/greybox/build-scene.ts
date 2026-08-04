@@ -105,7 +105,7 @@ function openingVertical(o: GreyboxOpening): { y0: number; y1: number } {
 export function openingCentre(spec: GreyboxRoomSpec, o: GreyboxOpening): THREE.Vector3 {
   const frame = wallFrame(o.wall, spec.width, spec.depth);
   const L = frame.len;
-  const spanLen = Math.max(0, Math.min(1, o.span)) * L;
+  const spanLen = Math.max(0, Math.min(L, o.widthFt));
   const centre = Math.max(0, Math.min(1, o.t)) * L;
   const x0 = Math.max(0, Math.min(L - spanLen, centre - spanLen / 2));
   const u = x0 + spanLen / 2 - L / 2;
@@ -127,7 +127,7 @@ export function openingFaceSamples(
 ): THREE.Vector3[] {
   const frame = wallFrame(o.wall, spec.width, spec.depth);
   const L = frame.len;
-  const spanLen = Math.max(0, Math.min(1, o.span)) * L;
+  const spanLen = Math.max(0, Math.min(L, o.widthFt));
   const centre = Math.max(0, Math.min(1, o.t)) * L;
   const x0 = Math.max(0, Math.min(L - spanLen, centre - spanLen / 2));
   const uMid = x0 + spanLen / 2 - L / 2;
@@ -256,7 +256,7 @@ function buildWall(
   const openings = spec.openings
     .filter((o) => o.wall === wall)
     .map((o) => {
-      const spanLen = Math.max(0, Math.min(1, o.span)) * L;
+      const spanLen = Math.max(0, Math.min(L, o.widthFt));
       const centre = Math.max(0, Math.min(1, o.t)) * L;
       // Keep the opening fully on the wall rather than letting it hang off an end.
       const x0 = Math.max(0, Math.min(L - spanLen, centre - spanLen / 2));

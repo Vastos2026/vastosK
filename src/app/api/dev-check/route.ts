@@ -122,10 +122,12 @@ function buildHistogramFixture(
 function projectionFixture(): { spec: GreyboxRoomSpec; camera: ReturnType<typeof greyboxCamera> } {
   const width = 20;
   const depth = 16;
+  // widthFt: 6 == the old span: 0.3 * width(20) — both south/north walls run the room's
+  // 20ft width, so the same absolute feet value reproduces the old fraction-based geometry.
   const anchorSpec: GreyboxRoomSpec = {
     width,
     depth,
-    openings: [{ id: "anchor", type: "window", wall: "south", t: 0.5, span: 0.3 }],
+    openings: [{ id: "anchor", type: "window", wall: "south", t: 0.5, widthFt: 6 }],
   };
   const camera = greyboxCamera(anchorSpec, GREYBOX_ASPECT);
 
@@ -133,8 +135,8 @@ function projectionFixture(): { spec: GreyboxRoomSpec; camera: ReturnType<typeof
     width,
     depth,
     openings: [
-      { id: "visible-south", type: "door", wall: "south", t: 0.5, span: 0.3 },
-      { id: "behind-north", type: "window", wall: "north", t: 0.5, span: 0.3 },
+      { id: "visible-south", type: "door", wall: "south", t: 0.5, widthFt: 6 },
+      { id: "behind-north", type: "window", wall: "north", t: 0.5, widthFt: 6 },
     ],
   };
   return { spec, camera };
@@ -196,8 +198,8 @@ export async function GET() {
       width: 12,
       height: 14,
       placedOpenings: [
-        { id: "b", type: "window" as const, wall: "north" as const, t: 0.3, span: 0.2 },
-        { id: "a", type: "door" as const, wall: "south" as const, t: 0.5, span: 0.25 },
+        { id: "b", type: "window" as const, wall: "north" as const, t: 0.3, widthFt: 2.4 },
+        { id: "a", type: "door" as const, wall: "south" as const, t: 0.5, widthFt: 3 },
       ],
       furniture: [],
     };
@@ -209,7 +211,7 @@ export async function GET() {
     const base = {
       width: 12,
       height: 14,
-      placedOpenings: [{ id: "a", type: "door" as const, wall: "south" as const, t: 0.5, span: 0.25 }],
+      placedOpenings: [{ id: "a", type: "door" as const, wall: "south" as const, t: 0.5, widthFt: 3 }],
       furniture: [],
     };
     const moved = { ...base, placedOpenings: [{ ...base.placedOpenings[0], t: 0.6 }] };
@@ -229,20 +231,57 @@ export async function GET() {
 
   // ---- openingFaceSamples ----
   check("face samples land inside the opening rectangle", () => {
+    // widthFt: 4.8 == the old span: 0.4 * width(12) — reproduces the identical opening size.
     const spec = {
       width: 12,
       depth: 10,
-      openings: [{ id: "w1", type: "window" as const, wall: "north" as const, t: 0.5, span: 0.4 }],
+      openings: [{ id: "w1", type: "window" as const, wall: "north" as const, t: 0.5, widthFt: 4.8 }],
     };
     const pts = openingFaceSamples(spec, spec.openings[0]);
     eq(pts.length, 25, "5x5 grid");
     // North wall sits at z = -depth/2, t runs west->east so samples vary in x only.
     for (const p of pts) {
       assert(Math.abs(p.z - -5) < 1e-6, `sample off the north wall plane: z=${p.z}`);
-      assert(Math.abs(p.x) <= (0.4 * 12) / 2 + 1e-6, `sample outside the span: x=${p.x}`);
+      assert(Math.abs(p.x) <= 4.8 / 2 + 1e-6, `sample outside the span: x=${p.x}`);
       assert(p.y >= 3 && p.y <= 7, `sample outside the window's vertical extent: y=${p.y}`);
     }
   });
+
+  check(
+    "PlacedOpening/GreyboxOpening regression: an opening's real-world width survives a room resize unchanged (Part A — widthFt is fixed feet, not a wall-length fraction)",
+    () => {
+      // Reproduces the plan's exact bug scenario: a 3ft door on a 10ft-wide wall, then the
+      // room is later widened to 22ft (Room Confirmation correcting a size). Before this fix,
+      // width was stored as span = targetWidthFt / wallLengthFt — a FRACTION frozen against
+      // the wall length AT CREATION TIME — so spanLen = span * NEW_L silently drifted with
+      // every later resize (0.3 * 22 = 6.6ft, not 3ft). widthFt is now absolute feet, so the
+      // real width build-scene.ts's spanLen formula produces must be identical before and after.
+      const opening = { id: "d1", type: "door" as const, wall: "north" as const, t: 0.5, widthFt: 3 };
+      const beforeResize = { width: 10, depth: 10, openings: [opening] };
+      const afterResize = { width: 22, depth: 10, openings: [opening] };
+
+      // openingFaceSamples' 1-row grid (nv=1) spans u in [uMid - 0.4*spanLen, uMid + 0.4*spanLen]
+      // along the wall (fu ranges 0.1..0.9, i.e. +-0.4 around centre) — so (max x - min x) / 0.8
+      // recovers the REAL spanLen build-scene.ts actually computed, straight from its own
+      // exported function, not a separate reimplementation of its formula.
+      const widthFromRealSamples = (spec: { width: number; depth: number; openings: (typeof opening)[] }) => {
+        const pts = openingFaceSamples(spec, spec.openings[0], 5, 1);
+        const xs = pts.map((p) => p.x);
+        return (Math.max(...xs) - Math.min(...xs)) / 0.8;
+      };
+
+      const widthBefore = widthFromRealSamples(beforeResize);
+      const widthAfter = widthFromRealSamples(afterResize);
+      assert(
+        Math.abs(widthBefore - 3) < 1e-9,
+        `sanity: recovered width before resize must equal widthFt (3), got ${widthBefore}`,
+      );
+      assert(
+        Math.abs(widthAfter - widthBefore) < 1e-9,
+        `opening width drifted on resize: ${widthBefore}ft before -> ${widthAfter}ft after — widthFt must be frozen, independent of room size`,
+      );
+    },
+  );
 
   // ---- assertHistogram (section 3.7 value ladder) ----
   // Baseline "healthy" greys, reused with one deliberately broken per check:
@@ -414,39 +453,48 @@ export async function GET() {
   });
 
   // ---- validateOpenings (section 5) ----
-  const op = (id: string, wall: "north" | "south" | "east" | "west", t: number, span: number, type: "door" | "window" = "window") =>
-    ({ id, type, wall, t, span }) as const;
+  // widthFt is now absolute feet, not a fraction — every literal below is the old
+  // fraction * the relevant wall's length (width for north/south, depth for east/west),
+  // chosen so each fixture reproduces the EXACT same lo/hi fractions and spanFt the
+  // pre-fix fraction-based fixture produced (see per-check comments for the arithmetic).
+  const op = (id: string, wall: "north" | "south" | "east" | "west", t: number, widthFt: number, type: "door" | "window" = "window") =>
+    ({ id, type, wall, t, widthFt }) as const;
 
   check("a well-placed opening passes", () => {
-    eq(validateOpenings([op("a", "north", 0.5, 0.3)], 12, 10), [], "no violations");
+    // 3.6 == 0.3 * width(12).
+    eq(validateOpenings([op("a", "north", 0.5, 3.6)], 12, 10), [], "no violations");
   });
 
   check("overlapping openings on the same wall are rejected", () => {
-    const v = validateOpenings([op("a", "north", 0.4, 0.3), op("b", "north", 0.55, 0.3)], 12, 10);
+    // 3.6 == 0.3 * width(12), for both.
+    const v = validateOpenings([op("a", "north", 0.4, 3.6), op("b", "north", 0.55, 3.6)], 12, 10);
     assert(v.some((x) => x.message.includes("overlap")), `expected an overlap violation, got ${JSON.stringify(v)}`);
   });
 
   check("openings closer than 0.5ft of solid wall are rejected", () => {
-    // 12ft wall: a is t=0.25/span=0.3 -> spans [0.10, 0.40]; b is t=0.5667/span=0.3
-    // -> spans [0.4167, 0.7167]. Gap = (0.4167-0.40)*12 = 0.2ft, under the 0.5ft
-    // floor, and b.lo(0.4167) > a.hi(0.40) so this trips separation, not overlap.
-    const v = validateOpenings([op("a", "north", 0.25, 0.3), op("b", "north", 0.5667, 0.3)], 12, 10);
+    // 12ft wall: a is t=0.25/widthFt=3.6 (== old span 0.3) -> spans [0.10, 0.40]; b is
+    // t=0.5667/widthFt=3.6 -> spans [0.4167, 0.7167]. Gap = (0.4167-0.40)*12 = 0.2ft,
+    // under the 0.5ft floor, and b.lo(0.4167) > a.hi(0.40) so this trips separation,
+    // not overlap.
+    const v = validateOpenings([op("a", "north", 0.25, 3.6), op("b", "north", 0.5667, 3.6)], 12, 10);
     assert(v.some((x) => x.message.includes("solid wall")), `expected a separation violation, got ${JSON.stringify(v)}`);
   });
 
   check("an opening flush to a corner is rejected", () => {
-    const v = validateOpenings([op("a", "north", 0.13, 0.25)], 12, 10);
+    // 3.0 == 0.25 * width(12).
+    const v = validateOpenings([op("a", "north", 0.13, 3.0)], 12, 10);
     assert(v.some((x) => x.message.includes("corner")), `expected a corner violation, got ${JSON.stringify(v)}`);
   });
 
   check("an opening narrower than 2ft is rejected", () => {
-    const v = validateOpenings([op("a", "north", 0.5, 0.1)], 12, 10);
+    // 1.2 == 0.1 * width(12), under the 2ft MIN_SPAN_FT floor.
+    const v = validateOpenings([op("a", "north", 0.5, 1.2)], 12, 10);
     assert(v.some((x) => x.message.includes("niche")), `expected a min-span violation, got ${JSON.stringify(v)}`);
   });
 
   check("east and west walls are measured against depth, not width", () => {
-    // span 0.25 on a 40ft-wide / 4ft-deep room: 1ft on the east wall -> too narrow.
-    const v = validateOpenings([op("a", "east", 0.5, 0.25)], 40, 4);
+    // 1.0ft on a 40ft-wide / 4ft-deep room's east wall (== 0.25 * depth(4)) -> too narrow.
+    const v = validateOpenings([op("a", "east", 0.5, 1.0)], 40, 4);
     assert(v.some((x) => x.message.includes("niche")), `east wall must use depth, got ${JSON.stringify(v)}`);
   });
 
@@ -872,10 +920,11 @@ export async function GET() {
   // in camera X (-13.8 vs 0), not a rounding-level difference. If the editor
   // used the viewport's own aspect instead, a browser window resize alone
   // could silently re-pick this same wrong candidate.
+  // widthFt: 4.5 == the old span: 0.15 * width(30) — reproduces the identical door size.
   const cameraContractSpec: GreyboxRoomSpec = {
     width: 30,
     depth: 8,
-    openings: [{ id: "d1", type: "door", wall: "north", t: 0.5, span: 0.15 }],
+    openings: [{ id: "d1", type: "door", wall: "north", t: 0.5, widthFt: 4.5 }],
   };
   const PORTRAIT_ASPECT = 9 / 16; // ~0.5625 vs GREYBOX_ASPECT's ~1.7917 — not adjacent, not a rounding neighbour.
 

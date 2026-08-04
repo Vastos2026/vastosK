@@ -149,7 +149,7 @@ function PlanEditorContent({
   const placeRoom = (room: Room) => {
     // Seed from this room's extraction-time openings (side-only guess) so
     // there's something to drag into place, not a blank rectangle.
-    const seeded = room.placedOpenings ?? seedPlacedOpenings(room.openings ?? [], room.width, room.height);
+    const seeded = room.placedOpenings ?? seedPlacedOpenings(room.openings ?? []);
     patchRoom(room.id, { shape: { ...DEFAULT_SHAPE }, placedOpenings: seeded });
     setSelectedId(room.id);
   };

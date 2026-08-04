@@ -9,12 +9,14 @@ import {
   pointInShape,
   resizeShape,
   wallHitTest,
+  wallLengthFt,
   STANDARD_DOOR_WIDTH_FT,
   STANDARD_WINDOW_WIDTH_FT,
   type EditorShape,
   type ResizeHandle,
 } from "@/lib/plan-editor/geometry";
 import type { PlacedOpening } from "@/lib/types";
+import type { GreyboxWall } from "@/lib/greybox/types";
 import type { Pt } from "@/lib/sketch/geometry";
 
 /**
@@ -46,6 +48,13 @@ export interface EditorRoom {
 /** The active editing tool. "select" is move/resize/drag — everything else is unchanged from
  *  before this tool system existed. The other three are single-purpose, cross-room actions. */
 export type EditorTool = "select" | "door" | "window" | "delete";
+
+/** `room.widthFt`/`depthFt`'s real-length-in-feet for `wall`, falling back to 10 when the
+ *  room's real dimensions aren't known yet — the single fallback point every create/move/
+ *  resize/render call in this file shares, so they can't drift from each other. */
+function wallLengthFtFor(room: { widthFt?: number; depthFt?: number }, wall: GreyboxWall): number {
+  return wallLengthFt(wall, room.widthFt ?? 10, room.depthFt ?? 10);
+}
 
 export const DOOR_COLOR = "#e6c15c";
 export const WINDOW_COLOR = "#6da8e2";
@@ -198,8 +207,8 @@ export function PlanEditorCanvas({
         }
 
         for (const o of room.placedOpenings) {
-          const [ax, ay] = px(wallPointAt(room.shape, o, "a"));
-          const [bx, by] = px(wallPointAt(room.shape, o, "b"));
+          const [ax, ay] = px(wallPointAt(room, o, "a"));
+          const [bx, by] = px(wallPointAt(room, o, "b"));
           const hoveredForDelete =
             tool === "delete" && deleteHover?.room.id === room.id && deleteHover.opening.id === o.id;
           ctx.beginPath();
@@ -314,10 +323,15 @@ export function PlanEditorCanvas({
             // of freezing, so the drag continues around the perimeter.
             const hit = wallHitTest(room.shape, p, 1);
             if (!hit) return;
-            const { t, span } = clampOpeningSpan(hit.t, opening.span);
+            // widthFt is unchanged by a move — only its position (and possibly its wall, on a
+            // corner crossing) changes. Re-derive the half-width FRACTION against the (possibly
+            // new, post-reassignment) wall's real length purely to clamp `t`; discard the
+            // returned span fraction, since widthFt itself is never stored as a fraction.
+            const halfFrac = opening.widthFt / (2 * wallLengthFtFor(room, hit.wall));
+            const { t } = clampOpeningSpan(hit.t, halfFrac * 2);
             onOpeningsChange(
               drag.roomId,
-              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, wall: hit.wall, t, span } : o)),
+              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, wall: hit.wall, t } : o)),
             );
           } else if (drag.kind === "resize-opening") {
             const room = rooms.find((r) => r.id === drag.roomId);
@@ -325,14 +339,20 @@ export function PlanEditorCanvas({
             if (!room || !opening) return;
             const hit = wallHitTest(room.shape, p, 1);
             if (!hit || hit.wall !== opening.wall) return;
-            // Dragging one end moves that end while the OTHER end stays put.
-            const otherT = drag.end === "a" ? opening.t + opening.span / 2 : opening.t - opening.span / 2;
+            const wallLenFt = wallLengthFtFor(room, opening.wall);
+            // Dragging one end moves that end while the OTHER end stays put — otherT is derived
+            // from the opening's CURRENT real-world half-width, converted to this wall's fraction.
+            const halfFrac = opening.widthFt / (2 * wallLenFt);
+            const otherT = drag.end === "a" ? opening.t + halfFrac : opening.t - halfFrac;
             const newT = (hit.t + otherT) / 2;
-            const newSpan = Math.abs(hit.t - otherT);
-            const { t, span } = clampOpeningSpan(newT, newSpan);
+            const newSpanFrac = Math.abs(hit.t - otherT);
+            const { t, span: clampedSpanFrac } = clampOpeningSpan(newT, newSpanFrac);
+            // Convert the clamped fraction back into feet using the CURRENT wall length before
+            // storing — this is the fix: widthFt is real feet, never a fraction frozen in time.
+            const newWidthFt = clampedSpanFrac * wallLenFt;
             onOpeningsChange(
               drag.roomId,
-              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, t, span } : o)),
+              room.placedOpenings.map((o) => (o.id === opening.id ? { ...o, t, widthFt: newWidthFt } : o)),
             );
           }
         }}
@@ -350,8 +370,8 @@ export function PlanEditorCanvas({
           if (selected) {
             // Opening end-handles take priority (finest-grained target).
             for (const o of selected.placedOpenings) {
-              const a = wallPointAt(selected.shape, o, "a");
-              const b = wallPointAt(selected.shape, o, "b");
+              const a = wallPointAt(selected, o, "a");
+              const b = wallPointAt(selected, o, "b");
               if (pxDist(a, p, w, h) <= OPENING_END_PX) {
                 onInteractionStart?.();
                 dragRef.current = { kind: "resize-opening", roomId: selected.id, openingId: o.id, end: "a" };
@@ -420,12 +440,15 @@ export function PlanEditorCanvas({
             // wall's on-screen length — a door on a huge wall shouldn't become huge, nor tiny
             // on a small one. North/south walls run east-west (length = room width); east/west
             // walls run north-south (length = room depth) — matches build-scene.ts's wallFrame.
-            const wallLengthFt =
-              found.wall.wall === "north" || found.wall.wall === "south"
-                ? (found.room.widthFt ?? 10)
-                : (found.room.depthFt ?? 10);
             const targetWidthFt = tool === "door" ? STANDARD_DOOR_WIDTH_FT : STANDARD_WINDOW_WIDTH_FT;
-            const { t, span } = clampOpeningSpan(found.wall.t, targetWidthFt / wallLengthFt);
+            // clampOpeningSpan is fraction-based, so pass the target width AS a fraction of this
+            // wall's real length purely to get a clamped `t` (kept fully on the wall) — its
+            // returned span fraction is discarded; the FIXED real-world targetWidthFt is what
+            // gets stored, never a fraction of whatever wall length happened to produce it.
+            const { t } = clampOpeningSpan(
+              found.wall.t,
+              targetWidthFt / wallLengthFtFor(found.room, found.wall.wall),
+            );
             onOpeningsChange(found.room.id, [
               ...found.room.placedOpenings,
               {
@@ -433,7 +456,7 @@ export function PlanEditorCanvas({
                 type: tool,
                 wall: found.wall.wall,
                 t,
-                span,
+                widthFt: targetWidthFt,
               },
             ]);
             onSelect(found.room.id);
@@ -480,9 +503,12 @@ function cornerAndEdgeHandles(s: EditorShape): Pt[] {
   ];
 }
 
-function wallPointAt(shape: EditorShape, o: PlacedOpening, end: "a" | "b"): Pt {
-  const t = end === "a" ? o.t - o.span / 2 : o.t + o.span / 2;
-  return openingPoint(shape, { wall: o.wall, t: Math.max(0, Math.min(1, t)) });
+function wallPointAt(room: EditorRoom, o: PlacedOpening, end: "a" | "b"): Pt {
+  // o.widthFt is fixed real-world feet — derive the current normalised half-width fraction
+  // fresh here (never stored) to combine with `t` for the on-screen end-handle position.
+  const halfFrac = o.widthFt / (2 * wallLengthFtFor(room, o.wall));
+  const t = end === "a" ? o.t - halfFrac : o.t + halfFrac;
+  return openingPoint(room.shape, { wall: o.wall, t: Math.max(0, Math.min(1, t)) });
 }
 
 function pxDist(a: Pt, b: Pt, w: number, h: number): number {
