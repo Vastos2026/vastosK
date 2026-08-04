@@ -856,6 +856,54 @@ export async function GET() {
     );
   });
 
+  // ---- greyboxCamera (Task 14: the fixed-camera editor's aspect contract) ----
+  // The editor viewport is locked to GREYBOX_ASPECT rather than the
+  // container's own aspect (task-14-report.md, "Resolution 1") specifically
+  // BECAUSE aspect can flip which of camera.ts's 8 candidate viewpoints wins
+  // — this fixture is a real, verified instance of that, not a hypothetical:
+  // a 30x8ft room with a single door centred on the north wall. At
+  // GREYBOX_ASPECT the SW corner candidate wins (its wider horizontal FOV
+  // pulls the door's projection close enough to frame-centre to beat the
+  // south-wall-midpoint candidate on the tie-break "spread" metric); at a
+  // portrait 9:16 aspect, the corner's narrower horizontal FOV pushes that
+  // same door too far off-axis and south-mid wins instead — an 11.5ft swing
+  // in camera X (-13.8 vs 0), not a rounding-level difference. If the editor
+  // used the viewport's own aspect instead, a browser window resize alone
+  // could silently re-pick this same wrong candidate.
+  const cameraContractSpec: GreyboxRoomSpec = {
+    width: 30,
+    depth: 8,
+    openings: [{ id: "d1", type: "door", wall: "north", t: 0.5, span: 0.15 }],
+  };
+  const PORTRAIT_ASPECT = 9 / 16; // ~0.5625 vs GREYBOX_ASPECT's ~1.7917 — not adjacent, not a rounding neighbour.
+
+  check("greyboxCamera: GREYBOX_ASPECT and a clearly different aspect select materially different cameras", () => {
+    const wide = greyboxCamera(cameraContractSpec, GREYBOX_ASPECT);
+    const portrait = greyboxCamera(cameraContractSpec, PORTRAIT_ASPECT);
+    eq(
+      { x: wide.position.x, y: wide.position.y, z: wide.position.z },
+      { x: -13.8, y: 5, z: 3.68 },
+      "GREYBOX_ASPECT must win the SW corner candidate for this fixture",
+    );
+    eq(
+      { x: portrait.position.x, y: portrait.position.y, z: portrait.position.z },
+      { x: 0, y: 5, z: 3.68 },
+      "the portrait aspect must win the south-wall-midpoint candidate instead",
+    );
+    assert(
+      Math.abs(wide.position.x - portrait.position.x) > 1,
+      `expected a material (>1ft) camera-X difference between aspects, got ${wide.position.x} vs ${portrait.position.x}`,
+    );
+  });
+
+  check("greyboxCamera: deterministic — the same (spec, aspect) yields an identical camera on every call", () => {
+    const a = greyboxCamera(cameraContractSpec, GREYBOX_ASPECT);
+    const b = greyboxCamera(cameraContractSpec, GREYBOX_ASPECT);
+    eq(a.position.toArray(), b.position.toArray(), "position");
+    eq(a.quaternion.toArray(), b.quaternion.toArray(), "orientation (the lookAt target)");
+    eq(a.fov, b.fov, "fov");
+  });
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     { passed: results.length - failed.length, failed: failed.length, results },

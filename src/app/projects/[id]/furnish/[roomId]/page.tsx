@@ -4,7 +4,11 @@ import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
-import { FurnitureEditorCanvas, footprintClampMargins } from "@/components/project/furniture-editor-canvas";
+import {
+  FurnitureEditorCanvas,
+  footprintClampMargins,
+  type FurnitureCommitPatch,
+} from "@/components/project/furniture-editor-canvas";
 import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
 import { defaultFurnitureFor, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import { renderGreyboxBundle } from "@/lib/greybox/render-mask";
@@ -143,6 +147,17 @@ function FurnishContent({
     setSelectedId((cur) => (cur === itemId ? null : cur));
   };
 
+  // Task 14's canvas reports every drag/nudge/rotate/delete through this one
+  // callback rather than handing back a whole new furniture array — see
+  // FurnitureCommitPatch's doc comment. `null` means remove.
+  const handleFurnitureCommit = (itemId: string, patch: FurnitureCommitPatch) => {
+    if (patch === null) {
+      deleteItem(itemId);
+      return;
+    }
+    setFurniture((prev) => prev.map((f) => (f.id === itemId ? { ...f, ...patch } : f)));
+  };
+
   /**
    * Renders + uploads the current arrangement's greybox and writes it (plus
    * the furniture list) onto the room in the store. Shared by both the plain
@@ -273,13 +288,14 @@ function FurnishContent({
         <div className="mx-auto flex h-full max-w-6xl gap-5">
           <div className="relative min-w-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
             <FurnitureEditorCanvas
-              width={width}
-              depth={depth}
-              openings={openings}
+              spec={{ width, depth, openings }}
               furniture={furniture}
               selectedId={selectedId}
               onSelect={setSelectedId}
-              onFurnitureChange={setFurniture}
+              onCommit={handleFurnitureCommit}
+              // Task 15 wires this into the sidebar; Task 14's canvas only
+              // needs a valid callback to satisfy the props contract.
+              onOcclusionChange={() => {}}
             />
             <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
               Drag to orbit. Click an item to select, then drag it to move. The wireframe box shows the exported view.
