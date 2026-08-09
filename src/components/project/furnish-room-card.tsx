@@ -95,14 +95,18 @@ export function FurnishRoomCard({
         </button>
       )}
 
+      {/* A warning, not a blocker. The editor used to refuse to open a room
+          with an opening violation; it no longer does (see that page's own
+          comment on validateOpenings), so this badge reads as advisory and
+          keeps its shortcut to the place the geometry can actually be fixed. */}
       {hasOpeningViolation && (
         <Link
           href={`/projects/${projectId}/plan`}
-          className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-danger/30 bg-danger px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm hover:bg-danger/90"
-          title="This room's doors/windows need fixing before it can be furnished"
+          className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm hover:bg-warning/90"
+          title="Some doors or windows here may not render accurately. You can still furnish and generate this room."
         >
           <Icon name="CircleAlert" className="size-3" />
-          Fix openings
+          Check openings
         </Link>
       )}
     </div>

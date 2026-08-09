@@ -87,6 +87,35 @@ function openingLedger(ledger: GreyboxLedger, furnitureCount: number): string {
 }
 
 /**
+ * Positive-contents clause for service/back-of-house room types that carry
+ * no catalogue furniture (furnitureForRoomType / defaultFurnitureFor in
+ * greybox/furniture-catalogue.ts return an empty set for these). Without an
+ * explicit statement of what the room DOES contain, the furniture-materials
+ * section below is simply omitted for these rooms, leaving nothing to anchor
+ * the model against the style/luxury brief in section 4 — which is exactly
+ * how a "luxury living space" brief ends up free-associating a sofa into a
+ * bathroom. There is no negativePrompt channel on bfl:* models (see this
+ * file's header and docs/flux-prompting-techniques.md section 2.4), so this
+ * is deliberately a positive statement of contents ("contains X only"),
+ * never a negative one ("no sofa") — naming the unwanted object is what
+ * makes the model more likely to paint it in. Keys are lowercased room-type
+ * strings and must stay in sync with greybox/furniture-catalogue.ts's
+ * NO_FURNITURE_ROOM_TYPES (plus Pooja Room, which does get one catalogue
+ * item but benefits from the same explicit statement). Each phrase is
+ * hand-written and short by design, on the same size order as one
+ * buildFurnitureMaterials() line, so it fits the section 5 budget untouched.
+ */
+const SERVICE_ROOM_CONTENTS: Record<string, string> = {
+  bathroom: "This room contains sanitary fixtures, a vanity and tiled surfaces only.",
+  washroom: "This room contains sanitary fixtures, a vanity and tiled surfaces only.",
+  utility: "This room contains laundry appliances, a wash counter and shelving only.",
+  "store room": "This room contains shelving and closed storage cabinetry only.",
+  storage: "This room contains shelving and closed storage cabinetry only.",
+  garage: "This room contains a parking surface and wall-mounted storage only.",
+  "pooja room": "This room contains the pooja mandir and simple shelving only.",
+};
+
+/**
  * Note on templates: this no longer reads getBuilderTemplate(). Its three
  * fields are all deleted content under section 2.4 — `intro` is replaced by
  * the medium line, `cameraPrefix` restates a camera the reference image
@@ -107,7 +136,31 @@ export async function buildRoomPrompt(
   //    real output and rejected it — FLUX.2 renormalises perspective to ~20-24mm
   //    without moving openings, and naming a focal length buys camera fidelity
   //    that isn't required at the cost of barrel distortion.
-  const medium = "Photorealistic interior photograph, wide angle, eye level.";
+  //
+  //    UNVERIFIED (2026-08-10): the trailing surface-texture sentence is a
+  //    prompt-side response to a user complaint that painted walls sometimes
+  //    render as smooth wax/thick oil paint. A separate investigation of
+  //    runware-client.ts found no server-side lever for this on the active
+  //    model (bfl:5@1 / FLUX.2 [pro]): `steps` is rejected outright
+  //    (unsupportedArchitectureSteps), CFGScale doesn't exist as a parameter
+  //    on this model, and output is already lossless PNG, so there is no
+  //    JPEG-artefact or sampler explanation either. Positive phrasing only,
+  //    per this file's header: state what the surface IS (faint roller-nap
+  //    texture, natural sheen variation), never what it should avoid being
+  //    (naming "waxy" or "oil painting" would make the model more likely to
+  //    produce it, per section 2.4's "every constraint gets a positive
+  //    phrasing or gets deleted"). Appended to `medium` rather than a new
+  //    section: this is the one line in the whole template that is fixed
+  //    boilerplate and never touched by the overflow ladder (see the
+  //    `assemble` closure below), so a texture clause placed here costs a
+  //    known, constant number of characters and can never be silently
+  //    dropped ahead of the structural contract or opening ledger — exactly
+  //    the "don't let it starve the higher-priority sections, but don't let
+  //    it be the first thing cut either" placement this needed. Not yet
+  //    validated against a real generated image.
+  const medium =
+    "Photorealistic interior photograph, wide angle, eye level. Painted walls show faint " +
+    "roller-nap texture and natural sheen variation.";
 
   // 2. Structural contract, or a one-line geometry statement when there is no
   //    reference image. One code path, one budget, one assert.
@@ -129,9 +182,18 @@ export async function buildRoomPrompt(
   // proportion far more precisely than a number in prose can.
   const brief = [`${cap(roomLabel)}.`, spec.compactBrief, guidance].filter(Boolean).join(" ").slice(0, BUDGET.brief);
 
-  // 5. Furniture materials. Derived from the set of types present; empty
-  //    furniture omits the line entirely.
-  const furnitureLine = buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture);
+  // 5. Furniture materials. Derived from the set of types present. When
+  //    there is no furniture at all, this used to omit the line entirely;
+  //    for a known service room type that's exactly the gap that let a
+  //    style brief free-associate a sofa into a bathroom, so a room with no
+  //    furniture and a matching entry in SERVICE_ROOM_CONTENTS gets that
+  //    positive statement in the same slot instead. Rooms with furniture, or
+  //    with no furniture and no service-room entry (e.g. an empty Living
+  //    Room mid-furnish), keep the prior "line omitted" behaviour.
+  const serviceContents = SERVICE_ROOM_CONTENTS[room.type?.trim().toLowerCase() ?? ""];
+  const furnitureLine = furniture.length
+    ? buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture)
+    : (serviceContents ?? "").slice(0, BUDGET.furniture);
 
   // 6. Accent — optional, always last, engineered to be the thing that gets
   //    cut if anything gets cut.
@@ -152,7 +214,14 @@ export async function buildRoomPrompt(
     prompt = assemble();
   }
   if (prompt.length > MAX_PROMPT_CHARS && furnOut) {
-    furnOut = buildFurnitureMaterials(furniture, spec.materialTokens, 100);
+    // Re-derive from the catalogue only when furnOut actually came from real
+    // furniture. The service-room contents clause isn't catalogue-derived
+    // (furniture is empty in exactly the case it applies), so re-running
+    // buildFurnitureMaterials on an empty array would wipe it back to "" —
+    // just clamp its own length instead, same as any other trimmed section.
+    furnOut = furniture.length
+      ? buildFurnitureMaterials(furniture, spec.materialTokens, 100)
+      : furnOut.slice(0, 100);
     prompt = assemble();
   }
   if (prompt.length > MAX_PROMPT_CHARS && briefOut) {

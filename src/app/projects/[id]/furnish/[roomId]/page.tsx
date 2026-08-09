@@ -6,9 +6,9 @@ import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnitureEditorCanvas, type FurnitureCommitPatch } from "@/components/project/furniture-editor-canvas";
 import { furnitureForRoomType, catalogueEntry } from "@/lib/greybox/furniture-catalogue";
-import { defaultFurnitureFor, toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
+import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { ensureGreybox, type GreyboxResult } from "@/lib/greybox/ensure-greybox-key";
-import { firstFreeSlot } from "@/lib/greybox/first-free-slot";
+import { defaultArrangementFor, firstFreeSlot } from "@/lib/greybox/first-free-slot";
 import { MAX_FURNITURE, resolveOcclusion, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { greyboxCamera } from "@/lib/greybox/camera";
@@ -131,9 +131,28 @@ function FurnishContent({
   // back-link arrow must agree, or a room opened from the Furnish gallery
   // (no ?from) sends the user to /generate, a phase they haven't reached yet.
   const backHref = from === "generate" ? `/projects/${projectId}/generate` : `/projects/${projectId}/furnish`;
+  // This page is deliberately two modes of one editor, not two pages: reached
+  // from the Furnish gallery it is an arrangement step (Save only), and
+  // reached from the Generate gallery's "Adjust with 3D" it is an iteration
+  // step (Save and Generate). `from` is the single switch for all three of
+  // those differences — this flag, backHref above, and handleSave's
+  // destination — so they can never disagree with each other.
+  const showGenerate = from === "generate";
+
+  // Geometry first, because the furniture seed below needs it. `layoutSize`
+  // and `greyboxCamera` are both pure functions of the room, so computing
+  // them ahead of the first useState costs nothing and lets that state's
+  // initializer place its seed against the real camera — see
+  // defaultArrangementFor's doc comment for why a camera-blind seed was a bug.
+  const { width, height: depth } = layoutSize(room);
+  const openings = room.placedOpenings ?? EMPTY_OPENINGS;
+  const catalogue = furnitureForRoomType(room.type);
+
+  const spec = useMemo<GreyboxRoomSpec>(() => ({ width, depth, openings }), [width, depth, openings]);
+  const camera = useMemo(() => greyboxCamera(spec, GREYBOX_ASPECT), [spec]);
 
   const [furniture, setFurniture] = useState<PlacedFurniture[]>(
-    () => room.furniture ?? defaultFurnitureFor(room.type),
+    () => room.furniture ?? defaultArrangementFor(room.type, spec, camera),
   );
   // Captures the arrangement the editor MOUNTED with, once — used only by
   // the readiness-gate effect below so it runs a single renderability probe
@@ -152,17 +171,18 @@ function FurnishContent({
   const [lastGeneration, setLastGeneration] = useState<{ imageUrl: string; createdAt: string } | null>(null);
   const [readiness, setReadiness] = useState<"checking" | "ready" | "unavailable">("checking");
 
-  const { width, height: depth } = layoutSize(room);
-  const openings = room.placedOpenings ?? EMPTY_OPENINGS;
-  const catalogue = furnitureForRoomType(room.type);
-
-  const spec = useMemo<GreyboxRoomSpec>(() => ({ width, depth, openings }), [width, depth, openings]);
-  const camera = useMemo(() => greyboxCamera(spec, GREYBOX_ASPECT), [spec]);
-
   // Section 5 — openings are read-only here (they're placed in the Plan
-  // Editor); a violation blocks the whole editor rather than letting a user
-  // furnish a room whose door/window geometry is already invalid.
+  // Editor). These used to BLOCK the editor outright. They no longer do:
+  // Section 5's thresholds are tuned for geometry a human placed deliberately,
+  // and Gemini-derived openings trip them often enough that blocking made a
+  // large share of real floor plans unfurnishable. The violation is still
+  // real and still worth showing — a door 0.3ft from a corner renders as a
+  // missing wall chunk, and the image model faithfully reproduces whatever
+  // the greybox shows it — so it degrades to a warning the user can read and
+  // act on, rather than a wall they cannot get past. Nothing is auto-repaired;
+  // an opening still never moves on its own.
   const openingViolations = useMemo(() => validateOpenings(openings, width, depth), [openings, width, depth]);
+  const [violationsDismissed, setViolationsDismissed] = useState(false);
 
   // Gap 1's replacement for the old `if (!room.shape) return <...>` gate,
   // which Task 7 made obsolete (ensureGreybox no longer requires room.shape).
@@ -175,7 +195,6 @@ function FurnishContent({
   // persists a success so a following Save has a real shot at a cache hit
   // instead of re-rendering the same thing twice.
   useEffect(() => {
-    if (openingViolations.length > 0) return; // already blocked; nothing to check yet
     let cancelled = false;
     ensureGreybox(projectId, { ...room, furniture: initialFurnitureRef.current })
       .then((gb) => {
@@ -199,7 +218,7 @@ function FurnishContent({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, room.id, openingViolations.length]);
+  }, [projectId, room.id]);
 
   const addFurniture = (kind: string) => {
     if (furniture.length >= MAX_FURNITURE) return; // buttons are disabled at the cap; stay safe if called anyway
@@ -331,6 +350,14 @@ function FurnishContent({
     if (busy || generating || !canGenerate || !universalInput || !designSpec) return;
     setGenerating(true);
     setGenerateError(null);
+    // Register in the store as well as locally. `generating` above only drives
+    // THIS page's button; the Generate gallery reads `generatingRoomIds` to
+    // decide whether to show a room's spinner, so without this a generation
+    // kicked off here was invisible over there — the user navigated to the
+    // gallery, saw no loading state, and the image simply appeared later
+    // (reported bug). design/page.tsx's auto-fire loop already pairs these
+    // two calls the same way.
+    useVasto.getState().startGenerating(projectId, room.id);
     try {
       const result = await save();
       if (!result) {
@@ -368,50 +395,9 @@ function FurnishContent({
       setGenerateError(e instanceof Error ? e.message : "Generation failed");
     } finally {
       setGenerating(false);
+      useVasto.getState().stopGenerating(projectId, room.id);
     }
   };
-
-  // Section 5 fails closed: a room whose placed openings are already invalid
-  // (overlapping, too close to a corner, etc.) cannot be furnished at all —
-  // openings are read-only here, so the fix has to happen back where they
-  // were placed.
-  if (openingViolations.length > 0) {
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex items-center gap-3 border-b border-border px-5 py-2.5">
-          <Link
-            href={backHref}
-            className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-muted hover:text-foreground"
-          >
-            <Icon name="ArrowLeft" className="size-4 shrink-0" />
-            <span className="truncate">{room.name}</span>
-          </Link>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto bg-bg p-6">
-          <div className="mx-auto max-w-2xl rounded-2xl border border-danger/30 bg-danger/5 p-6">
-            <div className="flex items-start gap-3">
-              <Icon name="CircleAlert" className="mt-0.5 size-5 shrink-0 text-danger" />
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-foreground">
-                  This room&apos;s doors and windows need fixing before it can be furnished
-                </p>
-                <ul className="mt-3 space-y-1.5 text-sm text-muted">
-                  {openingViolations.map((v, i) => (
-                    <li key={i}>{v.message}</li>
-                  ))}
-                </ul>
-                <Link href={`/projects/${projectId}/plan`}>
-                  <Button className="mt-4" variant="outline" icon="ArrowLeft">
-                    Go to Plan Editor
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (readiness === "checking") {
     return (
@@ -457,18 +443,60 @@ function FurnishContent({
           <Button size="sm" variant="outline" icon="Check" loading={busy} disabled={generating} onClick={handleSave}>
             Save
           </Button>
-          <Button
-            size="sm"
-            icon="Sparkles"
-            loading={generating}
-            disabled={busy || !canGenerate}
-            title={canGenerate ? undefined : "Plan the design first (Design step) before generating a room image."}
-            onClick={handleGenerate}
-          >
-            Generate
-          </Button>
+          {/* Generate belongs only to the "Adjust with 3D" entry point, which
+              is reached FROM the Generate gallery with ?from=generate — there
+              the user has already been through Design and is iterating on an
+              existing image. Opened from the Furnish gallery this is a plain
+              arrangement step that has not reached Design yet, so Save is the
+              only meaningful action and offering Generate just leads to the
+              disabled "plan the design first" state. */}
+          {showGenerate && (
+            <Button
+              size="sm"
+              icon="Sparkles"
+              loading={generating}
+              disabled={busy || !canGenerate}
+              title={canGenerate ? undefined : "Plan the design first (Design step) before generating a room image."}
+              onClick={handleGenerate}
+            >
+              Generate
+            </Button>
+          )}
         </div>
       </div>
+
+      {openingViolations.length > 0 && !violationsDismissed && (
+        <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-5 py-3">
+          <div className="mx-auto flex max-w-6xl items-start gap-3">
+            <Icon name="CircleAlert" className="mt-0.5 size-4 shrink-0 text-warning" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-foreground">
+                Some doors and windows in this room sit in positions that may not render accurately
+              </p>
+              <ul className="mt-1.5 space-y-1 text-xs text-muted">
+                {openingViolations.map((v, i) => (
+                  <li key={i}>{v.message}</li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-xs text-muted">
+                You can keep furnishing and generating. The generated image may show these openings in slightly
+                different positions, or as solid wall.{" "}
+                <Link href={`/projects/${projectId}/plan`} className="font-medium text-accent hover:underline">
+                  Adjust them in the Plan Editor
+                </Link>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setViolationsDismissed(true)}
+              className="shrink-0 text-faint hover:text-muted cursor-pointer"
+              aria-label="Dismiss"
+            >
+              <Icon name="X" className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
         <div className="mx-auto flex h-full max-w-6xl gap-5">

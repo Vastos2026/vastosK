@@ -25,8 +25,9 @@ import sharp from "sharp";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
-import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
-import { firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
+import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
+import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
+import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
 import type { PlacedFurniture } from "@/lib/types";
 import { clamp } from "@/lib/ai/prompting/design-planning";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
@@ -647,6 +648,43 @@ export async function GET() {
     assert(pair.includes("walnut nightstands"), `expected the plural phrase for two nightstands, got: ${pair}`);
   });
 
+  // ---- furnitureForRoomType ("Living + Dining" combined room type; service
+  // rooms must not get inappropriate furniture) ----
+  check(`furnitureForRoomType: "Living + Dining" offers both living-room and dining items, draggable together`, () => {
+    const kinds = furnitureForRoomType("Living + Dining").map((e) => e.kind);
+    for (const livingKind of ["sofa", "tv-unit", "coffee-table", "armchair"]) {
+      assert(
+        kinds.includes(livingKind),
+        `expected living-room item "${livingKind}" in Living + Dining's catalogue, got: ${kinds.join(", ")}`,
+      );
+    }
+    for (const diningKind of ["dining-table", "dining-chair"]) {
+      assert(
+        kinds.includes(diningKind),
+        `expected dining item "${diningKind}" in Living + Dining's catalogue, got: ${kinds.join(", ")}`,
+      );
+    }
+  });
+
+  check(
+    "furnitureForRoomType: known service/utility room types (Bathroom, Utility, Store Room) get no furniture at all, not even the universal rug/plant/side-table fallback",
+    () => {
+      for (const serviceType of ["Bathroom", "Utility", "Store Room"]) {
+        const items = furnitureForRoomType(serviceType);
+        eq(
+          items,
+          [],
+          `expected an empty catalogue for "${serviceType}", got: ${JSON.stringify(items.map((e) => e.kind))}`,
+        );
+      }
+    },
+  );
+
+  check("furnitureForRoomType: Pooja Room still only offers the pooja mandir, nothing from Living Room/Dining Room", () => {
+    const kinds = furnitureForRoomType("Pooja Room").map((e) => e.kind);
+    eq(kinds, ["pooja-mandir"], `Pooja Room's catalogue should be exactly the mandir, got: ${kinds.join(", ")}`);
+  });
+
   // ---- buildRoomPrompt (Task 12: 512-token-budget rewrite) ----
   const uiInput: UniversalInput = {
     project: { category: "Residential", subcategory: "Independent House" },
@@ -799,6 +837,104 @@ export async function GET() {
     assert(p.length <= 1800, `prompt is ${p.length} chars, ladder failed to bring it under budget`);
     assert(p.includes("cream boucle"), `furniture material phrase dropped from prompt: ${p}`);
   });
+
+  // ---- buildRoomPrompt: service-room positive-contents clause (user report:
+  // "Service rooms, pooja rooms, toilets should not have unnecessary things
+  // like sofa") — SERVICE_ROOM_CONTENTS in prompt-builder.ts, keyed by room
+  // type, fills the furniture-materials slot with a positive statement of
+  // what the room DOES contain whenever furniture is empty, since there is
+  // no negativePrompt channel to say "no sofa" with. ----
+  const bathroomRoom: UniversalInputRoom = { name: "Bathroom", type: "Bathroom" };
+  const poojaRoom: UniversalInputRoom = { name: "Pooja Room", type: "Pooja Room" };
+
+  await checkAsync(
+    "a service room (Bathroom) with no furniture gets the positive-contents clause and never a sofa/living-room material phrase",
+    async () => {
+      const p = await buildRoomPrompt(uiInput, bathroomRoom, dspec, {
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 1 },
+        furniture: [],
+      });
+      assert(
+        p.includes("sanitary fixtures"),
+        `expected the Bathroom positive-contents clause in the prompt, got: ${p}`,
+      );
+      for (const banned of ["sofa", "armchair", "coffee table", "media console"]) {
+        assert(
+          !p.toLowerCase().includes(banned),
+          `service-room prompt must never mention living-room furniture ("${banned}"), got: ${p}`,
+        );
+      }
+    },
+  );
+
+  await checkAsync(
+    "a Pooja Room with no furniture placed yet also gets its own positive-contents clause",
+    async () => {
+      const p = await buildRoomPrompt(uiInput, poojaRoom, dspec, {
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 0 },
+        furniture: [],
+      });
+      assert(p.includes("pooja mandir"), `expected the Pooja Room positive-contents clause, got: ${p}`);
+      assert(!p.toLowerCase().includes("sofa"), `Pooja Room prompt must never mention a sofa, got: ${p}`);
+    },
+  );
+
+  await checkAsync(
+    "a service room WITH furniture placed (e.g. a pooja mandir) still describes that furniture normally, not the fallback clause",
+    async () => {
+      const p = await buildRoomPrompt(uiInput, poojaRoom, dspec, {
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 0 },
+        furniture: [f("1", "pooja-mandir")],
+      });
+      assert(p.includes("pooja mandir"), `expected the real furniture material phrase, got: ${p}`);
+    },
+  );
+
+  await checkAsync(
+    "the service-room contents clause still respects the 1800-char cap under a worst-case long accent/notes input",
+    async () => {
+      const p = await buildRoomPrompt(uiInput, { ...bathroomRoom, additional_notes: "z".repeat(2000) }, dspec, {
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 1 },
+        furniture: [],
+      });
+      assert(p.length <= 1800, `prompt is ${p.length} chars, over the cap even with the service-room clause`);
+      assert(
+        p.includes("sanitary fixtures"),
+        `the short service-room clause (well under its 200/100-char budget slots) should survive the overflow ladder untouched: ${p}`,
+      );
+    },
+  );
+
+  // ---- buildRoomPrompt: wall surface-texture clause (UNVERIFIED, no image
+  // generated yet — user report: painted walls sometimes render as smooth
+  // wax/thick oil paint; no server-side lever exists on bfl:5@1, so this is
+  // a fixed, always-present, positively-phrased addition to the `medium`
+  // boilerplate line) ----
+  await checkAsync("the wall surface-texture clause is present in a built prompt", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    assert(p.includes("roller-nap texture"), `expected the surface-texture clause in the prompt, got: ${p}`);
+    assert(!/\bwax|oil paint/i.test(p), `positive phrasing only — must never name the artefact it's avoiding: ${p}`);
+  });
+
+  await checkAsync(
+    "the 1800-char cap still holds with the surface-texture clause present, including under a worst-case long input",
+    async () => {
+      const overflowInput: UniversalInput = {
+        project: { category: "Custom", subcategory: "S".repeat(1500) },
+        layout: { rooms: [] },
+        design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
+      };
+      const p = await buildRoomPrompt(overflowInput, uiRoom, dspec, {
+        hasGreybox: false,
+        furniture: [f("1", "bed")],
+      });
+      assert(p.length <= 1800, `prompt is ${p.length} chars, over the cap even with the texture clause`);
+    },
+  );
 
   // ---- clamp (design-planning.ts) ----
   check("clamp: a string already under the limit is trimmed but otherwise unchanged", () => {
@@ -1154,6 +1290,64 @@ export async function GET() {
     const b = firstFreeSlot("wardrobe", furnitureForDeterminism, slotSpec, slotCamera);
     assert(a !== null, "expected a slot for this fixture, got null");
     eq(a, b, "the same inputs must scan the fixed grid order to the same result every call");
+  });
+
+  // ---- defaultArrangementFor (the Furnish editor's seeded opening arrangement) ----
+  // Replaced furniture-layout.ts's defaultFurnitureFor, which placed every
+  // seeded piece at a hardcoded z: 0.18 with no camera check and no overlap
+  // check. Both failure modes were reported by the user ("the furnitures are
+  // not visible in the camera's view", "the default placements are
+  // overlapping"), so both get an assertion here rather than a comment.
+
+  check("defaultArrangementFor: every seeded piece is inside the locked camera's frame", () => {
+    const seeded = defaultArrangementFor("Master Bedroom", slotSpec, slotCamera);
+    assert(seeded.length > 0, "expected a bedroom to seed at least one piece");
+    for (const f of seeded) {
+      const wx = (f.x - 0.5) * slotSpec.width;
+      const wz = (f.z - 0.5) * slotSpec.depth;
+      assert(
+        isInFrame(wx, wz, slotCamera),
+        `seeded ${f.kind} at ${JSON.stringify({ x: f.x, z: f.z })} is outside the camera frame — the exact defaultFurnitureFor bug this replaced`,
+      );
+    }
+  });
+
+  check("defaultArrangementFor: no seeded piece overlaps another (resolvePlacement leaves each unmoved)", () => {
+    const seeded = defaultArrangementFor("Master Bedroom", slotSpec, slotCamera);
+    // Check each piece against ALL the others, not just the ones placed
+    // before it: greedy placement only ever consults earlier items, so a
+    // later item encroaching on an earlier one would go unnoticed by the
+    // algorithm itself and must be caught independently here.
+    for (const f of seeded) {
+      const others = toWorldFurniture(
+        seeded.filter((o) => o.id !== f.id),
+        slotSpec.width,
+        slotSpec.depth,
+      );
+      const wx = (f.x - 0.5) * slotSpec.width;
+      const wz = (f.z - 0.5) * slotSpec.depth;
+      const resolved = resolvePlacement(
+        { kind: f.kind, rotation: f.rotation, x: wx, z: wz, fromX: NaN, fromZ: NaN },
+        others,
+        { width: slotSpec.width, depth: slotSpec.depth },
+        { x: slotCamera.position.x, z: slotCamera.position.z },
+      );
+      eq(resolved, { x: wx, z: wz }, `seeded ${f.kind} is not in a legal position — it overlaps another seeded piece`);
+    }
+  });
+
+  check("defaultArrangementFor: the same room seeds an identical arrangement every call", () => {
+    const a = defaultArrangementFor("Master Bedroom", slotSpec, slotCamera);
+    const b = defaultArrangementFor("Master Bedroom", slotSpec, slotCamera);
+    // Ids are freshly generated per call by design, so compare placement only.
+    const strip = (list: PlacedFurniture[]) => list.map(({ kind, x, z, rotation }) => ({ kind, x, z, rotation }));
+    eq(strip(a), strip(b), "a regenerated greybox must not silently rearrange its seeded furniture");
+  });
+
+  check("defaultArrangementFor: a room type with no catalogue items seeds nothing rather than falling back", () => {
+    // Bathroom is in NO_FURNITURE_ROOM_TYPES — it must seed an empty room,
+    // not the universal rug/plant/side-table fallback.
+    eq(defaultArrangementFor("Bathroom", slotSpec, slotCamera), [], "a service room must seed no furniture");
   });
 
   const failed = results.filter((r) => !r.ok);

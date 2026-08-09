@@ -374,7 +374,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "sofa",
     label: "Sofa",
     footprintFt: { w: 7, d: 3 },
-    roomTypes: ["Living Room", "Lounge"],
+    roomTypes: ["Living Room", "Lounge", "Living + Dining"],
     build: buildSofa,
     materialPhrase: "{soft} sofa",
     promptPriority: 95,
@@ -383,7 +383,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "armchair",
     label: "Armchair",
     footprintFt: { w: 2.8, d: 2.8 },
-    roomTypes: ["Living Room", "Lounge"],
+    roomTypes: ["Living Room", "Lounge", "Living + Dining"],
     build: buildArmchair,
     materialPhrase: "{soft} armchair",
     materialPhrasePlural: "{soft} armchairs",
@@ -393,7 +393,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "coffee-table",
     label: "Coffee Table",
     footprintFt: { w: 3.5, d: 1.8 },
-    roomTypes: ["Living Room", "Lounge"],
+    roomTypes: ["Living Room", "Lounge", "Living + Dining"],
     build: buildCoffeeTable,
     materialPhrase: "{wood} coffee table",
     promptPriority: 55,
@@ -402,7 +402,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "tv-unit",
     label: "TV Unit",
     footprintFt: { w: 4.5, d: 1.3 },
-    roomTypes: ["Living Room", "Lounge"],
+    roomTypes: ["Living Room", "Lounge", "Living + Dining"],
     build: buildTvUnit,
     materialPhrase: "low {wood} media console with a black screen",
     promptPriority: 75,
@@ -411,7 +411,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "dining-table",
     label: "Dining Table",
     footprintFt: { w: 5.5, d: 3 },
-    roomTypes: ["Dining Room"],
+    roomTypes: ["Dining Room", "Living + Dining"],
     build: buildDiningTable,
     materialPhrase: "{wood} dining table",
     promptPriority: 90,
@@ -420,7 +420,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "dining-chair",
     label: "Dining Chair",
     footprintFt: { w: 1.5, d: 1.5 },
-    roomTypes: ["Dining Room", "Meeting Room", "Conference Room", "Open Workspace"],
+    roomTypes: ["Dining Room", "Living + Dining", "Meeting Room", "Conference Room", "Open Workspace"],
     build: buildDiningChair,
     materialPhrase: "{soft} dining chair",
     materialPhrasePlural: "{soft} dining chairs",
@@ -563,13 +563,35 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
 const UNIVERSAL_FALLBACK_KINDS = ["rug", "plant", "side-table"];
 
 /**
+ * Utility/back-of-house room types that get NO furniture at all, not even
+ * the universal fallback (rug/plant/side-table). These are known, named room
+ * types (unlike a Custom category's free-text room, which is what the
+ * fallback below actually exists for) where the correct 3D scene and the
+ * correct generated image both contain sanitary fixtures, shelving or
+ * mechanical equipment rather than any soft-furnishing decor item — dropping
+ * a rug or a potted plant into a toilet or a store room is exactly the kind
+ * of "unnecessary thing" this list exists to prevent. Kept in sync with the
+ * room-type strings in config/project-types/*.json and with the positive
+ * contents clause in ai/prompting/prompt-builder.ts's SERVICE_ROOM_CONTENTS.
+ */
+const NO_FURNITURE_ROOM_TYPES = new Set(
+  ["Bathroom", "Washroom", "Utility", "Store Room", "Storage", "Garage"].map((rt) =>
+    rt.toLowerCase(),
+  ),
+);
+
+/**
  * Items whose roomTypes includes the given room type string (case-insensitive
  * exact match). Falls back to a small universal set (rug, plant, side-table)
  * when no items match — e.g. for a "Custom" category project with a
- * free-text room type that doesn't match any entry.
+ * free-text room type that doesn't match any entry. Known service/utility
+ * room types (NO_FURNITURE_ROOM_TYPES) skip that fallback entirely and
+ * always return an empty set, since "no match found" there means "this room
+ * genuinely has no furniture", not "we don't recognise this room type".
  */
 export function furnitureForRoomType(roomType: string | undefined): FurnitureCatalogueEntry[] {
   const needle = roomType?.trim().toLowerCase();
+  if (needle && NO_FURNITURE_ROOM_TYPES.has(needle)) return [];
   const matches = needle
     ? FURNITURE_CATALOGUE.filter((entry) =>
         entry.roomTypes.some((rt) => rt.toLowerCase() === needle),

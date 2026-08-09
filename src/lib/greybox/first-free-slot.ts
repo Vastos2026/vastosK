@@ -14,6 +14,8 @@
 import * as THREE from "three";
 import { resolvePlacement } from "./validate-furniture";
 import { toWorldFurniture } from "./furniture-layout";
+import { furnitureForRoomType } from "./furniture-catalogue";
+import { uid } from "@/lib/utils";
 import type { GreyboxRoomSpec } from "./types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -81,9 +83,30 @@ export function firstFreeSlot(
   spec: GreyboxRoomSpec,
   camera: THREE.PerspectiveCamera,
 ): { x: number; z: number } | null {
+  return freeSlots(kind, furniture, spec, camera)[0] ?? null;
+}
+
+/**
+ * Every grid slot that is in frame, legal and free — `firstFreeSlot`'s full
+ * candidate list rather than just its head, in the same fixed scan order, so
+ * `freeSlots(...)[0]` is by construction identical to what `firstFreeSlot`
+ * always returned.
+ *
+ * Exists because seeding a room's DEFAULT arrangement needs to spread several
+ * items apart from each other, which the first-match-wins search cannot do:
+ * calling it repeatedly clusters every piece into the same corner of the
+ * scan order. `defaultArrangementFor` picks from this list instead.
+ */
+export function freeSlots(
+  kind: string,
+  furniture: PlacedFurniture[],
+  spec: GreyboxRoomSpec,
+  camera: THREE.PerspectiveCamera,
+): { x: number; z: number }[] {
   const { width, depth } = spec;
   const others = toWorldFurniture(furniture, width, depth);
   const cameraPos = { x: camera.position.x, z: camera.position.z };
+  const out: { x: number; z: number }[] = [];
 
   for (let iz = 1; iz <= 6; iz++) {
     for (let ix = 1; ix <= 6; ix++) {
@@ -97,8 +120,101 @@ export function firstFreeSlot(
         { width, depth },
         cameraPos,
       );
-      if (r.x === wx && r.z === wz && isInFrame(wx, wz, camera)) return { x: lx, z: lz };
+      if (r.x === wx && r.z === wz && isInFrame(wx, wz, camera)) out.push({ x: lx, z: lz });
     }
   }
-  return null;
+  return out;
+}
+
+/** How many pieces a room is seeded with when the editor first opens. */
+const DEFAULT_PIECES = 3;
+
+/**
+ * A starting arrangement for a room with no furniture yet, so the 3D editor
+ * never opens to an empty room — the same "seed something to adjust, not a
+ * blank canvas" principle Phase A applied to openings (seedPlacedOpenings).
+ *
+ * Replaces the previous `defaultFurnitureFor` in furniture-layout.ts, which
+ * spread items along the back wall at a hardcoded `z: 0.18` with NO camera
+ * check and NO overlap check. That was a real bug on both counts, and both
+ * were reported: with Task 14's locked camera the back wall is frequently
+ * outside the frustum (or behind the camera entirely, depending on which of
+ * the eight candidate viewpoints a given room's openings select), so the
+ * seeded pieces were often invisible in the reference render that actually
+ * conditions generation — and since nothing consulted the AABB solver, two
+ * pieces in a small room simply interpenetrated.
+ *
+ * Every piece here goes through the same `resolvePlacement` + `isInFrame`
+ * gate the editor's own Add button uses, so a seeded arrangement is legal and
+ * visible by construction, not by luck. A piece with no legal in-frame slot
+ * left is SKIPPED rather than forced somewhere illegal: fewer pieces the user
+ * can see and drag beats a piece stuck outside the frame that they cannot.
+ *
+ * Deterministic — `freeSlots` scans in fixed order and both selection rules
+ * below break ties by that order, so the same room always seeds identically.
+ * That matters for the same reason camera determinism does: a regenerated
+ * greybox must not silently rearrange itself.
+ */
+export function defaultArrangementFor(
+  roomType: string | undefined,
+  spec: GreyboxRoomSpec,
+  camera: THREE.PerspectiveCamera,
+): PlacedFurniture[] {
+  const entries = furnitureForRoomType(roomType).slice(0, DEFAULT_PIECES);
+  const placed: PlacedFurniture[] = [];
+
+  for (const entry of entries) {
+    const slots = freeSlots(entry.kind, placed, spec, camera);
+    if (slots.length === 0) continue;
+    const slot = placed.length === 0 ? mostCentral(slots) : farthestFrom(slots, placed, spec);
+    placed.push({ id: uid("furn"), kind: entry.kind, x: slot.x, z: slot.z, rotation: 0 });
+  }
+
+  return placed;
+}
+
+/**
+ * The slot nearest the room's centre, for the first piece. Central slots are
+ * the safest bet for staying in frame across all eight candidate cameras, and
+ * the largest piece of a room type's catalogue slice is listed first.
+ */
+function mostCentral(slots: { x: number; z: number }[]): { x: number; z: number } {
+  let best = slots[0];
+  let bestD = Infinity;
+  for (const s of slots) {
+    const d = (s.x - 0.5) ** 2 + (s.z - 0.5) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
+ * The slot whose nearest already-placed neighbour is furthest away — a plain
+ * greedy max-min spread, so seeded pieces read as an arrangement rather than
+ * a pile. Distances are in feet, not room fractions: a 0.1 gap means very
+ * different things in a 6ft bathroom and a 24ft hall.
+ */
+function farthestFrom(
+  slots: { x: number; z: number }[],
+  placed: PlacedFurniture[],
+  spec: GreyboxRoomSpec,
+): { x: number; z: number } {
+  let best = slots[0];
+  let bestD = -Infinity;
+  for (const s of slots) {
+    let nearest = Infinity;
+    for (const p of placed) {
+      const dx = (s.x - p.x) * spec.width;
+      const dz = (s.z - p.z) * spec.depth;
+      nearest = Math.min(nearest, dx * dx + dz * dz);
+    }
+    if (nearest > bestD) {
+      bestD = nearest;
+      best = s;
+    }
+  }
+  return best;
 }

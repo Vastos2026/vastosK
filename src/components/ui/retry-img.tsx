@@ -52,10 +52,16 @@ export function RetryImg({
   const [prevSrc, setPrevSrc] = useState(src);
   const [attempt, setAttempt] = useState(0);
   const [gaveUp, setGaveUp] = useState(false);
+  // Whether the CURRENT attempt's <img> has actually finished loading. Kept
+  // separate from `gaveUp` — this is false for the entire loading phase AND
+  // for every failed attempt in between, which is exactly the window where
+  // we need to keep the raw <img> hidden (see below).
+  const [loaded, setLoaded] = useState(false);
   if (src !== prevSrc) {
     setPrevSrc(src);
     setAttempt(0);
     setGaveUp(false);
+    setLoaded(false);
   }
 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,22 +77,55 @@ export function RetryImg({
     );
   }
 
+  // Browsers never hide a failed <img> on their own — the broken-image
+  // glyph sits there for the entire gap between a failed attempt and the
+  // next retry (up to RETRY_SCHEDULE_MS[attempt] ms, see the schedule above)
+  // since the element stays mounted with a broken `src` until we bump
+  // `attempt`, and it can also flash briefly during a slow initial load.
+  // Reported as "sometimes I can see that jpeg symbol" on the Furnish cards.
+  // Fix: wrap in a positioned container, keep the real <img> at opacity-0
+  // (NOT unmounted — unmounting would cancel the in-flight request) until
+  // `onLoad` actually fires, and show a plain skeleton surface behind it in
+  // the meantime. `object-fit` only affects a replaced element like <img>,
+  // so leaving the caller's full className on the wrapper too is harmless
+  // there (a no-op on a <div>) and keeps every call site's sizing/position
+  // classes byte-for-byte unchanged; only the one `object-*` token needs to
+  // be pulled out and re-applied on the inner <img> directly.
+  const objectFit = className?.match(/\bobject-(cover|contain|fill|none|scale-down)\b/)?.[0] ?? "object-cover";
+  // Most callers pass "absolute inset-0 ..." (this already establishes a
+  // positioning context for children), but a few lay the image out in
+  // normal flow instead (e.g. "aspect-square w-full object-cover") — those
+  // need `relative` added so the absolutely-positioned skeleton/img below
+  // anchor to THIS wrapper instead of drifting up to whatever positioned
+  // ancestor happens to be further up the tree.
+  const isPositioned = /\b(absolute|fixed|sticky|relative)\b/.test(className ?? "");
+
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      key={attempt}
-      src={src}
-      alt={alt}
-      draggable={draggable}
-      className={className}
-      onError={() => {
-        if (attempt >= RETRY_SCHEDULE_MS.length) {
-          setGaveUp(true);
-          return;
-        }
-        timeoutRef.current = setTimeout(() => setAttempt((a) => a + 1), RETRY_SCHEDULE_MS[attempt]);
-      }}
-      onLoad={onLoad}
-    />
+    <div className={cn(className, !isPositioned && "relative")}>
+      {!loaded && <div className="absolute inset-0 bg-surface-2" />}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        key={attempt}
+        src={src}
+        alt={alt}
+        draggable={draggable}
+        className={cn(
+          "absolute inset-0 h-full w-full transition-opacity duration-150",
+          objectFit,
+          loaded ? "opacity-100" : "opacity-0",
+        )}
+        onError={() => {
+          if (attempt >= RETRY_SCHEDULE_MS.length) {
+            setGaveUp(true);
+            return;
+          }
+          timeoutRef.current = setTimeout(() => setAttempt((a) => a + 1), RETRY_SCHEDULE_MS[attempt]);
+        }}
+        onLoad={(e) => {
+          setLoaded(true);
+          onLoad?.(e);
+        }}
+      />
+    </div>
   );
 }

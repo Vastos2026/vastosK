@@ -83,7 +83,14 @@ interface VastoState {
   /** Walkthrough screen — full replace (generating/completed/failed states). */
   setWalkthrough: (id: string, walkthrough: Walkthrough) => void;
 
-  /** Rooms currently generating an image, per project — session-only, never persisted (see store.ts comment). */
+  /** Rooms currently generating an image, per project. Included in
+   *  `partialize` below so the shape round-trips through storage cleanly,
+   *  but reset to empty on every rehydration — see the `onRehydrateStorage`
+   *  comment for why a flag that survives a real reload can never be
+   *  trusted anyway. Client-side (soft) navigation between pages never
+   *  touches this at all — the store is a module-level singleton, so plain
+   *  in-memory state already survives route changes with no persistence
+   *  involved. */
   generatingRoomIds: Record<string, string[]>;
   startGenerating: (projectId: string, roomId: string) => void;
   stopGenerating: (projectId: string, roomId: string) => void;
@@ -490,7 +497,31 @@ export const useVasto = create<VastoState>()(
       name: "vasto-store-v1",
       storage: createJSONStorage(() => localStorage),
       version: 4,
-      partialize: (s) => ({ projects: s.projects }),
+      partialize: (s) => ({ projects: s.projects, generatingRoomIds: s.generatingRoomIds }),
+      // Reset generatingRoomIds the moment rehydration finishes, rather than
+      // trusting whatever was on disk. This looks like it defeats the point
+      // of persisting the field at all, but it's the correct call, not just
+      // a defensive one: "generating" in this app always means "a fetch the
+      // CURRENT page is awaiting" (see generateMore in generate/page.tsx and
+      // the auto-fire loop in design/page.tsx) — there is no server-tracked
+      // job backing it the way render_jobs backs Veo video generation. A
+      // real page reload (or the tab being closed and reopened) tears down
+      // that JS execution entirely, which both aborts the in-flight request
+      // AND destroys the only code path that would ever call
+      // stopGenerating() for it. So a flag that survives into a freshly
+      // rehydrated store is never describing a generation that's actually
+      // still running — keeping it (even for a bounded "expire after 5
+      // minutes" window) would just mean showing a spinner over a request
+      // that no longer exists, for however long that window is. Clearing
+      // unconditionally avoids that permanent-or-bounded fake spinner
+      // outright, at zero cost, since there was never a real "still
+      // generating" state to preserve across a reload in the first place.
+      // (Soft, in-app navigation between pages needs none of this — the
+      // store is a module-level singleton, so it never rehydrates and never
+      // loses generatingRoomIds just from a route change.)
+      onRehydrateStorage: () => (state) => {
+        if (state) state.generatingRoomIds = {};
+      },
       // v2: drop the old seeded demo projects so only real, user-created
       // projects remain. v3: the Workstream 8.5 rebuild destroyed the 3D
       // furniture-placement studio and the multi-view render pipeline —

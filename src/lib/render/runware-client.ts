@@ -86,6 +86,23 @@ const IMAGE_MODEL = process.env.RUNWARE_IMAGE_MODEL?.trim() || "bfl:5@1";
  * default) DO support both. Gated per-model rather than sent
  * unconditionally — an unsupported param 400s outright on this API (see this
  * file's header comment for the established pattern).
+ *
+ * `CFGScale` belongs on this same reject list, NOT the "left unset because
+ * the provider default is already fine" list a stale comment below used to
+ * claim. Investigated 2026-08-10 chasing an "oil-pasty/waxy walls" report
+ * (the classic over-smoothed diffusion look, which an unset-too-high guidance
+ * value is a common cause of): `bfl:5@1`'s own Runware docs page
+ * (runware.ai/docs/models/bfl-flux-2-pro, fetched 2026-08-10 — doc lookup
+ * only, no live generation call, per this pass's no-spend constraint) lists
+ * this model's full parameter set — platform options, core generation
+ * (model/positivePrompt/width/height/seed), `referenceImages`, the
+ * BFL-specific `safetyTolerance`, `checkContent`, `watermark` — and `CFGScale`
+ * is not among them, alongside no scheduler/sharpness/style parameter of any
+ * kind. Same absence pattern as `steps`, so treat it the same way: don't
+ * send it to a bfl:* model without a fresh live 400 disproving this. (Contrast
+ * `editImageWithRunwareFluxFill` below, which DOES send `CFGScale: 7` — that
+ * model, `runware:102@1`/FLUX Fill [dev], is a `runware:*` self-hosted tier,
+ * not `bfl:*`, so it isn't covered by this finding either way.)
  */
 const isBflModel = (model: string) => model.startsWith("bfl:");
 const EDIT_MODEL = process.env.RUNWARE_EDIT_MODEL?.trim() || "google:4@2";
@@ -318,12 +335,24 @@ export async function generateImageWithRunware(
       // `steps` is rejected outright on bfl:* tiers (see isBflModel's
       // comment) — Runware's self-hosted tiers DO take it, and raising it is
       // the most direct, lowest-risk lever for "sharper, more detailed"
-      // output there (documented valid range 1-50). CFGScale is left unset
-      // to keep Runware's own documented default (4), already reasonable.
+      // output there (documented valid range 1-50). CFGScale is intentionally
+      // NOT sent here for bfl either — see isBflModel's comment: it's absent
+      // from bfl:5@1's own documented parameter list, same as `steps`, so
+      // sending an explicit value risks the exact 400 this file's header
+      // documents happening for `steps`.
       ...(bfl ? {} : { steps: 35 }),
       width: dims.width,
       height: dims.height,
       outputType: "URL",
+      // PNG (lossless) rather than this model's own JPG-at-quality-95
+      // default — confirmed via the same 2026-08-10 docs lookup as
+      // isBflModel's comment: bfl:5@1 supports outputFormat JPG/PNG/WEBP and
+      // an outputQuality of 20-99, defaulting to JPG. A lossy JPG round trip
+      // on the model's own output would be a genuine, independent cause of
+      // smeared/pasty-looking surfaces, so this was checked as part of the
+      // "oil-pasty walls" investigation — already set to the lossless option
+      // before that investigation started, so there was nothing to change
+      // here; outputQuality is JPG/WEBP-only and doesn't apply to PNG output.
       outputFormat: "PNG",
       includeCost: true,
     },

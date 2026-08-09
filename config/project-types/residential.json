@@ -6,6 +6,7 @@
   "roomTypes": [
     "Living Room",
     "Dining Room",
+    "Living + Dining",
     "Master Bedroom",
     "Bedroom",
     "Guest Room",
@@ -23,6 +24,7 @@
     "Foyer",
     "Living Room",
     "Dining Room",
+    "Living + Dining",
     "Kitchen",
     "Master Bedroom",
     "Bedroom",

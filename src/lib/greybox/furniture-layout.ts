@@ -5,7 +5,7 @@
  * wall openings. Framework-free, like that file.
  */
 
-import { catalogueEntry, FURNITURE_CATALOGUE, furnitureForRoomType } from "./furniture-catalogue";
+import { catalogueEntry, FURNITURE_CATALOGUE } from "./furniture-catalogue";
 import type { GreyboxFurniturePlacement } from "./types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -35,12 +35,6 @@ export function toWorldFurniture(
 /** Inverse of toWorldFurniture's position math, for the 3D editor reading a room-local rect. */
 export function worldToLocal(x: number, z: number, width: number, depth: number): { x: number; z: number } {
   return { x: width > 0 ? x / width + 0.5 : 0.5, z: depth > 0 ? z / depth + 0.5 : 0.5 };
-}
-
-let seq = 0;
-/** Timestamp+counter id, same shape as the Plan Editor's opening ids (plan-editor-canvas.tsx). */
-function furnitureId(): string {
-  return `f-${Date.now()}-${(seq++).toString(36)}`;
 }
 
 export interface MaterialTokens {
@@ -108,21 +102,11 @@ function joinList(parts: string[]): string {
 }
 
 /**
- * A starting arrangement for a room that has no furniture yet, so the 3D editor never opens to
- * an empty room — same "seed something to adjust, not a blank canvas" principle Phase A already
- * applied to openings (seedPlacedOpenings, plan-editor/geometry.ts). Picks the first 2-3 items
- * from this room type's catalogue slice and spreads them along the back wall (north, -Z) with
- * generous default spacing — a reasonable default, not a claim of interior-design competence;
- * the whole point of the editor is that the user can drag these anywhere.
+ * `defaultFurnitureFor` lived here and is now `defaultArrangementFor` in
+ * first-free-slot.ts. It spread items along the back wall at a hardcoded
+ * `z: 0.18` with no camera check and no overlap check, which put seeded
+ * furniture outside the locked camera's frustum and interpenetrating in small
+ * rooms. Placing furniture correctly requires the room spec and the camera,
+ * which is exactly what first-free-slot.ts already has in scope — see
+ * `defaultArrangementFor`'s own doc comment.
  */
-export function defaultFurnitureFor(roomType: string | undefined): PlacedFurniture[] {
-  const items = furnitureForRoomType(roomType).slice(0, 3);
-  if (items.length === 0) return [];
-  return items.map((entry, i) => ({
-    id: furnitureId(),
-    kind: entry.kind,
-    x: (i + 1) / (items.length + 1),
-    z: 0.18,
-    rotation: 0,
-  }));
-}

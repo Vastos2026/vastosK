@@ -504,6 +504,36 @@ interface RawGeometryResponse {
  * geometry is a placement ENHANCEMENT, not a requirement. A room this call
  * can't confidently place falls back to the pre-existing manual "Place"
  * flow in the Plan Editor exactly as if this call didn't exist.
+ *
+ * 2026-08-10 prompt rewrite (UNTESTED against a live call — no budget for a
+ * verification run at edit time, needs a real check before trusting this):
+ * users reported doors/windows landing in the wrong spot once
+ * openingBoxToPlaced (src/lib/plan-editor/geometry.ts) turns a box into a
+ * wall + along-wall position. That function uses the box's CENTRE to pick
+ * the nearest wall and the box's extent ALONG that wall as the span — so
+ * anything that shifts the box off-centre from the true opening directly
+ * mis-places it. The previous prompt said "swing arc included for a door",
+ * which is exactly that: a door's quarter-circle swing symbol is drawn to
+ * one side of the actual doorway, so a box that includes it has its centre
+ * pulled well past the wall and toward whichever way the door happens to
+ * swing — openingBoxToPlaced's own doc comment already flagged this as an
+ * approximation it was tolerating, not something anyone had verified was
+ * fine. The rewrite below instead asks for the doorway gap itself (the span
+ * in the wall line where the door sits, stopping at the wall) and
+ * explicitly excludes the arc. It also now names the door/window drawing
+ * conventions explicitly (gap+arc; thin break with cross-strokes) since
+ * naming the symbol a model is meant to recognize tends to improve recall,
+ * states the previously-unaddressed shared-wall case (an opening on a wall
+ * between two rooms is reported once per bordering room index, same box
+ * both times — mirroring how extractFloorPlan already gives each bordering
+ * room its own openings entry for it), and adds an explicit
+ * tight/axis-aligned-to-the-wall requirement. No schema change: the model
+ * still only returns a box_2d per opening, no new field — a "state the wall
+ * side as a cross-check" field was considered but skipped as unneeded scope
+ * given openingBoxToPlaced never reads a caller-supplied side anyway (it
+ * derives the wall itself from the box's geometry), so such a field would
+ * only be useful if this file's caller were changed to validate against it,
+ * which is out of this function's scope.
  */
 export async function extractOpeningGeometry(
   bytes: Buffer,
@@ -522,7 +552,13 @@ ${list}
 
 For EACH room index above, return its bounding box: [y_min,x_min,y_max,x_max], integers 0-1000 normalised to the full image, tightly around that room's actual wall outline (not its label text).
 
-Also find every door/window on each room's walls and return its bounding box the same way (swing arc included for a door). Reference the room by its index above, not its name.
+Also find every door and window drawn on each room's walls. For each, return a box the same [y_min,x_min,y_max,x_max] way — but this box must be TIGHT and axis-aligned to the wall it sits on, covering ONLY the opening itself, not the whole wall:
+
+- A door is drawn as a gap in the wall line, usually paired with a quarter-circle swing arc showing which way it opens. Box ONLY the gap in the wall — the straight span between the two wall ends where the door sits — and stop at the wall line on both sides. Do NOT include the swing arc in the box; the arc is offset from the doorway and will pull the box off-centre from the opening's true position.
+- A window is drawn as a thin break in the wall line, usually marked by two or three short parallel cross-strokes inside the gap. Box just that gap in the wall.
+- An opening on a wall shared between two rooms belongs to both rooms — report it once per bordering room index (so it may appear twice), using the same box both times; it's the same physical opening either way.
+
+Reference each room by its index above, not its name.
 
 Be conservative — omit an entry rather than guess if you're not confident.`;
 

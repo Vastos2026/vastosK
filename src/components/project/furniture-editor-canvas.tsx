@@ -58,6 +58,17 @@ const ROTATE_STEP_RAD = Math.PI / 12;
 const BLOCKER_TINT = 0xffb020;
 /** Exclusion-arc ring colour — deliberately distinct from BLOCKER_TINT so "you can't stand here" (a fixed zone) never reads as "this is blocking an opening" (a furniture-specific warning). */
 const EXCLUSION_RING_COLOR = 0xff5252;
+/**
+ * Transient red emissive applied ONLY to the item currently being dragged,
+ * only while its live cursor-tracked position is illegal (see onPointerMove's
+ * `legal` check). Deliberately a third distinct colour from both BLOCKER_TINT
+ * (a settled, post-commit occlusion warning) and EXCLUSION_RING_COLOR (a
+ * fixed zone marker painted on the floor) — this one means "if you let go
+ * right now, resolvePlacement will snap you back," which is neither of those.
+ * Cleared the moment the position is legal again, and unconditionally at drag
+ * end (endDrag), where runOcclusionCheck's applyBlockerTint pass takes over.
+ */
+const DRAG_INVALID_TINT = 0xff3838;
 
 /**
  * Disposes every geometry/material found under `root` — covers wall/floor/
@@ -72,6 +83,22 @@ function disposeObject3D(root: THREE.Object3D) {
     if (anyObj.material) {
       if (Array.isArray(anyObj.material)) anyObj.material.forEach((m) => m.dispose());
       else anyObj.material.dispose();
+    }
+  });
+}
+
+/**
+ * Sets (or clears, with 0x000000) emissive colour on every MeshStandardMaterial
+ * found under `group`. Shared by applyBlockerTint (settled, post-commit
+ * occlusion warnings) and the drag handlers in the mount-once effect below
+ * (transient "this spot is illegal" feedback while dragging) — one traversal,
+ * two callers, instead of duplicating the walk.
+ */
+function setGroupEmissive(group: THREE.Object3D, hex: number) {
+  group.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    if (obj.material instanceof THREE.MeshStandardMaterial) {
+      obj.material.emissive.setHex(hex);
     }
   });
 }
@@ -103,10 +130,33 @@ interface DragState {
    * resolvePlacement's final fallback returns this unchecked, so it must
    * always be a position resolvePlacement itself previously returned — set
    * here from the live group's CURRENT position (itself always the product
-   * of a prior resolvePlacement call, or the initial prop-supplied spot),
-   * and reassigned after every resolved move below.
+   * of a prior resolvePlacement call, or the initial prop-supplied spot), and
+   * reassigned in onPointerMove ONLY when the raw cursor target itself was
+   * already legal (see the `legal` check there) — never from a fallback
+   * candidate, which is what keeps this a valid resolvePlacement anchor.
    */
   from: { x: number; z: number };
+  /**
+   * Raw, UNRESOLVED cursor-tracked world-feet position — grab-offset applied,
+   * but not run through resolvePlacement. This is what the mesh actually
+   * renders at every pointermove (see the comment there for why), and it's
+   * also the "proposed" position resolvePlacement is finally given, once, in
+   * endDrag, to compute the guaranteed-legal committed spot.
+   */
+  target: { x: number; z: number };
+  /**
+   * World-feet delta between the item's centre and the floor-plane point
+   * under the pointer AT GRAB TIME, fixed for the whole gesture. Without
+   * this, the first pointermove after a click would snap the item's centre
+   * straight to wherever the floor-raycast lands (usually not directly under
+   * the cursor, since real clicks land on off-centre points of the item's
+   * visible faces) — i.e. exactly the "item teleports on grab" bug. Adding it
+   * back in on every move keeps the same relative grab point for the whole
+   * drag, like picking up a box by one corner rather than its centre.
+   */
+  offset: { x: number; z: number };
+  /** Whether `target` is CURRENTLY illegal — tracked only to avoid re-tinting the mesh every single pointermove when its legality hasn't changed. */
+  invalid: boolean;
 }
 
 export interface FurnitureEditorCanvasProps {
@@ -180,12 +230,7 @@ export function FurnitureEditorCanvas({
     for (const child of roomGroup.children) {
       if (!(child instanceof THREE.Group) || !child.userData.furnitureId) continue;
       const tint = blockers.has(child.userData.furnitureId as string);
-      child.traverse((obj) => {
-        if (!(obj instanceof THREE.Mesh)) return;
-        if (obj.material instanceof THREE.MeshStandardMaterial) {
-          obj.material.emissive.setHex(tint ? BLOCKER_TINT : 0x000000);
-        }
-      });
+      setGroupEmissive(child, tint ? BLOCKER_TINT : 0x000000);
     }
   }, []);
 
@@ -345,7 +390,24 @@ export function FurnitureEditorCanvas({
       const hit = pickFurniture(e);
       stateRef.current.onSelect(hit ? (hit.userData.furnitureId as string) : null);
       if (!hit) return;
-      drag = { id: hit.userData.furnitureId as string, group: hit, from: { x: hit.position.x, z: hit.position.z } };
+      // Grab offset (see DragState.offset) — computed from the SAME event
+      // that picked the item, so the floor point under this exact click is
+      // what gets subtracted out. If the floor raycast somehow misses (e.g. a
+      // near-parallel camera ray, not expected with the locked greybox
+      // camera but cheap to guard), fall back to a zero offset rather than
+      // failing the grab outright.
+      const grabFloorPoint = raycastFloor(e);
+      const offset = grabFloorPoint
+        ? { x: hit.position.x - grabFloorPoint.x, z: hit.position.z - grabFloorPoint.z }
+        : { x: 0, z: 0 };
+      drag = {
+        id: hit.userData.furnitureId as string,
+        group: hit,
+        from: { x: hit.position.x, z: hit.position.z },
+        target: { x: hit.position.x, z: hit.position.z },
+        offset,
+        invalid: false,
+      };
       canvas!.setPointerCapture(e.pointerId);
     }
 
@@ -357,18 +419,52 @@ export function FurnitureEditorCanvas({
       const item = f.find((x) => x.id === drag!.id);
       const camera = cameraRef.current;
       if (!item || !camera) return;
+
+      // Cursor-tracked target (grab-offset applied) — this is what the mesh
+      // renders at, every frame, full stop. This replaces the OLD behaviour
+      // of rendering resolvePlacement's RESOLVED position on every
+      // pointermove, which is what actually caused the reported "glitchy"
+      // drag: near any wall/overlap/camera-exclusion boundary, resolvePlacement
+      // tries the full move, then an x-only slide, then a z-only slide, then
+      // holds — and tiny cursor deltas near a boundary can flip which of
+      // those four candidates passes from one pointermove to the next. Since
+      // the OLD code fed that flapping result straight into the mesh's
+      // position, the item visibly fought the cursor (jitter/snap-back)
+      // instead of sliding smoothly. Rendering the raw target here instead
+      // makes the drag itself perfectly smooth; legality becomes a visual
+      // hint only (the tint below), and gets enforced for real exactly once,
+      // on release, in endDrag — where a single corrective snap (if the
+      // cursor was released over an illegal spot) reads as "it stopped me,"
+      // not as jitter.
+      const target = { x: p.x + drag.offset.x, z: p.z + drag.offset.z };
+      drag.target = target;
+
       const others = toWorldFurniture(f.filter((x) => x.id !== drag!.id), s.width, s.depth);
-      const { x, z } = resolvePlacement(
-        { kind: item.kind, rotation: item.rotation, x: p.x, z: p.z, fromX: drag.from.x, fromZ: drag.from.z },
+      const resolved = resolvePlacement(
+        { kind: item.kind, rotation: item.rotation, x: target.x, z: target.z, fromX: drag.from.x, fromZ: drag.from.z },
         others,
         { width: s.width, depth: s.depth },
         { x: camera.position.x, z: camera.position.z },
       );
+      // resolvePlacement's first branch returns `input.x`/`input.z` back
+      // completely unchanged (the same numbers, not just equal in value) the
+      // instant the raw proposal is legal — see its implementation — so an
+      // exact `===` compare is a safe, cheap way to ask "was `target` itself
+      // legal?" without re-implementing its bounds/overlap/exclusion checks
+      // here.
+      const legal = resolved.x === target.x && resolved.z === target.z;
+      if (legal) drag.from = target; // advance the fallback anchor only across legal ground — see DragState.from's precondition note
+
+      const nowInvalid = !legal;
+      if (nowInvalid !== drag.invalid) {
+        drag.invalid = nowInvalid;
+        setGroupEmissive(drag.group, nowInvalid ? DRAG_INVALID_TINT : 0x000000);
+      }
+
       // Mutate the live Group during the gesture; React state (and hence a
       // full scene rebuild) only commits once, on release below — one
       // rebuild per drag, not one per pointermove frame.
-      drag.group.position.set(x, 0, z);
-      drag.from = { x, z };
+      drag.group.position.set(target.x, 0, target.z);
     }
 
     function endDrag(e: PointerEvent) {
@@ -376,8 +472,40 @@ export function FurnitureEditorCanvas({
       const finished = drag;
       drag = null;
       if (canvas!.hasPointerCapture(e.pointerId)) canvas!.releasePointerCapture(e.pointerId);
-      const { spec: s, onCommit: commit } = stateRef.current;
-      commit(finished.id, worldToLocal(finished.from.x, finished.from.z, s.width, s.depth));
+      const { spec: s, furniture: f, onCommit: commit } = stateRef.current;
+
+      // The one and only resolvePlacement call that actually decides where
+      // the item ends up: resolve the last cursor target against `from`
+      // (which onPointerMove only ever advances across legal ground, so it
+      // always satisfies resolvePlacement's fromX/fromZ precondition) to land
+      // on a guaranteed-legal final spot, even if the pointer was released
+      // mid-violation.
+      const item = f.find((x) => x.id === finished.id);
+      const camera = cameraRef.current;
+      let finalPos = finished.from;
+      if (item && camera) {
+        finalPos = resolvePlacement(
+          {
+            kind: item.kind,
+            rotation: item.rotation,
+            x: finished.target.x,
+            z: finished.target.z,
+            fromX: finished.from.x,
+            fromZ: finished.from.z,
+          },
+          toWorldFurniture(f.filter((x) => x.id !== finished.id), s.width, s.depth),
+          { width: s.width, depth: s.depth },
+          { x: camera.position.x, z: camera.position.z },
+        );
+      }
+      finished.group.position.set(finalPos.x, 0, finalPos.z);
+      // Clear the transient drag-invalid tint unconditionally — runOcclusionCheck
+      // below (via applyBlockerTint) is about to repaint every item's tint
+      // from scratch based on the fresh occlusion pass, so this only matters
+      // for the instant before that pass lands.
+      if (finished.invalid) setGroupEmissive(finished.group, 0x000000);
+
+      commit(finished.id, worldToLocal(finalPos.x, finalPos.z, s.width, s.depth));
       runOcclusionCheck();
     }
 

@@ -228,7 +228,13 @@ function RoomSection({
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <div className="flex items-center gap-3">
           <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
-          <Button size="sm" icon="Sofa" onClick={onFurnish}>
+          <Button
+            size="sm"
+            icon="Sofa"
+            onClick={onFurnish}
+            disabled={generating}
+            title={generating ? "Wait for this room to finish generating" : undefined}
+          >
             Adjust with 3D
           </Button>
         </div>

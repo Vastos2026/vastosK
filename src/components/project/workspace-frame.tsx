@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
-import { useParams, usePathname, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useVasto, useHydrated } from "@/lib/store";
 import { PHASES } from "@/lib/nav";
 import { PROPERTY_TYPES } from "@/lib/data";
@@ -62,25 +62,20 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   // (reported bug). Those two are the only sub-routes with their own header.
   const hasOwnBackNav = (step === "generate" || step === "furnish") && !!subSegment;
 
-  // Match the phase whose segment appears in the path — "furnish/[roomId]"
-  // (subSegment present) maps to "generate", same as "generate/[roomId]"
-  // View & Edit (see comment above), since it's a sub-route reached FROM
-  // Generate. The top-level "/furnish" gallery has no subSegment, so it
-  // falls through to the normal PHASES lookup and correctly resolves to
-  // "furnish" — mapping it to "generate" too used to highlight the wrong
-  // stepper pill on the gallery page (reported bug).
-  const currentPhase = (
-    step === "furnish" && subSegment
-      ? "generate"
-      : (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload")
-  ) as Phase;
+  // The phase this path belongs to, ignoring the ?from entry-point override
+  // that only furnish/[roomId] needs (see phaseFor / StepperSlot below).
+  const pathPhase = pathFallbackPhase(pathname);
 
   const backHref = (() => {
     if (step === "floor-plan") return "/";
     if (step === "upload") return `/projects/${params.id}/floor-plan`;
     if (step === "plan") return `/projects/${params.id}/upload`;
     if (step === "review") return `/projects/${params.id}/plan`;
-    if ((step === "generate" || step === "furnish") && subSegment) return `/projects/${params.id}/generate`;
+    // Both of these sub-routes render their own in-flow back link, so
+    // hasOwnBackNav hides the floating button and this branch never actually
+    // renders for them. Kept correct anyway rather than left stale.
+    if (step === "generate" && subSegment) return `/projects/${params.id}/generate`;
+    if (step === "furnish" && subSegment) return `/projects/${params.id}/furnish`;
     const idx = PHASES.findIndex((p) => p.id === step);
     return idx > 0 ? `/projects/${params.id}/${PHASES[idx - 1].id}` : "/";
   })();
@@ -149,14 +144,29 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="mx-auto">
-          <PhaseStepper
-            projectId={params.id}
-            current={currentPhase}
-            disabled={!project?.floorPlan}
-            hasRoomsToLose={hasRoomsToLose}
-            doneMap={computeDoneMap(project)}
-            onNeedsConfirm={() => setConfirmOpen(true)}
-          />
+          <Suspense
+            fallback={
+              <PhaseStepper
+                projectId={params.id}
+                current={pathPhase}
+                disabled={!project?.floorPlan}
+                hasRoomsToLose={hasRoomsToLose}
+                doneMap={computeDoneMap(project)}
+                onNeedsConfirm={() => setConfirmOpen(true)}
+              />
+            }
+          >
+            <StepperSlot
+              projectId={params.id}
+              pathname={pathname}
+              step={step}
+              subSegment={subSegment}
+              disabled={!project?.floorPlan}
+              hasRoomsToLose={hasRoomsToLose}
+              doneMap={computeDoneMap(project)}
+              onNeedsConfirm={() => setConfirmOpen(true)}
+            />
+          </Suspense>
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -203,6 +213,69 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
         </div>
       </Modal>
     </div>
+  );
+}
+
+/** The phase a path belongs to on its own, with no query string involved. */
+function pathFallbackPhase(pathname: string): Phase {
+  return (PHASES.find((p) => pathname.includes(`/${p.id}`))?.id ?? "upload") as Phase;
+}
+
+/**
+ * Resolves which stepper pill lights up, including the one route where the
+ * path alone is not enough.
+ *
+ * `furnish/[roomId]` is a single editor with two entry points: the Furnish
+ * gallery (an arrangement step) and the Generate gallery's "Adjust with 3D"
+ * (an iteration step). `?from=generate` is the only thing distinguishing
+ * them, and it is the same switch the page itself uses for its back link and
+ * for whether it offers a Generate button, so all three agree by
+ * construction.
+ *
+ * This used to hardcode "generate" for every furnish/[roomId] visit, which
+ * meant opening a room from the Furnish gallery highlighted Generate — a
+ * phase the user had not reached yet (reported bug).
+ */
+function phaseFor(pathname: string, step: string | undefined, subSegment: string | undefined, from: string | null): Phase {
+  if (step === "furnish" && subSegment) return from === "generate" ? "generate" : "furnish";
+  return pathFallbackPhase(pathname);
+}
+
+/**
+ * Wraps PhaseStepper purely to read `?from`. Next requires useSearchParams to
+ * sit inside a Suspense boundary, and confining it to this leaf keeps the
+ * boundary off the whole frame — the same pattern furnish/[roomId]/page.tsx
+ * and login-form.tsx already use.
+ */
+function StepperSlot({
+  projectId,
+  pathname,
+  step,
+  subSegment,
+  disabled,
+  hasRoomsToLose,
+  doneMap,
+  onNeedsConfirm,
+}: {
+  projectId: string;
+  pathname: string;
+  step: string | undefined;
+  subSegment: string | undefined;
+  disabled?: boolean;
+  hasRoomsToLose: boolean;
+  doneMap: Record<Phase, boolean>;
+  onNeedsConfirm: () => void;
+}) {
+  const from = useSearchParams().get("from");
+  return (
+    <PhaseStepper
+      projectId={projectId}
+      current={phaseFor(pathname, step, subSegment, from)}
+      disabled={disabled}
+      hasRoomsToLose={hasRoomsToLose}
+      doneMap={doneMap}
+      onNeedsConfirm={onNeedsConfirm}
+    />
   );
 }
 

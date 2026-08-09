@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { emptyPlan } from "@/lib/pipeline/empty-plan";
@@ -34,6 +35,10 @@ export default function ReviewPage() {
   const patchProject = useVasto((s) => s.patchProject);
   const [addingRoom, setAddingRoom] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  // Set when the user clicks delete on a room that already has generated
+  // images. The button stays clickable (an unclickable disabled button just
+  // looks broken) but the click surfaces this message instead of deleting.
+  const [deleteBlockedId, setDeleteBlockedId] = useState<string | null>(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -170,16 +175,21 @@ export default function ReviewPage() {
                       <Icon name="CircleAlert" className="size-3.5" />
                     </span>
                   )}
-                  <span title={hasGenerations ? "This room already has generated images and can't be deleted" : undefined}>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      icon="Trash2"
-                      aria-label={hasGenerations ? "This room already has generated images and can't be deleted" : "Delete room"}
-                      disabled={hasGenerations}
-                      onClick={() => setPendingDeleteId(room.id)}
-                    />
-                  </span>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    icon="Trash2"
+                    title={hasGenerations ? "This room already has generated images and can't be deleted" : undefined}
+                    aria-label={hasGenerations ? "This room already has generated images and can't be deleted" : "Delete room"}
+                    onClick={() => {
+                      if (hasGenerations) {
+                        setDeleteBlockedId(room.id);
+                      } else {
+                        setDeleteBlockedId(null);
+                        setPendingDeleteId(room.id);
+                      }
+                    }}
+                  />
                 </div>
 
                 <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-2 pl-6">
@@ -241,6 +251,21 @@ export default function ReviewPage() {
                     </button>
                   </div>
                 )}
+
+                {deleteBlockedId === room.id && (
+                  <div className="mt-3 flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+                    <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+                    <span className="flex-1">
+                      This room has already been generated and cannot be deleted.
+                    </span>
+                    <button
+                      onClick={() => setDeleteBlockedId(null)}
+                      className="cursor-pointer text-faint hover:text-foreground"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -262,6 +287,7 @@ export default function ReviewPage() {
             <AddRoomForm
               roomTypes={roomTypes}
               paletteIndex={rooms.length}
+              projectId={id}
               onAdd={(room) => {
                 if (!project.floorPlan) {
                   setFloorPlan(id, { ...emptyPlan(), rooms: [room] });
@@ -321,11 +347,13 @@ function OpeningCountField({
 function AddRoomForm({
   roomTypes,
   paletteIndex,
+  projectId,
   onAdd,
   onCancel,
 }: {
   roomTypes: string[];
   paletteIndex: number;
+  projectId: string;
   onAdd: (room: Room) => void;
   onCancel: () => void;
 }) {
@@ -393,6 +421,22 @@ function AddRoomForm({
           <span className="text-faint">ft</span>
         </span>
       </div>
+      {/* Manually added rooms have no wall/opening geometry read from the
+          uploaded plan, so ensure-greybox-key.ts falls back to evenly
+          spacing doors/windows along the walls (seedPlacedOpenings) rather
+          than the positions extraction would have found. Not a bug, just a
+          guess worth calling out before the user relies on it. */}
+      <p className="text-xs text-muted">
+        Rooms added here aren&apos;t on the uploaded plan, so their doors and windows will be
+        evenly spaced guesses. You can reposition them in the{" "}
+        <Link
+          href={`/projects/${projectId}/plan`}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Plan Editor
+        </Link>
+        .
+      </p>
       <div className="flex items-center justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>
           Cancel
