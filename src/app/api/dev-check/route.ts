@@ -18,7 +18,7 @@ import { assertHistogram, GreyboxHistogramError } from "@/lib/greybox/histogram"
 // (dimensions.ts) carry no "use client" directive either — camera math is
 // pure THREE.Vector3/PerspectiveCamera arithmetic, no WebGLRenderer, no
 // canvas, no DOM — so it runs here exactly as it would in the browser.
-import { greyboxCamera, projectOpenings } from "@/lib/greybox/camera";
+import { cameraCoverage, greyboxCamera, projectOpenings } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT, GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "@/lib/greybox/dimensions";
 import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import sharp from "sharp";
@@ -1348,6 +1348,95 @@ export async function GET() {
     // Bathroom is in NO_FURNITURE_ROOM_TYPES — it must seed an empty room,
     // not the universal rug/plant/side-table fallback.
     eq(defaultArrangementFor("Bathroom", slotSpec, slotCamera), [], "a service room must seed no furniture");
+  });
+
+  // ---- Selectable camera view (Auto + the four walls) ----
+  // A room with one opening on each wall — no single viewpoint can show all
+  // four, since the wall a camera backs onto is the one wall it cannot see.
+  // That makes it the right fixture for proving each explicit view is honoured
+  // and that coverage differs between them.
+  const viewSpec: GreyboxRoomSpec = {
+    width: 12,
+    depth: 10,
+    openings: [
+      { id: "n", type: "window", wall: "north", t: 0.5, widthFt: 3 },
+      { id: "s", type: "door", wall: "south", t: 0.5, widthFt: 3 },
+      { id: "w", type: "window", wall: "west", t: 0.5, widthFt: 3 },
+      { id: "e", type: "window", wall: "east", t: 0.5, widthFt: 3 },
+    ],
+  };
+
+  check("greyboxCamera: an explicit view stands against the wall it names, not wherever scores best", () => {
+    const hd = viewSpec.depth / 2;
+    const hw = viewSpec.width / 2;
+    const north = greyboxCamera({ ...viewSpec, cameraView: "north" }, GREYBOX_ASPECT);
+    const south = greyboxCamera({ ...viewSpec, cameraView: "south" }, GREYBOX_ASPECT);
+    const west = greyboxCamera({ ...viewSpec, cameraView: "west" }, GREYBOX_ASPECT);
+    const east = greyboxCamera({ ...viewSpec, cameraView: "east" }, GREYBOX_ASPECT);
+    // north is -Z, south +Z, west -X, east +X (build-scene.ts's wallFrame).
+    assert(north.position.z < -hd * 0.8 && Math.abs(north.position.x) < 1e-9, "north view is not on the north wall");
+    assert(south.position.z > hd * 0.8 && Math.abs(south.position.x) < 1e-9, "south view is not on the south wall");
+    assert(west.position.x < -hw * 0.8 && Math.abs(west.position.z) < 1e-9, "west view is not on the west wall");
+    assert(east.position.x > hw * 0.8 && Math.abs(east.position.z) < 1e-9, "east view is not on the east wall");
+  });
+
+  check('greyboxCamera: "auto" and an absent view are the same camera, unchanged by this feature', () => {
+    const absent = greyboxCamera(viewSpec, GREYBOX_ASPECT);
+    const explicit = greyboxCamera({ ...viewSpec, cameraView: "auto" }, GREYBOX_ASPECT);
+    eq(
+      { x: absent.position.x, y: absent.position.y, z: absent.position.z },
+      { x: explicit.position.x, y: explicit.position.y, z: explicit.position.z },
+      "adding the field must not change what an existing room renders",
+    );
+  });
+
+  check("greyboxCamera: an explicit view is still deterministic across calls", () => {
+    const a = greyboxCamera({ ...viewSpec, cameraView: "east" }, GREYBOX_ASPECT);
+    const b = greyboxCamera({ ...viewSpec, cameraView: "east" }, GREYBOX_ASPECT);
+    eq({ x: a.position.x, z: a.position.z }, { x: b.position.x, z: b.position.z }, "same view must yield same camera");
+  });
+
+  check("cameraCoverage: reports every selectable view, and auto is never beaten by a wall", () => {
+    const cov = cameraCoverage(viewSpec, GREYBOX_ASPECT);
+    eq(cov.length, 5, "expected auto plus the four walls");
+    eq(cov[0].view, "auto", "auto must be first so it can be the default option");
+    for (const c of cov) {
+      eq(c.total, viewSpec.openings.length, `coverage.total is wrong for ${c.view}`);
+      assert(c.seen <= c.total, `${c.view} claims to see more openings than exist`);
+    }
+    const auto = cov[0].seen;
+    for (const c of cov.slice(1)) {
+      assert(c.seen <= auto, `${c.view} sees ${c.seen} but auto only found ${auto} — auto is meant to be the maximum`);
+    }
+  });
+
+  check("cameraCoverage: a wall view cannot see an opening on the wall it stands against", () => {
+    // The geometric limit the picker's own help text promises the user.
+    const cov = cameraCoverage(viewSpec, GREYBOX_ASPECT);
+    for (const c of cov.slice(1)) {
+      assert(
+        c.seen < c.total,
+        `${c.view} claims all ${c.total} openings, but the opening on the ${c.view} wall is behind the camera`,
+      );
+    }
+  });
+
+  check("greyboxHashFor: absent and auto hash identically, so shipping this field re-renders nothing", () => {
+    const base = { width: 12, height: 10, placedOpenings: [], furniture: [] };
+    eq(
+      greyboxHashFor(base),
+      greyboxHashFor({ ...base, cameraView: "auto" }),
+      "an auto room must keep the hash it had before cameraView existed",
+    );
+  });
+
+  check("greyboxHashFor: changing the view invalidates the cached greybox", () => {
+    const base = { width: 12, height: 10, placedOpenings: [], furniture: [] };
+    const auto = greyboxHashFor(base);
+    const north = greyboxHashFor({ ...base, cameraView: "north" });
+    const south = greyboxHashFor({ ...base, cameraView: "south" });
+    assert(north !== auto, "picking a wall must not reuse the auto render");
+    assert(north !== south, "two different walls must not share a cached render");
   });
 
   const failed = results.filter((r) => !r.ok);

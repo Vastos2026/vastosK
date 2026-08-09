@@ -46,7 +46,7 @@ export function fnv1a(s: string): string {
 }
 
 export function greyboxHashFor(
-  room: Pick<Room, "width" | "height" | "placedOpenings" | "furniture">,
+  room: Pick<Room, "width" | "height" | "placedOpenings" | "furniture" | "cameraView">,
 ): string {
   const { width, height } = layoutSize(room);
   const openings = [...(room.placedOpenings ?? [])]
@@ -55,7 +55,22 @@ export function greyboxHashFor(
   const furniture = [...(room.furniture ?? [])]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((f) => [f.kind, round(f.x, 4), round(f.z, 4), round(f.rotation, 4)]);
+  // The camera view key is OMITTED when it is absent or "auto", rather than
+  // written as `c: "auto"`. Adding an always-present key would change every
+  // existing room's hash the moment this field shipped, re-rendering and
+  // re-uploading every cached greybox in every project for no actual change
+  // in output. Omitting it means an auto room hashes byte-identically to how
+  // it did before the field existed, and only a room whose angle was
+  // deliberately changed invalidates.
+  const view = room.cameraView && room.cameraView !== "auto" ? { c: room.cameraView } : {};
   return fnv1a(
-    JSON.stringify({ w: round(width, 3), d: round(height, 3), o: openings, f: furniture, v: GREYBOX_RENDER_VERSION }),
+    JSON.stringify({
+      w: round(width, 3),
+      d: round(height, 3),
+      o: openings,
+      f: furniture,
+      ...view,
+      v: GREYBOX_RENDER_VERSION,
+    }),
   );
 }

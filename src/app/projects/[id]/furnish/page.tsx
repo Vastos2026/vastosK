@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnishRoomCard, type FurnishCardStatus } from "@/components/project/furnish-room-card";
 import { enqueueGreyboxRender } from "@/lib/greybox/render-queue";
-import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { Button } from "@/components/ui/button";
@@ -69,9 +68,16 @@ function FurnishGalleryContent({ projectId, rooms }: { projectId: string; rooms:
   // this page mounts, not live while it's open.
   useEffect(() => {
     let cancelled = false;
+    // Loaded on demand rather than at module scope. This page renders <img>
+    // cards and never mounts a 3D canvas, but ensureGreybox transitively
+    // pulls in three.js, so a static import put roughly 550KB of WebGL code
+    // into the gallery's first load for work that cannot start until after
+    // mount anyway. Started once here and awaited inside each queued job, so
+    // the module is fetched a single time no matter how many rooms there are.
+    const greybox = import("@/lib/greybox/ensure-greybox-key");
     for (const room of rooms) {
-      enqueueGreyboxRender(() =>
-        ensureGreybox(projectId, room).catch((e) => {
+      enqueueGreyboxRender(async () =>
+        (await greybox).ensureGreybox(projectId, room).catch((e) => {
           // Matches generate/page.tsx's own fallback posture: a render/upload
           // failure degrades to the same empty state as "no dimensions yet"
           // rather than surfacing a distinct error UI this task doesn't spec.

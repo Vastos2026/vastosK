@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import type { GreyboxOpening, GreyboxRoomSpec, GreyboxWall } from "./types";
 import { catalogueEntry } from "./furniture-catalogue";
+// Re-exported below (unchanged) so every existing importer of these four
+// constants from this module keeps working — see opening-heights.ts's doc
+// comment for why they live in their own THREE-free file.
+import { CEILING_H, DOOR_HEAD, WINDOW_SILL, WINDOW_HEAD } from "./opening-heights";
+export { CEILING_H, DOOR_HEAD, WINDOW_SILL, WINDOW_HEAD };
 
 /**
  * Room spec → an untextured grey 3D box, rendered from `greyboxCamera` and
@@ -12,11 +17,6 @@ import { catalogueEntry } from "./furniture-catalogue";
  * Openings are cut by splitting each wall into sub-panels around the opening
  * rectangle, so there is no CSG dependency.
  */
-
-export const CEILING_H = 10;
-export const DOOR_HEAD = 7;
-export const WINDOW_SILL = 3;
-export const WINDOW_HEAD = 7;
 
 /**
  * Semantic class of a mesh, stamped into userData so later passes can select

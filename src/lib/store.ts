@@ -135,6 +135,75 @@ const cardsSig = (cards: RoomCard[]): string =>
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
+/**
+ * PERF: debounces the actual `localStorage.setItem` disk write behind
+ * persist's storage adapter — the in-memory zustand `set()` (and every
+ * subscribed component's re-render) stays perfectly synchronous; only the
+ * browser-storage write is deferred.
+ *
+ * Measured cause: several fields dispatch straight to a store setter on
+ * every keystroke with no local-state buffering first — e.g. the room name
+ * input in review/page.tsx (`onChange={(e) => updateRoom(id, room.id, {
+ * name: e.target.value })}`), plus the width/height and door/window count
+ * fields on the same page. `createJSONStorage` (zustand/middleware) calls
+ * `storage.setItem(name, JSON.stringify(wholeState))` synchronously inside
+ * every one of those `set()` calls, and `partialize` below persists the
+ * FULL `projects` array — every project's roomCards/generations included,
+ * not just the one being edited. Typing a 12-character room name meant 12
+ * synchronous whole-store JSON.stringify + localStorage.setItem calls, on
+ * the same tick as the keystroke that triggered each one.
+ *
+ * Coalescing those into one write ~300ms after the last mutation removes
+ * the per-keystroke main-thread write without changing what ends up on
+ * disk (the debounced write always carries the latest state — nothing is
+ * merged or dropped) or how the app reads it back (`getItem` is untouched,
+ * so a fresh tab / hard reload always rehydrates correctly). `flush` also
+ * runs on `pagehide`/tab-hide so navigating away or closing the tab mid-
+ * debounce-window never silently drops the last edit.
+ */
+function debouncedStorage(storage: Storage, delayMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let pending: { name: string; value: string } | null = null;
+
+  const flush = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (pending) {
+      storage.setItem(pending.name, pending.value);
+      pending = null;
+    }
+  };
+
+  if (typeof window !== "undefined") {
+    // pagehide covers tab close / bfcache navigation (mobile Safari does not
+    // reliably fire beforeunload); visibilitychange covers a backgrounded
+    // tab, which mobile OSes can suspend or kill without ever firing pagehide.
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flush();
+    });
+  }
+
+  return {
+    getItem: (name: string) => storage.getItem(name),
+    setItem: (name: string, value: string) => {
+      pending = { name, value };
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(flush, delayMs);
+    },
+    removeItem: (name: string) => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      pending = null;
+      storage.removeItem(name);
+    },
+  };
+}
+
 export const useVasto = create<VastoState>()(
   persist(
     (set, get) => ({
@@ -495,7 +564,7 @@ export const useVasto = create<VastoState>()(
     }),
     {
       name: "vasto-store-v1",
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => debouncedStorage(localStorage, 300)),
       version: 4,
       partialize: (s) => ({ projects: s.projects, generatingRoomIds: s.generatingRoomIds }),
       // Reset generatingRoomIds the moment rehydration finishes, rather than

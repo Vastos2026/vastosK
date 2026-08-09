@@ -8,10 +8,10 @@ import { FurnitureEditorCanvas, type FurnitureCommitPatch } from "@/components/p
 import { furnitureForRoomType, catalogueEntry } from "@/lib/greybox/furniture-catalogue";
 import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { ensureGreybox, type GreyboxResult } from "@/lib/greybox/ensure-greybox-key";
-import { defaultArrangementFor, firstFreeSlot } from "@/lib/greybox/first-free-slot";
+import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
 import { MAX_FURNITURE, resolveOcclusion, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
-import { greyboxCamera } from "@/lib/greybox/camera";
+import { cameraCoverage, greyboxCamera } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import { generateRoomImage } from "@/lib/design-plan-client";
@@ -21,10 +21,23 @@ import { Icon } from "@/components/ui/icon";
 import { RetryImg } from "@/components/ui/retry-img";
 import { cn, uid } from "@/lib/utils";
 import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
-import type { GreyboxRoomSpec } from "@/lib/greybox/types";
+import type { GreyboxCameraView, GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { DesignSpecification, UniversalInput } from "@/lib/ai/prompting/types";
 
 const ROTATE_STEP = Math.PI / 12; // 15 degrees
+/**
+ * Labels name the wall the camera STANDS AGAINST, matching GreyboxCameraView's
+ * own definition — "From the north wall" backs onto the north wall and so
+ * shows the other three. Phrasing it as where you stand rather than what you
+ * face is the one that stays true when a room has openings on several walls.
+ */
+const CAMERA_VIEW_LABELS: Record<GreyboxCameraView, string> = {
+  auto: "Auto (best coverage)",
+  north: "From the north wall",
+  south: "From the south wall",
+  west: "From the west wall",
+  east: "From the east wall",
+};
 /** Stable reference so `room.placedOpenings ?? EMPTY_OPENINGS` doesn't allocate (and bust memoization) on every render. */
 const EMPTY_OPENINGS: PlacedOpening[] = [];
 
@@ -148,8 +161,16 @@ function FurnishContent({
   const openings = room.placedOpenings ?? EMPTY_OPENINGS;
   const catalogue = furnitureForRoomType(room.type);
 
-  const spec = useMemo<GreyboxRoomSpec>(() => ({ width, depth, openings }), [width, depth, openings]);
+  // Local mirror of room.cameraView so the 3D preview switches the instant
+  // the user picks an angle; the store write happens in the same handler.
+  const [cameraView, setCameraView] = useState<GreyboxCameraView>(room.cameraView ?? "auto");
+
+  const spec = useMemo<GreyboxRoomSpec>(
+    () => ({ width, depth, openings, cameraView }),
+    [width, depth, openings, cameraView],
+  );
   const camera = useMemo(() => greyboxCamera(spec, GREYBOX_ASPECT), [spec]);
+  const coverage = useMemo(() => cameraCoverage(spec, GREYBOX_ASPECT), [spec]);
 
   const [furniture, setFurniture] = useState<PlacedFurniture[]>(
     () => room.furniture ?? defaultArrangementFor(room.type, spec, camera),
@@ -219,6 +240,82 @@ function FurnishContent({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, room.id]);
+
+  /**
+   * Furniture the CURRENT camera cannot show. Switching viewpoint moves the
+   * camera, and both of the placement rules that depend on it — the frame
+   * test and the exclusion disk a piece may not sit inside — are evaluated
+   * against wherever it now stands. So a perfectly good arrangement can become
+   * partly invisible purely because the angle changed.
+   *
+   * Nothing is moved automatically. The user placed these deliberately, and
+   * this codebase does not quietly relocate what a user positioned (the same
+   * rule openings follow). They get told, and they get a button.
+   */
+  const outOfView = useMemo(() => {
+    const cameraPos = { x: camera.position.x, z: camera.position.z };
+    return furniture.filter((f) => {
+      const world = toWorldFurniture([f], width, depth)[0];
+      if (!world) return false; // unknown kind, already dropped everywhere else
+      if (!isInFrame(world.x, world.z, camera)) return true;
+      const others = toWorldFurniture(
+        furniture.filter((o) => o.id !== f.id),
+        width,
+        depth,
+      );
+      const r = resolvePlacement(
+        { kind: f.kind, rotation: f.rotation, x: world.x, z: world.z, fromX: world.x, fromZ: world.z },
+        others,
+        { width, depth },
+        cameraPos,
+      );
+      return r.x !== world.x || r.z !== world.z;
+    });
+  }, [furniture, camera, width, depth]);
+
+  const changeCameraView = (view: GreyboxCameraView) => {
+    if (view === cameraView) return;
+    setCameraView(view);
+    // Persisted immediately rather than on Save, because the greybox hash
+    // includes it: leaving the store stale would let a following ensureGreybox
+    // hit the cache and hand back a render from the previous angle.
+    updateRoom(projectId, room.id, { cameraView: view });
+  };
+
+  /**
+   * Re-seat only the pieces the current camera cannot show, leaving every
+   * other piece exactly where it is. Uses the same slot search the Add button
+   * uses, so a moved piece lands somewhere in frame, legal and non-overlapping
+   * by construction. A piece with nowhere legal left to go is dropped from the
+   * fix rather than forced somewhere invalid, and is reported as still stuck.
+   */
+  const bringIntoView = () => {
+    const stuck: string[] = [];
+    setFurniture((prev) => {
+      const next = [...prev];
+      for (const item of outOfView) {
+        const idx = next.findIndex((f) => f.id === item.id);
+        if (idx === -1) continue;
+        const slot = firstFreeSlot(
+          item.kind,
+          next.filter((f) => f.id !== item.id),
+          spec,
+          camera,
+        );
+        if (!slot) {
+          stuck.push(catalogueEntry(item.kind)?.label ?? item.kind);
+          continue;
+        }
+        next[idx] = { ...next[idx], x: slot.x, z: slot.z };
+      }
+      return next;
+    });
+    setNotice(
+      stuck.length
+        ? [`Moved everything that would fit. No free space left for: ${stuck.join(", ")}.`]
+        : ["Moved out-of-view furniture back into the camera's view."],
+    );
+  };
 
   const addFurniture = (kind: string) => {
     if (furniture.length >= MAX_FURNITURE) return; // buttons are disabled at the cap; stay safe if called anyway
@@ -515,6 +612,25 @@ function FurnishContent({
               </p>
             </div>
 
+            {outOfView.length > 0 && (
+              <div className="shrink-0 rounded-2xl border border-warning/30 bg-warning/10 p-3">
+                <div className="flex items-start gap-2">
+                  <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-warning">
+                      {outOfView.length === 1 ? "One piece is" : `${outOfView.length} pieces are`} outside this
+                      camera&apos;s view:{" "}
+                      {outOfView.map((f) => catalogueEntry(f.kind)?.label ?? f.kind).join(", ")}. They will not appear
+                      in the generated image.
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" className="shrink-0" onClick={bringIntoView}>
+                    Bring into view
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {occlusion.length > 0 && (
               <div className="shrink-0 space-y-1.5 rounded-2xl border border-warning/30 bg-warning/10 p-3">
                 {occlusion.map((v) => (
@@ -549,6 +665,39 @@ function FurnishContent({
           </div>
 
           <aside className="w-96 shrink-0 space-y-4 overflow-y-auto">
+            <div className="rounded-2xl border border-border bg-surface-2 p-4">
+              <p className="text-xs font-semibold text-foreground">Camera angle</p>
+              <p className="mt-1 text-[11px] text-muted">
+                Choose which wall to view the room from. The wall you stand against is the one wall the camera cannot
+                show.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {coverage.map((c) => {
+                  const active = c.view === cameraView;
+                  return (
+                    <button
+                      key={c.view}
+                      type="button"
+                      onClick={() => changeCameraView(c.view)}
+                      className={cn(
+                        "rounded-xl border px-2.5 py-2 text-left text-xs font-medium transition cursor-pointer",
+                        active
+                          ? "border-accent/60 bg-accent/10 text-foreground"
+                          : "border-border bg-bg text-muted hover:bg-surface-3 hover:text-foreground",
+                      )}
+                    >
+                      <span className="block truncate">{CAMERA_VIEW_LABELS[c.view]}</span>
+                      <span className="mt-0.5 block text-[10px] font-normal text-muted">
+                        {c.total === 0
+                          ? "no openings"
+                          : `sees ${c.seen} of ${c.total} ${c.total === 1 ? "opening" : "openings"}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="rounded-2xl border border-border bg-surface-2 p-4">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-foreground">Add furniture</p>

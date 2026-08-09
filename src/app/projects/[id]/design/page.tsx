@@ -7,7 +7,6 @@ import { useProject, useVasto } from "@/lib/store";
 import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
-import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
@@ -137,6 +136,17 @@ export default function DesignPage() {
       // the design actually changed (signatureUnchanged) — re-confirming
       // Design after only adding a new room shouldn't silently replace every
       // other room's already-approved-looking image.
+      //
+      // PERF: dynamically imported once here (was a static top-level import)
+      // — the greybox module pulls in three.js transitively (render-mask.ts
+      // -> three), measured at ~560KB of extra First Load JS on this route
+      // (route-bundle-stats.json: 1399.4KB here vs. ~840KB baseline on routes
+      // that never touch greybox). ensureGreybox only ever runs after this
+      // button click, never during initial render, so deferring the import
+      // to here keeps three.js out of this route's initial bundle. Hoisted
+      // above the loop (rather than inside each per-room IIFE below) so the
+      // dynamic import only resolves once per confirm(), not once per room.
+      const { ensureGreybox } = await import("@/lib/greybox/ensure-greybox-key");
       for (const room of rooms) {
         const existingCard = project.roomCards.find((c) => c.roomId === room.id);
         if (signatureUnchanged && (existingCard?.generations.length ?? 0) > 0) continue;

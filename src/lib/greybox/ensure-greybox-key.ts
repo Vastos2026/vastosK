@@ -69,6 +69,9 @@ export async function ensureGreybox(projectId: string, room: Room): Promise<Grey
     depth: height,
     openings,
     furniture: toWorldFurniture(room.furniture ?? [], width, height),
+    // Undefined here means "auto", which is greyboxCamera's own default, so a
+    // room that never chose an angle renders exactly as it always did.
+    cameraView: room.cameraView,
   };
 
   const hash = greyboxHashFor({ ...room, placedOpenings: openings });

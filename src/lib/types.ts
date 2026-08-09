@@ -1,7 +1,7 @@
 /* Domain types for the Vastos frontend (mock layer). */
 
 import type { DesignSpecification, LuxuryLevel, UniversalInput } from "./ai/prompting/types";
-import type { GreyboxWall } from "./greybox/types";
+import type { GreyboxCameraView, GreyboxWall } from "./greybox/types";
 
 export type PropertyType = "apartment" | "villa" | "office" | "commercial";
 
@@ -107,6 +107,14 @@ export interface Room {
    * room with none renders exactly as it did before this feature existed.
    */
   furniture?: PlacedFurniture[];
+  /**
+   * Which viewpoint this room's greybox renders from. Absent means "auto",
+   * the original best-coverage scorer, so a room that predates this field
+   * behaves exactly as it did. Part of the greybox hash — changing it must
+   * invalidate the cached render, or the user picks a new angle and keeps
+   * getting the old image back.
+   */
+  cameraView?: GreyboxCameraView;
 }
 
 /** One furniture proxy placed in a room's greybox — see furniture-catalogue.ts for `kind`s. */

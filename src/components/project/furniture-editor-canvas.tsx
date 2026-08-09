@@ -623,24 +623,32 @@ export function FurnitureEditorCanvas({
     };
   }, [runOcclusionCheck]);
 
-  // Rebuild the locked camera only when the room SHAPE changes — never on a
-  // furniture-only edit (that guarantee is the entire point of this task).
-  // greyboxCamera is deterministic: the same width/depth/openings always
-  // yields the same viewpoint, so a regenerated image never silently
-  // changes framing. Declared before the scene-rebuild effect below so, on
-  // every render where both fire, cameraRef.current is already current by
-  // the time rebuildScene reads it (effects for one component fire in
-  // declaration order).
+  // Rebuild the locked camera only when the room SHAPE or the user's chosen
+  // viewpoint changes — never on a furniture-only edit (that guarantee is the
+  // entire point of this task). greyboxCamera is deterministic: the same
+  // width/depth/openings/view always yields the same camera, so a regenerated
+  // image never silently changes framing. Declared before the scene-rebuild
+  // effect below so, on every render where both fire, cameraRef.current is
+  // already current by the time rebuildScene reads it (effects for one
+  // component fire in declaration order).
+  //
+  // cameraView MUST be forwarded here, not dropped. This preview and the
+  // greybox that actually conditions generation have to agree on the
+  // viewpoint; rebuilding from width/depth/openings alone would leave the
+  // editor showing one angle while the render used another.
   useEffect(() => {
-    cameraRef.current = greyboxCamera({ width: spec.width, depth: spec.depth, openings: spec.openings }, GREYBOX_ASPECT);
-  }, [spec.width, spec.depth, spec.openings]);
+    cameraRef.current = greyboxCamera(
+      { width: spec.width, depth: spec.depth, openings: spec.openings, cameraView: spec.cameraView },
+      GREYBOX_ASPECT,
+    );
+  }, [spec.width, spec.depth, spec.openings, spec.cameraView]);
 
   // Rebuilds the scene geometry whenever the room shell or furniture list
   // changes — runs after the two effects above on the very first render
   // too, so this is also what performs the initial build.
   useEffect(() => {
     rebuildScene();
-  }, [spec.width, spec.depth, spec.openings, furniture, rebuildScene]);
+  }, [spec.width, spec.depth, spec.openings, spec.cameraView, furniture, rebuildScene]);
 
   return (
     <div ref={wrapRef} className="flex h-full w-full items-center justify-center overflow-hidden">

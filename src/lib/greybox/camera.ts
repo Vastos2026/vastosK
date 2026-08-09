@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { openingCentre } from "./build-scene";
 import { GREYBOX_RENDER_H, GREYBOX_RENDER_W } from "./dimensions";
-import type { GreyboxRoomSpec } from "./types";
+import type { GreyboxCameraView, GreyboxRoomSpec, GreyboxWall } from "./types";
 
 /** Eye height, feet. */
 const EYE_H = 5;
@@ -40,12 +40,24 @@ export function greyboxCamera(spec: GreyboxRoomSpec, aspect: number): THREE.Pers
   const ix = spec.width * INSET;
   const iz = spec.depth * INSET;
 
+  // An explicit choice skips scoring entirely. The user has told us where to
+  // stand, and picking a different spot because it scores better would be the
+  // control silently not working — the same "never quietly override what the
+  // user placed" rule the openings already follow.
+  if (spec.cameraView && spec.cameraView !== "auto") {
+    return buildCamera(wallPosition(spec.cameraView, hw, hd, ix, iz), aspect);
+  }
+
   const candidates: [number, number][] = [
-    // Wall midpoints.
-    [0, -hd + iz],
-    [0, hd - iz],
-    [-hw + ix, 0],
-    [hw - ix, 0],
+    // Wall midpoints. This order is load-bearing: scoring ties break by
+    // candidate order, so reordering it would silently move the chosen camera
+    // for existing rooms, invalidating every cached greybox and potentially
+    // pushing already-placed furniture out of frame. north, south, WEST, east
+    // is the original order and must stay that way.
+    wallPosition("north", hw, hd, ix, iz),
+    wallPosition("south", hw, hd, ix, iz),
+    wallPosition("west", hw, hd, ix, iz),
+    wallPosition("east", hw, hd, ix, iz),
     // Corners — wider coverage, used when no single wall works.
     [-hw + ix, -hd + iz],
     [hw - ix, -hd + iz],
@@ -57,31 +69,9 @@ export function greyboxCamera(spec: GreyboxRoomSpec, aspect: number): THREE.Pers
 
   let best: { camera: THREE.PerspectiveCamera; seen: number; spread: number } | null = null;
 
-  for (const [cx, cz] of candidates) {
-    const camera = new THREE.PerspectiveCamera(FOV, aspect, 0.15, 200);
-    camera.position.set(cx, EYE_H, cz);
-    // Level, not tilted down. At 85 degrees a downward tilt produces severe
-    // vertical keystoning — walls converge toward the top of frame — and a
-    // tilted ultra-wide is doubly outside the model's training distribution.
-    // Architectural photography keeps the sensor plane vertical for exactly
-    // this reason. Section 3.3.
-    camera.lookAt(0, EYE_H, 0);
-    camera.updateMatrixWorld();
-    camera.updateProjectionMatrix();
-
-    let seen = 0;
-    let spread = 0;
-    for (const c of centres) {
-      const p = c.clone().project(camera);
-      // project() mirrors points that are BEHIND the camera back into range,
-      // so an explicit in-front test is required — without it, an opening
-      // directly behind the camera scores as visible.
-      const inFront = c.clone().sub(camera.position).dot(camera.getWorldDirection(new THREE.Vector3())) > 0;
-      if (inFront && Math.abs(p.x) < EDGE_MARGIN && Math.abs(p.y) < EDGE_MARGIN) {
-        seen++;
-        spread += Math.hypot(p.x, p.y);
-      }
-    }
+  for (const position of candidates) {
+    const camera = buildCamera(position, aspect);
+    const { seen, spread } = score(camera, centres);
 
     if (!best || seen > best.seen || (seen === best.seen && seen > 0 && spread < best.spread)) {
       best = { camera, seen, spread };
@@ -90,6 +80,99 @@ export function greyboxCamera(spec: GreyboxRoomSpec, aspect: number): THREE.Pers
 
   // `candidates` is non-empty, so `best` is always set by the loop above.
   return best!.camera;
+}
+
+/** Where a camera backing onto `wall` stands. See GreyboxCameraView on the naming. */
+function wallPosition(wall: GreyboxWall, hw: number, hd: number, ix: number, iz: number): [number, number] {
+  switch (wall) {
+    case "north":
+      return [0, -hd + iz];
+    case "south":
+      return [0, hd - iz];
+    case "west":
+      return [-hw + ix, 0];
+    case "east":
+      return [hw - ix, 0];
+  }
+}
+
+/**
+ * One candidate camera. Level, not tilted down: at 85 degrees a downward tilt
+ * produces severe vertical keystoning — walls converge toward the top of
+ * frame — and a tilted ultra-wide is doubly outside the model's training
+ * distribution. Architectural photography keeps the sensor plane vertical for
+ * exactly this reason. Section 3.3.
+ */
+function buildCamera([cx, cz]: [number, number], aspect: number): THREE.PerspectiveCamera {
+  const camera = new THREE.PerspectiveCamera(FOV, aspect, 0.15, 200);
+  camera.position.set(cx, EYE_H, cz);
+  camera.lookAt(0, EYE_H, 0);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  return camera;
+}
+
+/** How many of `centres` this camera actually gets on screen, and how centred they are. */
+function score(camera: THREE.PerspectiveCamera, centres: THREE.Vector3[]): { seen: number; spread: number } {
+  const forward = camera.getWorldDirection(new THREE.Vector3());
+  let seen = 0;
+  let spread = 0;
+  for (const c of centres) {
+    const p = c.clone().project(camera);
+    // project() mirrors points that are BEHIND the camera back into range,
+    // so an explicit in-front test is required — without it, an opening
+    // directly behind the camera scores as visible.
+    const inFront = c.clone().sub(camera.position).dot(forward) > 0;
+    if (inFront && Math.abs(p.x) < EDGE_MARGIN && Math.abs(p.y) < EDGE_MARGIN) {
+      seen++;
+      spread += Math.hypot(p.x, p.y);
+    }
+  }
+  return { seen, spread };
+}
+
+/** The four wall viewpoints, in the scorer's own candidate order. */
+export const WALL_VIEWS: GreyboxWall[] = ["north", "south", "west", "east"];
+
+export interface CameraViewCoverage {
+  view: GreyboxCameraView;
+  /** Openings this viewpoint actually gets on screen. */
+  seen: number;
+  /** Total openings in the room, so the UI can show "3 of 4". */
+  total: number;
+}
+
+/**
+ * How many openings each selectable viewpoint would show, so the angle picker
+ * can display the tradeoff before the user commits to it rather than making
+ * them switch and eyeball the result.
+ *
+ * "auto" reports the coverage of whatever the scorer would pick, which is by
+ * definition the maximum available — so if a wall option ties it, that wall
+ * costs nothing, and if none do, the user can see exactly what they are
+ * giving up in exchange for the angle they want.
+ */
+export function cameraCoverage(spec: GreyboxRoomSpec, aspect: number): CameraViewCoverage[] {
+  const hw = spec.width / 2;
+  const hd = spec.depth / 2;
+  const ix = spec.width * INSET;
+  const iz = spec.depth * INSET;
+  const centres = spec.openings.map((o) => openingCentre(spec, o));
+  const total = centres.length;
+
+  // Reuse greyboxCamera itself for "auto" rather than reimplementing the
+  // scoring loop — a second copy of that logic would be free to drift from
+  // the one that actually renders.
+  const auto = greyboxCamera({ ...spec, cameraView: "auto" }, aspect);
+
+  return [
+    { view: "auto", seen: score(auto, centres).seen, total },
+    ...WALL_VIEWS.map((wall) => ({
+      view: wall as GreyboxCameraView,
+      seen: score(buildCamera(wallPosition(wall, hw, hd, ix, iz), aspect), centres).seen,
+      total,
+    })),
+  ];
 }
 
 /** One opening's centre, projected to pixel coordinates in the locked camera's frame. */

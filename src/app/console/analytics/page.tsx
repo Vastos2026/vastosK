@@ -5,7 +5,7 @@ import { listAllAuthUsers } from "@/lib/console/auth-users";
 import { getConsoleUsageAnalytics } from "@/lib/console/usage-analytics";
 import { getProviderPrimary } from "@/lib/settings/provider-settings";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
-import { AnalyticsDashboard } from "./analytics-dashboard";
+import { AnalyticsDashboard } from "./analytics-dashboard-lazy";
 import { ModelSwitcher } from "./model-switcher";
 
 export default async function ConsoleAnalyticsPage() {

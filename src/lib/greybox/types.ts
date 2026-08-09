@@ -11,6 +11,21 @@
 
 export type GreyboxWall = "north" | "south" | "east" | "west";
 
+/**
+ * Which viewpoint the greybox camera renders from.
+ *
+ * "auto" is camera.ts's original behaviour and stays the default: score all
+ * eight candidates and keep whichever sees the most openings. The four wall
+ * values name the wall the camera STANDS AGAINST, not the wall it looks at —
+ * so "north" backs onto the north wall (-Z) and therefore shows the south,
+ * east and west walls. This is worth being precise about, because the one
+ * wall a viewpoint can never show is its own: from inside a box, an 85 degree
+ * camera aimed at the centre cannot see the surface behind it. A room with
+ * openings on all four walls will always lose at least one, whichever value
+ * is chosen, and that is geometry rather than a limitation of this code.
+ */
+export type GreyboxCameraView = "auto" | GreyboxWall;
+
 export interface GreyboxOpening {
   id: string;
   type: "door" | "window";
@@ -49,4 +64,17 @@ export interface GreyboxRoomSpec {
   /** Phase B: furniture proxies. Optional and additive — a spec with none renders exactly as it
    *  did before this feature existed. */
   furniture?: GreyboxFurniturePlacement[];
+  /**
+   * The user's chosen viewpoint. Optional and additive in the same way: absent
+   * or "auto" reproduces the original scorer exactly, so every existing call
+   * site keeps its previous behaviour without being touched.
+   *
+   * Carried on the SPEC rather than passed as a separate argument on purpose.
+   * The camera has to be identical everywhere it is derived — the Pass A
+   * render, the Pass B mask, `projectOpenings`, the furniture exclusion zone
+   * and `isInFrame` all reconstruct it from `greyboxCamera(spec, aspect)` —
+   * and threading it through the one object they all already share is what
+   * makes disagreement impossible rather than merely unlikely.
+   */
+  cameraView?: GreyboxCameraView;
 }

@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { RetryImg } from "@/components/ui/retry-img";
 import { generateRoomImage } from "@/lib/design-plan-client";
-import { ensureGreybox } from "@/lib/greybox/ensure-greybox-key";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { formatDimensionsRounded } from "@/lib/units";
 import { Button } from "@/components/ui/button";
@@ -87,6 +86,16 @@ export default function GeneratePage() {
       // itself fails (caught below) — a room never placed in the Plan editor
       // still gets a real greybox, with seeded opening positions and the
       // layout default box size when its own dimensions are unknown.
+      //
+      // PERF: dynamically imported (was a static top-level import) — the
+      // greybox module pulls in three.js transitively (render-mask.ts ->
+      // three), which was measured at ~570KB of extra First Load JS on this
+      // route (route-bundle-stats.json: 1400.9KB here vs. ~840KB baseline on
+      // routes that never touch greybox). This call only ever runs inside a
+      // user-triggered "Generate More" click, never during initial render, so
+      // deferring the import to here keeps three.js out of this route's
+      // initial bundle without changing when or how ensureGreybox runs.
+      const { ensureGreybox } = await import("@/lib/greybox/ensure-greybox-key");
       const gb = await ensureGreybox(id, room).catch((e) => {
         console.warn(
           `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,

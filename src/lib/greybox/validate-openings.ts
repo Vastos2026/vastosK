@@ -6,7 +6,11 @@
  * render succeed breaks the one guarantee this whole product rests on — that
  * the output's doors and windows are where the user put them.
  */
-import { CEILING_H, DOOR_HEAD, WINDOW_HEAD } from "./build-scene";
+// PERF: imported from opening-heights.ts, not build-scene.ts — build-scene.ts
+// pulls in three.js at module scope, and this file is reachable from the
+// Plan editor route, which never renders 3D. See opening-heights.ts's doc
+// comment for the measured before/after.
+import { CEILING_H, DOOR_HEAD, WINDOW_HEAD } from "./opening-heights";
 import type { GreyboxWall } from "./types";
 import type { PlacedOpening } from "@/lib/types";
 
