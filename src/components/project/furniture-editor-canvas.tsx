@@ -7,7 +7,7 @@ import { greyboxCamera } from "@/lib/greybox/camera";
 import { catalogueEntry } from "@/lib/greybox/furniture-catalogue";
 import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
-import { checkOcclusion, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
+import { checkOcclusion, footprintAabb, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
 import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -56,6 +56,14 @@ const NUDGE_STEP_FT = 0.25;
 const ROTATE_STEP_RAD = Math.PI / 12;
 /** Amber emissive applied to any furniture item named as an occlusion blocker (checkOcclusion's blockerId). */
 const BLOCKER_TINT = 0xffb020;
+/**
+ * Green emissive on the currently selected item. Green rather than another
+ * warm tone specifically so it cannot be confused with the amber blocker
+ * warning or the red drag-invalid tint — selection is neutral information,
+ * not a problem, and the three states have to be tellable apart at a glance
+ * in a scene that is otherwise entirely grey.
+ */
+const SELECTED_TINT = 0x22c55e;
 /** Exclusion-arc ring colour — deliberately distinct from BLOCKER_TINT so "you can't stand here" (a fixed zone) never reads as "this is blocking an opening" (a furniture-specific warning). */
 const EXCLUSION_RING_COLOR = 0xff5252;
 /**
@@ -85,6 +93,46 @@ function disposeObject3D(root: THREE.Object3D) {
       else anyObj.material.dispose();
     }
   });
+}
+
+/**
+ * Confines a drag target to the room, accounting for the item's ROTATED
+ * footprint so a piece turned 45 degrees stops at the point its corner would
+ * touch the wall, not its centre.
+ *
+ * This is deliberately a clamp and not a resolvePlacement call. A clamp is
+ * continuous and monotonic: pushing the cursor further past a wall keeps
+ * returning the same edge position, so the mesh sits still against the wall
+ * instead of flickering. That is what makes hard confinement safe to apply on
+ * every pointermove, where feeding resolvePlacement's four-candidate fallback
+ * straight into the mesh was not (see onPointerMove's own comment — near a
+ * boundary the winning candidate flips frame to frame, which is the original
+ * "glitchy drag" bug and must not come back).
+ *
+ * So the two constraints are split by how they behave under motion. Room
+ * bounds are enforced live, because clamping them is smooth. Overlap and the
+ * camera exclusion disk stay advisory during the gesture (the red tint) and
+ * are resolved once on release, because those cannot be clamped without
+ * oscillating.
+ */
+function clampToRoom(
+  kind: string,
+  rotation: number,
+  x: number,
+  z: number,
+  spec: { width: number; depth: number },
+): { x: number; z: number } {
+  // Half-extents of the rotated footprint, read off an AABB built at the
+  // origin so the box's own centre offset does not enter the arithmetic.
+  const box = footprintAabb(kind, 0, 0, rotation);
+  const hx = (box.maxX - box.minX) / 2;
+  const hz = (box.maxZ - box.minZ) / 2;
+  const limX = Math.max(0, spec.width / 2 - hx);
+  const limZ = Math.max(0, spec.depth / 2 - hz);
+  return {
+    x: Math.min(limX, Math.max(-limX, x)),
+    z: Math.min(limZ, Math.max(-limZ, z)),
+  };
 }
 
 /**
@@ -223,16 +271,37 @@ export function FurnitureEditorCanvas({
   // still get re-tinted correctly by applyBlockerTint below.
   const blockerIdsRef = useRef<Set<string>>(new Set());
 
+  /**
+   * Repaints every furniture group's emissive from scratch. Selection wins
+   * over the blocker warning when a piece is both, because the user is
+   * actively working on that item and needs to see which one it is; the
+   * blocking itself is still reported in the warnings panel, so nothing is
+   * lost by yielding the tint for as long as it stays selected.
+   *
+   * Selection had NO viewport treatment at all before this: `selectedId` was
+   * threaded through the component and used only by the keyboard handler, so
+   * the sidebar list highlighted the selection but the 3D view gave no
+   * indication whatever of which piece the arrow keys were about to move.
+   */
   const applyBlockerTint = useCallback(() => {
     const roomGroup = roomGroupRef.current;
     if (!roomGroup) return;
     const blockers = blockerIdsRef.current;
+    const { selectedId: sel } = stateRef.current;
     for (const child of roomGroup.children) {
       if (!(child instanceof THREE.Group) || !child.userData.furnitureId) continue;
-      const tint = blockers.has(child.userData.furnitureId as string);
-      setGroupEmissive(child, tint ? BLOCKER_TINT : 0x000000);
+      const id = child.userData.furnitureId as string;
+      const hex = id === sel ? SELECTED_TINT : blockers.has(id) ? BLOCKER_TINT : 0x000000;
+      setGroupEmissive(child, hex);
     }
   }, []);
+
+  // Repaint when the selection changes. rebuildScene does not run on a
+  // selection-only change (it is keyed on geometry and the furniture list),
+  // so without this the tint would only catch up on the next unrelated edit.
+  useEffect(() => {
+    applyBlockerTint();
+  }, [selectedId, applyBlockerTint]);
 
   const runOcclusionCheck = useCallback(() => {
     const camera = cameraRef.current;
@@ -436,7 +505,7 @@ export function FurnitureEditorCanvas({
       // on release, in endDrag — where a single corrective snap (if the
       // cursor was released over an illegal spot) reads as "it stopped me,"
       // not as jitter.
-      const target = { x: p.x + drag.offset.x, z: p.z + drag.offset.z };
+      const target = clampToRoom(item.kind, item.rotation, p.x + drag.offset.x, p.z + drag.offset.z, s);
       drag.target = target;
 
       const others = toWorldFurniture(f.filter((x) => x.id !== drag!.id), s.width, s.depth);

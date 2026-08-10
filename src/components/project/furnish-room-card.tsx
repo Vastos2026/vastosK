@@ -51,7 +51,10 @@ export function FurnishRoomCard({
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
           />
         ) : status === "pending" ? (
-          <div className="h-full w-full animate-pulse bg-surface-2" />
+          // Moving highlight sweep, not a plain opacity pulse — see
+          // .pending-shimmer in globals.css for why (reported as reading
+          // static) and its prefers-reduced-motion fallback.
+          <div className="pending-shimmer h-full w-full" />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 p-4 text-center">
             <Icon name="Ruler" className="size-5 text-faint" />

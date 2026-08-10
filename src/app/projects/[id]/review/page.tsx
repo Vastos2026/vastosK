@@ -33,6 +33,7 @@ export default function ReviewPage() {
   const addRoom = useVasto((s) => s.addRoom);
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const patchProject = useVasto((s) => s.patchProject);
+  const confirmRooms = useVasto((s) => s.confirmRooms);
   const [addingRoom, setAddingRoom] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   // Set when the user clicks delete on a room that already has generated
@@ -62,7 +63,13 @@ export default function ReviewPage() {
         ? `/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`
         : plan?.previewUrl;
 
-  const goToFurnish = () => router.push(`/projects/${id}/furnish`);
+  // The real "user confirmed their rooms" signal (see Project.roomsConfirmedAt
+  // and computeDoneMap in workspace-frame.tsx) — set here, on Continue, not on
+  // mount, so just opening this page without proceeding doesn't count.
+  const goToFurnish = () => {
+    confirmRooms(id);
+    router.push(`/projects/${id}/furnish`);
+  };
 
   const confirmDelete = (roomId: string) => {
     removeRoom(id, roomId);

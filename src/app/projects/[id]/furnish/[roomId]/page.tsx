@@ -18,7 +18,6 @@ import { generateRoomImage } from "@/lib/design-plan-client";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { RetryImg } from "@/components/ui/retry-img";
 import { cn, uid } from "@/lib/utils";
 import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
 import type { GreyboxCameraView, GreyboxRoomSpec } from "@/lib/greybox/types";
@@ -189,7 +188,12 @@ function FurnishContent({
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [lastGeneration, setLastGeneration] = useState<{ imageUrl: string; createdAt: string } | null>(null);
+  // The sidebar used to show a "Latest generation" preview of this image.
+  // That panel is gone; the Generate gallery is where generations are meant
+  // to be compared side by side, and duplicating one of them here just made
+  // the sidebar long. A single confirmation line in the header replaces it so
+  // a successful Generate still visibly did something.
+  const [generatedOnce, setGeneratedOnce] = useState(false);
   const [readiness, setReadiness] = useState<"checking" | "ready" | "unavailable">("checking");
 
   // Section 5 — openings are read-only here (they're placed in the Plan
@@ -487,7 +491,7 @@ function FurnishContent({
         imageKey: gen.key,
         prompt: gen.prompt,
       });
-      setLastGeneration({ imageUrl: gen.imageUrl, createdAt });
+      setGeneratedOnce(true);
     } catch (e) {
       setGenerateError(e instanceof Error ? e.message : "Generation failed");
     } finally {
@@ -532,6 +536,15 @@ function FurnishContent({
           <span className="truncate">{room.name}</span>
         </Link>
         <div className="flex items-center gap-2">
+          {generatedOnce && !generating && !generateError && (
+            <Link
+              href={`/projects/${projectId}/generate`}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+            >
+              Generated. View in gallery
+              <Icon name="ArrowRight" className="size-3" />
+            </Link>
+          )}
           {(error || generateError) && (
             <p className="max-w-[16rem] truncate text-[11px] text-danger" title={error ?? generateError ?? undefined}>
               {error ?? generateError}
@@ -598,6 +611,14 @@ function FurnishContent({
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
         <div className="mx-auto flex h-full max-w-6xl gap-5">
           <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {/* Every transient panel below lives INSIDE this box, absolutely
+                positioned. They used to be siblings in the flex column, which
+                meant one appearing or disappearing changed the column's
+                height — and since the canvas is aspect-ratio locked and
+                centred, it resized to match. Dragging a piece out of view or
+                switching camera angle therefore made the whole 3D viewport
+                jump up and down (reported as wobbling). Overlaying them costs
+                nothing and the viewport now never changes size. */}
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
               <FurnitureEditorCanvas
                 spec={spec}
@@ -607,61 +628,61 @@ function FurnishContent({
                 onCommit={handleFurnitureCommit}
                 onOcclusionChange={setOcclusion}
               />
-              <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
+              <p className="pointer-events-none absolute left-3 top-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
                 Click an item to select it, then drag to move. Arrow keys nudge, [ ] rotates, Delete removes.
               </p>
-            </div>
 
-            {outOfView.length > 0 && (
-              <div className="shrink-0 rounded-2xl border border-warning/30 bg-warning/10 p-3">
-                <div className="flex items-start gap-2">
-                  <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0 text-warning" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs text-warning">
-                      {outOfView.length === 1 ? "One piece is" : `${outOfView.length} pieces are`} outside this
-                      camera&apos;s view:{" "}
-                      {outOfView.map((f) => catalogueEntry(f.kind)?.label ?? f.kind).join(", ")}. They will not appear
-                      in the generated image.
-                    </p>
+              <div className="absolute inset-x-3 bottom-3 space-y-2">
+                {outOfView.length > 0 && (
+                  <div className="rounded-xl border border-warning/30 bg-warning/15 p-2.5 backdrop-blur">
+                    <div className="flex items-start gap-2">
+                      <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                      <p className="min-w-0 flex-1 text-xs text-warning">
+                        {outOfView.length === 1 ? "One piece is" : `${outOfView.length} pieces are`} outside this
+                        camera&apos;s view:{" "}
+                        {outOfView.map((f) => catalogueEntry(f.kind)?.label ?? f.kind).join(", ")}. They will not
+                        appear in the generated image.
+                      </p>
+                      <Button size="sm" variant="outline" className="shrink-0" onClick={bringIntoView}>
+                        Bring into view
+                      </Button>
+                    </div>
                   </div>
-                  <Button size="sm" variant="outline" className="shrink-0" onClick={bringIntoView}>
-                    Bring into view
-                  </Button>
-                </div>
-              </div>
-            )}
+                )}
 
-            {occlusion.length > 0 && (
-              <div className="shrink-0 space-y-1.5 rounded-2xl border border-warning/30 bg-warning/10 p-3">
-                {occlusion.map((v) => (
-                  <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
-                    <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
-                    <span>{occlusionMessage(v)}</span>
-                  </p>
-                ))}
-              </div>
-            )}
+                {occlusion.length > 0 && (
+                  <div className="space-y-1.5 rounded-xl border border-warning/30 bg-warning/15 p-2.5 backdrop-blur">
+                    {occlusion.map((v) => (
+                      <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
+                        <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
+                        <span>{occlusionMessage(v)}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
 
-            {notice.length > 0 && (
-              <div className="shrink-0 space-y-1.5 rounded-2xl border border-border bg-surface-2 p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-xs font-medium text-foreground">Adjusted on save</p>
-                  <button
-                    type="button"
-                    onClick={() => setNotice([])}
-                    className="shrink-0 text-faint hover:text-muted cursor-pointer"
-                    aria-label="Dismiss"
-                  >
-                    <Icon name="X" className="size-3.5" />
-                  </button>
-                </div>
-                {notice.map((n, i) => (
-                  <p key={i} className="text-xs text-muted">
-                    {n}
-                  </p>
-                ))}
+                {notice.length > 0 && (
+                  <div className="space-y-1.5 rounded-xl border border-border bg-surface/95 p-2.5 backdrop-blur">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-medium text-foreground">Adjusted on save</p>
+                      <button
+                        type="button"
+                        onClick={() => setNotice([])}
+                        className="shrink-0 text-faint hover:text-muted cursor-pointer"
+                        aria-label="Dismiss"
+                      >
+                        <Icon name="X" className="size-3.5" />
+                      </button>
+                    </div>
+                    {notice.map((n, i) => (
+                      <p key={i} className="text-xs text-muted">
+                        {n}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           <aside className="w-96 shrink-0 space-y-4 overflow-y-auto">
@@ -797,30 +818,6 @@ function FurnishContent({
               </ul>
             </div>
 
-            <div className="rounded-2xl border border-border bg-surface-2 p-4">
-              <p className="mb-3 text-xs font-semibold text-foreground">Latest generation</p>
-              {lastGeneration ? (
-                <div>
-                  <div className="overflow-hidden rounded-xl border border-border bg-grid">
-                    <RetryImg src={lastGeneration.imageUrl} alt="" className="aspect-square w-full object-cover" />
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-2">
-                    <p className="text-xs text-muted">Generated just now</p>
-                    <Link
-                      href={`/projects/${projectId}/generate`}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
-                    >
-                      View in gallery
-                      <Icon name="ArrowRight" className="size-3.5" />
-                    </Link>
-                  </div>
-                </div>
-              ) : (
-                <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-faint">
-                  Click Generate to render this arrangement into a room image.
-                </p>
-              )}
-            </div>
           </aside>
         </div>
       </div>

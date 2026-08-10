@@ -345,6 +345,19 @@ export interface Project {
   updatedAt: string;
   thumbnail?: string;
   floorPlan?: FloorPlan;
+  /**
+   * ISO timestamp set when the user clicks Continue on Room Confirmation
+   * (review/page.tsx's `goToFurnish`, via the store's `confirmRooms`). This
+   * is the actual "the user confirmed their rooms" signal —
+   * `floorPlan.rooms.length > 0` alone is true the instant Gemini extraction
+   * succeeds, before the user has looked at Room Confirmation at all, which
+   * made the Review stepper pill show complete while the user was still on
+   * the Plan page (reported bug, 2026-08-10). See
+   * `workspace-frame.tsx`'s `computeDoneMap`.
+   * Absent for any project created before this field existed; that case is
+   * handled where `computeDoneMap` reads it, not here.
+   */
+  roomsConfirmedAt?: string;
   styleId?: string;
   units?: Unit;
   /**

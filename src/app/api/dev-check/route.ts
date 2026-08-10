@@ -26,7 +26,8 @@ import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
-import { furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
+import * as THREE from "three";
+import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
 import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
 import type { PlacedFurniture } from "@/lib/types";
 import { clamp } from "@/lib/ai/prompting/design-planning";
@@ -1437,6 +1438,115 @@ export async function GET() {
     const south = greyboxHashFor({ ...base, cameraView: "south" });
     assert(north !== auto, "picking a wall must not reuse the auto render");
     assert(north !== south, "two different walls must not share a cached render");
+  });
+
+  // ---- Every catalogue entry actually builds a visible mesh ----
+  // Prompted by "the coffee table wasn't available in the 3D scene". Rather
+  // than eyeball one entry, these check all of them: an item whose build()
+  // returns an empty group, or geometry that does not match the footprint the
+  // placement solver reserves for it, is invisible or mis-collides in a way
+  // no amount of staring at the viewport reliably catches.
+
+  check("furniture catalogue: every entry builds a non-empty group with real volume", () => {
+    for (const entry of FURNITURE_CATALOGUE) {
+      const group = entry.build();
+      assert(group.children.length > 0, `${entry.kind} builds an empty group — it would render as nothing`);
+      const box = new THREE.Box3().setFromObject(group);
+      const size = box.getSize(new THREE.Vector3());
+      assert(
+        size.x > 0.05 && size.y > 0.05 && size.z > 0.05,
+        `${entry.kind} has a degenerate bounding box (${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)})`,
+      );
+    }
+  });
+
+  check("furniture catalogue: declared footprintFt matches the mesh the solver has to fit", () => {
+    // resolvePlacement reserves footprintFt, while the render draws build()'s
+    // geometry. If they disagree the editor either lets pieces visibly
+    // interpenetrate (footprint too small) or refuses legal spots (too big).
+    // 0.75ft of slack absorbs deliberate overhangs like a bed's headboard.
+    for (const entry of FURNITURE_CATALOGUE) {
+      const box = new THREE.Box3().setFromObject(entry.build());
+      const size = box.getSize(new THREE.Vector3());
+      const dw = size.x - entry.footprintFt.w;
+      const dd = size.z - entry.footprintFt.d;
+      assert(
+        Math.abs(dw) <= 0.75 && Math.abs(dd) <= 0.75,
+        `${entry.kind}: mesh is ${size.x.toFixed(2)}x${size.z.toFixed(2)}ft but footprintFt says ${entry.footprintFt.w}x${entry.footprintFt.d}ft`,
+      );
+    }
+  });
+
+  check("furniture catalogue: every entry sits on the floor, never sunk or floating", () => {
+    // build()'s contract (furniture-catalogue.ts header) is y=0 at the
+    // object's bottom. A violation renders a piece embedded in the floor or
+    // hovering, both of which read as broken in the reference image.
+    for (const entry of FURNITURE_CATALOGUE) {
+      const box = new THREE.Box3().setFromObject(entry.build());
+      assert(
+        Math.abs(box.min.y) < 0.05,
+        `${entry.kind}'s lowest point is at y=${box.min.y.toFixed(2)}, not 0 — it floats or is sunk into the floor`,
+      );
+    }
+  });
+
+  check("kitchen-island fits a small kitchen, which is why it was shrunk", () => {
+    // 8x8ft is a genuinely small kitchen. The old 5x2.5ft island could not be
+    // placed in one at all, which is the reported bug.
+    const small: GreyboxRoomSpec = { width: 8, depth: 8, openings: [] };
+    const cam = greyboxCamera(small, GREYBOX_ASPECT);
+    assert(
+      firstFreeSlot("kitchen-island", [], small, cam) !== null,
+      "kitchen-island still has no legal slot in an 8x8ft kitchen",
+    );
+  });
+
+  check("bed is longer head-to-foot than it is wide, and long enough to be a bed", () => {
+    const bed = FURNITURE_CATALOGUE.find((e) => e.kind === "bed");
+    assert(!!bed, "no bed entry in the catalogue");
+    // Depth is the head-to-foot axis (headboard sits at -Z in buildBed).
+    assert(bed!.footprintFt.d >= 6.2, `bed is only ${bed!.footprintFt.d}ft long, shorter than a person`);
+    assert(
+      bed!.footprintFt.d > bed!.footprintFt.w,
+      `bed is ${bed!.footprintFt.w}ft wide by ${bed!.footprintFt.d}ft long — it reads as a square slab, not a bed`,
+    );
+  });
+
+  check('room-type aliases: "Hall" gets the full living-room set, not the universal fallback', () => {
+    // The reported "coffee table wasn't available in the 3D scene". Exact
+    // matching meant a room Gemini typed "Hall" fell through to
+    // rug/plant/side-table with no sofa and no coffee table.
+    const hall = furnitureForRoomType("Hall").map((e) => e.kind);
+    const living = furnitureForRoomType("Living Room").map((e) => e.kind);
+    eq(hall, living, '"Hall" must resolve to exactly the Living Room set');
+    assert(hall.includes("coffee-table"), '"Hall" still does not offer a coffee table');
+    assert(hall.includes("sofa"), '"Hall" still does not offer a sofa');
+  });
+
+  check("room-type aliases: toilet and washroom resolve into the no-furniture set", () => {
+    for (const label of ["Toilet", "WC", "Washroom", "Powder Room"]) {
+      eq(furnitureForRoomType(label), [], `${label} must offer no furniture at all`);
+    }
+  });
+
+  check("room-type aliases: every alias target is a real roomTypes string or a no-furniture type", () => {
+    // Guards against alias rot: renaming a catalogue roomTypes string without
+    // updating the table would silently send a whole room type back to the
+    // universal fallback, which is exactly the bug this table exists to fix.
+    const known = new Set<string>();
+    for (const entry of FURNITURE_CATALOGUE) for (const rt of entry.roomTypes) known.add(rt.toLowerCase());
+    for (const label of ["Hall", "Toilet", "Dining", "Home Office", "Puja Room", "Lobby", "Living cum Dining"]) {
+      const resolved = furnitureForRoomType(label);
+      const isNoFurniture = resolved.length === 0;
+      const isRealMatch = resolved.length > 0 && resolved.some((e) => e.roomTypes.some((rt) => known.has(rt.toLowerCase())));
+      assert(isNoFurniture || isRealMatch, `alias "${label}" resolves to nothing meaningful`);
+    }
+  });
+
+  check("room-type aliases: an unknown free-text room type still gets the universal fallback", () => {
+    // The alias table must not have broken the Custom-category path.
+    const odd = furnitureForRoomType("Meditation Nook").map((e) => e.kind);
+    eq(odd, ["rug", "plant", "side-table"], "an unrecognised room type must still fall back");
   });
 
   const failed = results.filter((r) => !r.ok);

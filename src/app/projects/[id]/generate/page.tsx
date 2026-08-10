@@ -13,6 +13,7 @@ import { Icon } from "@/components/ui/icon";
 import { GeneratingProgressRing } from "@/components/ui/generating-progress-ring";
 import { Badge } from "@/components/ui/badge";
 import { RoomNavRail } from "@/components/project/room-nav-rail";
+import { FloorPlanSidePanel } from "@/components/project/floor-plan-side-panel";
 import { uid, cn, slugifyRoomName } from "@/lib/utils";
 import type { Room, RoomCard, RoomGeneration } from "@/lib/types";
 
@@ -157,46 +158,55 @@ export default function GeneratePage() {
 
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-2xl font-bold tracking-tight">Generate</h2>
-              <Badge icon="ImagePlus" className={cn(generatedCount === rooms.length && "border-success/30 bg-success/10 text-success")}>
-                {generatedCount}/{rooms.length} rooms
-              </Badge>
+      {/* Same responsive split as furnish/page.tsx's FloorPlanSidePanel
+          integration: stacked (panel above content) below xl, side-by-side
+          from xl up, with the content column keeping its original
+          mx-auto max-w-5xl so the generation strips' sizing is unchanged
+          either way. RoomNavRail stays a viewport-fixed overlay outside this
+          row, so it's untouched by the extra flex wrapper. */}
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8 xl:flex-row xl:items-start">
+        <FloorPlanSidePanel plan={project.floorPlan} />
+        <div className="mx-auto min-w-0 max-w-5xl flex-1">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-2xl font-bold tracking-tight">Generate</h2>
+                <Badge icon="ImagePlus" className={cn(generatedCount === rooms.length && "border-success/30 bg-success/10 text-success")}>
+                  {generatedCount}/{rooms.length} rooms
+                </Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted">
+                One image per room, same design language throughout.
+              </p>
             </div>
-            <p className="mt-1 text-sm text-muted">
-              One image per room, same design language throughout.
-            </p>
+            <Link href={`/projects/${id}/approve`}>
+              <Button iconRight="ArrowRight" disabled={!allHaveImages}>
+                Continue to Approval
+              </Button>
+            </Link>
           </div>
-          <Link href={`/projects/${id}/approve`}>
-            <Button iconRight="ArrowRight" disabled={!allHaveImages}>
-              Continue to Approval
-            </Button>
-          </Link>
-        </div>
-        <p className="mb-8 flex items-center gap-1.5 text-xs text-faint">
-          <Icon name="CircleAlert" className="size-3.5 shrink-0" />
-          Sizes can appear a little larger or smaller than expected. Confirm with the sq ft
-          figure for accuracy.
-        </p>
+          <p className="mb-8 flex items-center gap-1.5 text-xs text-faint">
+            <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+            Sizes can appear a little larger or smaller than expected. Confirm with the sq ft
+            figure for accuracy.
+          </p>
 
-        <div className="divide-y divide-border">
-          {rooms.map((room) => (
-            <RoomSection
-              key={room.id}
-              room={room}
-              card={cardOf(room.id)}
-              generating={generatingIds.includes(room.id)}
-              onGenerateMore={(note) => generateMore(room, note)}
-              onRetryFirst={() => generateMore(room)}
-              onView={(genId) =>
-                router.push(`/projects/${id}/generate/${room.id}${genId ? `?v=${genId}` : ""}`)
-              }
-              onFurnish={() => router.push(`/projects/${id}/furnish/${room.id}?from=generate`)}
-            />
-          ))}
+          <div className="divide-y divide-border">
+            {rooms.map((room) => (
+              <RoomSection
+                key={room.id}
+                room={room}
+                card={cardOf(room.id)}
+                generating={generatingIds.includes(room.id)}
+                onGenerateMore={(note) => generateMore(room, note)}
+                onRetryFirst={() => generateMore(room)}
+                onView={(genId) =>
+                  router.push(`/projects/${id}/generate/${room.id}${genId ? `?v=${genId}` : ""}`)
+                }
+                onFurnish={() => router.push(`/projects/${id}/furnish/${room.id}?from=generate`)}
+              />
+            ))}
+          </div>
         </div>
       </div>
       <RoomNavRail rooms={rooms} />

@@ -136,14 +136,24 @@ function buildLeggedSlab(
   return group;
 }
 
+/**
+ * A bed's LENGTH is its head-to-foot run, which is the Z (depth) axis here
+ * because the headboard sits at the -Z edge. That was 4.5ft — shorter than an
+ * actual person — while the side-to-side width was 6.5ft, so the thing
+ * rendered as a wide square slab rather than a bed and read wrong in the
+ * reference image. Now a real king: 6.3ft across by 6.8ft head to foot.
+ */
+const BED_W = 6.3;
+const BED_LEN = 6.8;
+
 function buildBed(): THREE.Group {
   const group = new THREE.Group();
   const mattressH = 1.3;
-  addBox(group, seatMat(), 6.5, mattressH, 4.5, 0, 0, 0);
+  addBox(group, seatMat(), BED_W, mattressH, BED_LEN, 0, 0, 0);
   // Headboard at the -Z ("head") edge, taller and thin.
   const headboardH = 3.2;
   const headboardD = 0.3;
-  addBox(group, frameMat(), 6.5, headboardH, headboardD, 0, 0, -4.5 / 2 - headboardD / 2);
+  addBox(group, frameMat(), BED_W, headboardH, headboardD, 0, 0, -BED_LEN / 2 - headboardD / 2);
   return group;
 }
 
@@ -249,12 +259,22 @@ function buildBookshelf(): THREE.Group {
   return group;
 }
 
+/**
+ * Reduced from 5 x 2.5ft. At that size the island could not legally be placed
+ * in a smaller kitchen at all: resolvePlacement needs the whole footprint
+ * inside the room and clear of the camera exclusion disk, and a 5ft slab in a
+ * modest kitchen left no legal cell anywhere, so the Add button just reported
+ * "no free space". 4 x 2ft is still a real island and fits.
+ */
+const ISLAND_W = 4;
+const ISLAND_D = 2;
+
 function buildKitchenIsland(): THREE.Group {
   const group = new THREE.Group();
   const topH = 0.3;
   const baseH = 2.5 - topH;
-  addBox(group, frameMat(), 5, baseH, 2.5, 0, 0, 0);
-  addBox(group, seatMat(), 5, topH, 2.5, 0, baseH, 0);
+  addBox(group, frameMat(), ISLAND_W, baseH, ISLAND_D, 0, 0, 0);
+  addBox(group, seatMat(), ISLAND_W, topH, ISLAND_D, 0, baseH, 0);
   return group;
 }
 
@@ -336,7 +356,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "bed",
     label: "Bed",
-    footprintFt: { w: 6.5, d: 4.5 },
+    footprintFt: { w: BED_W, d: BED_LEN },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildBed,
     materialPhrase: "upholstered bed in {soft}",
@@ -465,7 +485,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "kitchen-island",
     label: "Kitchen Island",
-    footprintFt: { w: 5, d: 2.5 },
+    footprintFt: { w: ISLAND_W, d: ISLAND_D },
     roomTypes: ["Kitchen", "Pantry"],
     build: buildKitchenIsland,
     materialPhrase: "{stone}-topped island",
@@ -581,8 +601,65 @@ const NO_FURNITURE_ROOM_TYPES = new Set(
 );
 
 /**
+ * Common labels that mean the same room as one of the catalogue's own
+ * roomTypes strings, normalised before matching.
+ *
+ * Matching is exact (case-insensitive), which is predictable but brittle: a
+ * room typed "Hall" — extremely common on Indian residential plans, and what
+ * Gemini returns whenever a plan prints that word — matched NOTHING, so the
+ * editor silently offered only the rug/plant/side-table fallback. That is the
+ * reported "the coffee table wasn't available in the 3D scene": the coffee
+ * table's geometry was fine all along (dev-check now proves every entry
+ * builds a real mesh), it was simply never offered for that room.
+ *
+ * An explicit alias table rather than fuzzy/substring matching, deliberately.
+ * Substring matching would make "Store Room" match "Room" and drag furniture
+ * into rooms that must stay empty, and a typo-tolerant match would be
+ * unpredictable. Keys must be lowercase; values must be an exact roomTypes
+ * string used by at least one entry, which dev-check asserts.
+ */
+const ROOM_TYPE_ALIASES: Record<string, string> = {
+  hall: "Living Room",
+  living: "Living Room",
+  "living area": "Living Room",
+  "drawing room": "Living Room",
+  "family room": "Living Room",
+  "sitting room": "Living Room",
+  dining: "Dining Room",
+  "dining area": "Dining Room",
+  "living + dining": "Living + Dining",
+  "living and dining": "Living + Dining",
+  "living cum dining": "Living + Dining",
+  "master bed room": "Master Bedroom",
+  "m. bedroom": "Master Bedroom",
+  "bed room": "Bedroom",
+  "kids bedroom": "Bedroom",
+  "children's bedroom": "Bedroom",
+  "guest bedroom": "Guest Room",
+  "home office": "Study",
+  office: "Study",
+  "study room": "Study",
+  "puja room": "Pooja Room",
+  "prayer room": "Pooja Room",
+  toilet: "Bathroom",
+  washroom: "Bathroom",
+  wc: "Bathroom",
+  "powder room": "Bathroom",
+  entrance: "Foyer",
+  lobby: "Foyer",
+  entry: "Foyer",
+};
+
+/** Lowercased room type with aliases resolved, ready for exact comparison. */
+function canonicalRoomType(roomType: string | undefined): string | undefined {
+  const raw = roomType?.trim().toLowerCase();
+  if (!raw) return undefined;
+  return (ROOM_TYPE_ALIASES[raw] ?? raw).toLowerCase();
+}
+
+/**
  * Items whose roomTypes includes the given room type string (case-insensitive
- * exact match). Falls back to a small universal set (rug, plant, side-table)
+ * exact match, after alias normalisation). Falls back to a small universal set (rug, plant, side-table)
  * when no items match — e.g. for a "Custom" category project with a
  * free-text room type that doesn't match any entry. Known service/utility
  * room types (NO_FURNITURE_ROOM_TYPES) skip that fallback entirely and
@@ -590,7 +667,7 @@ const NO_FURNITURE_ROOM_TYPES = new Set(
  * genuinely has no furniture", not "we don't recognise this room type".
  */
 export function furnitureForRoomType(roomType: string | undefined): FurnitureCatalogueEntry[] {
-  const needle = roomType?.trim().toLowerCase();
+  const needle = canonicalRoomType(roomType);
   if (needle && NO_FURNITURE_ROOM_TYPES.has(needle)) return [];
   const matches = needle
     ? FURNITURE_CATALOGUE.filter((entry) =>

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
 import { FurnishRoomCard, type FurnishCardStatus } from "@/components/project/furnish-room-card";
+import { FloorPlanSidePanel } from "@/components/project/floor-plan-side-panel";
 import { enqueueGreyboxRender } from "@/lib/greybox/render-queue";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
@@ -12,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import type { PlacedOpening, Room } from "@/lib/types";
+import type { FloorPlan, PlacedOpening, Room } from "@/lib/types";
 
 /** Stable reference — see furnish/[roomId]/page.tsx's identical constant. */
 const EMPTY_OPENINGS: PlacedOpening[] = [];
@@ -49,10 +50,18 @@ export default function FurnishGalleryPage() {
     );
   }
 
-  return <FurnishGalleryContent projectId={id} rooms={rooms} />;
+  return <FurnishGalleryContent projectId={id} rooms={rooms} plan={project.floorPlan} />;
 }
 
-function FurnishGalleryContent({ projectId, rooms }: { projectId: string; rooms: Room[] }) {
+function FurnishGalleryContent({
+  projectId,
+  rooms,
+  plan,
+}: {
+  projectId: string;
+  rooms: Room[];
+  plan?: FloorPlan;
+}) {
   const setRoomGreybox = useVasto((s) => s.setRoomGreybox);
   const [status, setStatus] = useState<Record<string, FurnishCardStatus>>(() =>
     Object.fromEntries(rooms.map((r) => [r.id, "pending" as const])),
@@ -115,40 +124,51 @@ function FurnishGalleryContent({ projectId, rooms }: { projectId: string; rooms:
 
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-8 flex items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-2xl font-bold tracking-tight">Furnish</h2>
-              <Badge
-                icon="Sofa"
-                className={cn(furnishedCount === rooms.length && "border-success/30 bg-success/10 text-success")}
-              >
-                {furnishedCount} of {rooms.length} furnished
-              </Badge>
+      {/* flex-col by default so a narrow viewport stacks the plan panel
+          above the gallery instead of squeezing the card grid; xl:flex-row
+          only once there's comfortably enough width for a 224px sidebar
+          beside the unchanged max-w-5xl content (1024 + 224 + gap fits
+          inside max-w-7xl's 1280px with room to spare). The content column
+          keeps its own mx-auto max-w-5xl exactly as before, now centering
+          within the space left over next to the panel rather than the whole
+          viewport, so the card grid's sizing is unaffected either way. */}
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8 xl:flex-row xl:items-start">
+        <FloorPlanSidePanel plan={plan} />
+        <div className="mx-auto min-w-0 max-w-5xl flex-1">
+          <div className="mb-8 flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-2xl font-bold tracking-tight">Furnish</h2>
+                <Badge
+                  icon="Sofa"
+                  className={cn(furnishedCount === rooms.length && "border-success/30 bg-success/10 text-success")}
+                >
+                  {furnishedCount} of {rooms.length} furnished
+                </Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted">
+                Furnish your rooms — place furniture where you want it. Skip any room to generate it empty.
+              </p>
             </div>
-            <p className="mt-1 text-sm text-muted">
-              Furnish your rooms — place furniture where you want it. Skip any room to generate it empty.
-            </p>
+            {/* Always enabled: an unfurnished room still generates fine from an
+                openings-only greybox — furnishing is an optional refinement,
+                not a gate on the rest of the flow. */}
+            <Link href={`/projects/${projectId}/design`}>
+              <Button iconRight="ArrowRight">Continue to Design</Button>
+            </Link>
           </div>
-          {/* Always enabled: an unfurnished room still generates fine from an
-              openings-only greybox — furnishing is an optional refinement,
-              not a gate on the rest of the flow. */}
-          <Link href={`/projects/${projectId}/design`}>
-            <Button iconRight="ArrowRight">Continue to Design</Button>
-          </Link>
-        </div>
 
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {rooms.map((room) => (
-            <FurnishRoomCard
-              key={room.id}
-              projectId={projectId}
-              room={room}
-              status={status[room.id] ?? "pending"}
-              hasOpeningViolation={hasOpeningViolation(room)}
-            />
-          ))}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {rooms.map((room) => (
+              <FurnishRoomCard
+                key={room.id}
+                projectId={projectId}
+                room={room}
+                status={status[room.id] ?? "pending"}
+                hasOpeningViolation={hasOpeningViolation(room)}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>

@@ -23,8 +23,31 @@ import type { Phase, Project } from "@/lib/types";
 function computeDoneMap(project?: Project): Record<Phase, boolean> {
   return {
     upload: !!project?.floorPlan,
-    plan: (project?.floorPlan?.rooms ?? []).some((r) => !!r.shape),
-    review: (project?.floorPlan?.rooms?.length ?? 0) > 0,
+    // Same premature-done bug the `review` entry below documents, and the
+    // same shape of fix. `rooms.some(r => r.shape)` is true straight out of
+    // extraction: extract-plan.ts's toRoom populates `shape` itself from
+    // Gemini's box_2d reading, so the Plan pill ticked green before the user
+    // had opened the Plan Editor. Confirming rooms means passing THROUGH
+    // Plan (Review's only entrance is Plan's Continue), so roomsConfirmedAt
+    // is evidence for this phase too, and generated output covers projects
+    // predating the field.
+    plan:
+      !!project?.roomsConfirmedAt ||
+      (project?.roomCards ?? []).some((c) => c.generations.length > 0),
+    // Real signal is Project.roomsConfirmedAt, set only when the user clicks
+    // Continue on Room Confirmation (review/page.tsx's goToFurnish, via the
+    // store's confirmRooms) — NOT `rooms.length > 0`, which is true the
+    // instant Gemini extraction finishes creating rooms, before the user has
+    // opened Review at all (reported bug: the Review pill showed done while
+    // still on the Plan page, pre-navigation). Projects created before this
+    // field existed never got it retroactively, so also treat any project
+    // with at least one generated image as having been through Review: you
+    // cannot reach Generate without Room Confirmation having sent you to
+    // Furnish first (goToFurnish is the only door out of Review), so
+    // generated output is equally solid evidence for those older projects.
+    review:
+      !!project?.roomsConfirmedAt ||
+      (project?.roomCards ?? []).some((c) => c.generations.length > 0),
     // furnish is done when at least one room has furniture. greyboxKey is not the signal
     // because it's set by the Generate flow as a side effect (via ensureGreybox),
     // regardless of whether anyone actually furnished the room.

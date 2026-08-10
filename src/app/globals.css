@@ -221,3 +221,41 @@
   );
   animation: vasto-shimmer 1.6s infinite;
 }
+
+/* Loading placeholder for a gallery card whose content is still being
+   generated (e.g. a Furnish card whose greybox is still queued/rendering) —
+   a highlight band sweeps left-to-right across a flat base and loops, so the
+   card visibly reads as "working" rather than the plain opacity pulse it
+   used before, which read as static (reported). Built from the same
+   vasto-shimmer keyframe as .shimmer above, but painted with the app's own
+   surface tokens (instead of a translucent white overlay) so it reads
+   correctly as a placeholder wherever surface colours themselves change.
+   `prefers-reduced-motion` falls back to `vasto-pulse`, the plain opacity
+   pulse this placeholder used before this animation existed. */
+.pending-shimmer {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-surface-2);
+}
+.pending-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-surface-3),
+    transparent
+  );
+  animation: vasto-shimmer 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending-shimmer::after {
+    content: none;
+    animation: none;
+  }
+  .pending-shimmer {
+    animation: vasto-pulse 2s ease-in-out infinite;
+  }
+}

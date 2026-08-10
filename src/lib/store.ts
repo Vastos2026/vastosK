@@ -53,6 +53,14 @@ interface VastoState {
   resizeRoom: (id: string, roomId: string, size: { width?: number; height?: number }) => void;
   /** Set the number of door/window openings on a room (Room Confirmation's editable count field) — pads with generic entries or truncates from the end. */
   setOpeningCount: (id: string, roomId: string, kind: "door" | "window", count: number) => void;
+  /**
+   * Marks that the user has actually confirmed their room list — sets
+   * `Project.roomsConfirmedAt` to now. Called only from Room Confirmation's
+   * Continue handler (review/page.tsx's `goToFurnish`), never on mount, so
+   * merely visiting Room Confirmation without proceeding does not count as
+   * confirmed. `computeDoneMap` in workspace-frame.tsx is the reader.
+   */
+  confirmRooms: (id: string) => void;
   setStatus: (id: string, status: ProjectStatus) => void;
   setStyle: (id: string, styleId: string) => void;
   /** Persists a Design Planning run's result (revamp Workstream 8): the global
@@ -385,6 +393,13 @@ export const useVasto = create<VastoState>()(
             );
             return touch({ ...p, floorPlan: { ...p.floorPlan, rooms } });
           }),
+        })),
+
+      confirmRooms: (id) =>
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === id ? touch({ ...p, roomsConfirmedAt: new Date().toISOString() }) : p,
+          ),
         })),
 
       setStatus: (id, status) =>
