@@ -8,7 +8,8 @@
 import type { DesignSelection, RoomSelection } from "./ai/prompting/build-universal-input";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./ai/prompting/types";
 import type { ProjectedOpening } from "./greybox/render-mask";
-import type { PlacedFurniture } from "./types";
+import type { GreyboxCameraView } from "./greybox/types";
+import type { PlacedFurniture, PlacedOpening } from "./types";
 
 async function postJson<T>(url: string, payload: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -52,6 +53,13 @@ export function generateRoomImage(input: {
   projected?: ProjectedOpening[];
   /** Phase B furniture proxies placed in this room's greybox, if any — see furniture-layout.ts. */
   furniture?: PlacedFurniture[];
+  /**
+   * This room's greybox geometry. Lets the server tie each furniture piece to
+   * the specific grey box it is in the reference image, instead of listing
+   * materials with no mapping (prompt-builder.ts's mappedFurnitureFor).
+   * Optional, and the prompt degrades to the old unmapped line without it.
+   */
+  roomSpec?: { width: number; depth: number; openings: PlacedOpening[]; cameraView?: GreyboxCameraView };
 }): Promise<{ imageUrl: string; key: string; prompt: string }> {
   return postJson("/api/generate-room-image", input);
 }

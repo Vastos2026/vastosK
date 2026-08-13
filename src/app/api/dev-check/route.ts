@@ -24,7 +24,8 @@ import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import sharp from "sharp";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
-import { footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
+import { checkOcclusion, footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
+import { buildGreyboxScene } from "@/lib/greybox/build-scene";
 import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import * as THREE from "three";
 import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
@@ -723,31 +724,36 @@ export async function GET() {
     assert(p.length <= 1800, `prompt is ${p.length} chars`);
   });
 
-  await checkAsync("the ledger uses number words, not digits", async () => {
+  await checkAsync("the opening census uses number words, not digits", async () => {
     const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 2 } });
-    assert(p.includes("two windows and one door"), `expected word-form counts, got: ${p}`);
+    assert(p.includes("one door and two windows"), `expected word-form counts, got: ${p}`);
     assert(!/\b[0-9]+ (window|door)/.test(p), "digits used for opening counts");
   });
 
-  await checkAsync("the furniture-placed clause agrees in number: singular noun+verb for one piece, plural for more", async () => {
-    // Correction 3 fixed subject-verb agreement in openingLedger ("One
-    // furniture piece IS already placed." vs "Two furniture pieces ARE
-    // already placed.") — this is the assertion that actually protects it.
-    // Asserting the full clause, not just the verb in isolation, so a
-    // regression in either the noun or the verb fails this.
-    const single = await buildRoomPrompt(uiInput, uiRoom, dspec, {
-      hasGreybox: true,
-      ledger: { doors: 1, windows: 1 },
-      furniture: [f("1", "bed")],
-    });
-    assert(single.includes("One furniture piece is already placed."), `expected singular noun+verb, got: ${single}`);
+  await checkAsync("the opening census says the listed openings are the ONLY ones", async () => {
+    // The point of the census rewrite. "The room has one door" is not a claim
+    // that there is exactly one door, and models filled large walls with
+    // extras. Positive phrasing only: state that the rest is solid wall, never
+    // "no extra doors" — naming the unwanted object on a model with no
+    // negativePrompt channel makes it MORE likely to appear.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 2, windows: 1 } });
+    assert(p.includes("exactly two doors and one window"), `expected an exact-count claim, got: ${p}`);
+    assert(p.includes("only where Image 1 shows them"), `expected the placement restriction, got: ${p}`);
+    assert(p.includes("Every other surface is unbroken solid wall."), `expected the solid-wall closure, got: ${p}`);
+    for (const negative of ["no other door", "no extra", "do not add", "avoid"]) {
+      assert(!p.toLowerCase().includes(negative), `census used negative phrasing "${negative}"`);
+    }
+  });
 
-    const many = await buildRoomPrompt(uiInput, uiRoom, dspec, {
-      hasGreybox: true,
-      ledger: { doors: 1, windows: 1 },
-      furniture: [f("1", "bed"), f("2", "nightstand")],
-    });
-    assert(many.includes("Two furniture pieces are already placed."), `expected plural noun+verb, got: ${many}`);
+  await checkAsync("the opening census sits inside the structural contract, not a later stanza", async () => {
+    // Section order is a truncation-safety mechanism, and the count is the
+    // single most important fact in the prompt. It must not drift a paragraph
+    // away from the sentences that define what a door and a window look like.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    const defIdx = p.indexOf("A bright panel is a window.");
+    const countIdx = p.indexOf("exactly one door and one window");
+    assert(defIdx >= 0 && countIdx > defIdx, `census must follow the door/window definitions, got: ${p}`);
+    assert(!p.slice(defIdx, countIdx).includes("\n\n"), "a paragraph break separates the definitions from the count");
   });
 
   await checkAsync("no deleted phrasing survives", async () => {
@@ -763,7 +769,10 @@ export async function GET() {
 
   await checkAsync("a room with no openings gets a positive statement", async () => {
     const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 0, windows: 0 } });
-    assert(p.includes("Every wall in this room is solid."), `expected positive phrasing, got: ${p}`);
+    assert(
+      p.includes("Every wall in this room is unbroken solid wall, with no doors and no windows."),
+      `expected positive phrasing, got: ${p}`,
+    );
   });
 
   await checkAsync("reordering furniture does not change a single byte of the prompt", async () => {
@@ -917,7 +926,10 @@ export async function GET() {
   // boilerplate line) ----
   await checkAsync("the wall surface-texture clause is present in a built prompt", async () => {
     const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 1 } });
-    assert(p.includes("roller-nap texture"), `expected the surface-texture clause in the prompt, got: ${p}`);
+    assert(p.includes("flat matte"), `expected the matte surface clause, got: ${p}`);
+    for (const shiny of ["sheen", "glossy", "roller-nap", "satin"]) {
+      assert(!p.toLowerCase().includes(shiny), `prompt still asks for "${shiny}", which reads as the oily wall look`);
+    }
     assert(!/\bwax|oil paint/i.test(p), `positive phrasing only — must never name the artefact it's avoiding: ${p}`);
   });
 
@@ -1549,9 +1561,98 @@ export async function GET() {
     eq(odd, ["rug", "plant", "side-table"], "an unrecognised room type must still fall back");
   });
 
+  // ---- checkOcclusion: only real furniture blockers count ----
+  // The reported bug: a completely EMPTY room showed "Something blocks the
+  // north window". checkOcclusion looped every opening regardless of whether
+  // the camera could see that wall, so an opening behind the camera scored
+  // zero visible samples, was flagged, and had no blockerId — which the
+  // editor's message template rendered as the literal word "Something".
+  // Now much more likely to recur than it once was, because the camera view
+  // is user-selectable: a camera standing against the north wall can NEVER
+  // see the north wall's own openings.
+  function occlusionFixture(spec: GreyboxRoomSpec) {
+    const scene = buildGreyboxScene(spec);
+    const roomGroup = scene.children.find((c): c is THREE.Group => c instanceof THREE.Group) ?? scene;
+    return { roomGroup, camera: greyboxCamera(spec, GREYBOX_ASPECT) };
+  }
+
+  check("checkOcclusion: an empty room reports nothing, whatever the camera can or cannot see", () => {
+    const spec: GreyboxRoomSpec = {
+      width: 10,
+      depth: 12,
+      cameraView: "north",
+      openings: [
+        // On the wall the camera stands against, so it is behind the camera.
+        { id: "d1", type: "door", wall: "north", t: 0.5, widthFt: 3 },
+        // On the wall the camera faces, so it IS in view, but nothing blocks it.
+        { id: "w1", type: "window", wall: "south", t: 0.5, widthFt: 3 },
+      ],
+    };
+    const { roomGroup, camera } = occlusionFixture(spec);
+    const violations = checkOcclusion(roomGroup, camera, spec);
+    eq(
+      violations,
+      [],
+      `an empty room must report no occlusion at all, got ${JSON.stringify(violations)}`,
+    );
+  });
+
+  check("checkOcclusion: every violation names the furniture responsible", () => {
+    // The invariant that makes the word "Something" unreachable. If a
+    // violation can exist with no blockerId, the predicate is wrong — that is
+    // not something the message template should paper over.
+    for (const view of ["auto", "north", "south", "east", "west"] as const) {
+      const spec: GreyboxRoomSpec = {
+        width: 12,
+        depth: 12,
+        cameraView: view,
+        openings: [
+          { id: "n", type: "window", wall: "north", t: 0.5, widthFt: 3 },
+          { id: "s", type: "door", wall: "south", t: 0.5, widthFt: 3 },
+          { id: "e", type: "window", wall: "east", t: 0.5, widthFt: 3 },
+          { id: "w", type: "window", wall: "west", t: 0.5, widthFt: 3 },
+        ],
+      };
+      const { roomGroup, camera } = occlusionFixture(spec);
+      for (const v of checkOcclusion(roomGroup, camera, spec)) {
+        assert(!!v.blockerId, `view "${view}" produced a violation on ${v.openingId} with no blocker`);
+      }
+    }
+  });
+
+  // A real assembled prompt, returned alongside the assertions so the exact
+  // text that would reach the image model can be read without spending a
+  // paid generation. Dev-only, same as everything else in this route.
+  let promptPreview: string;
+  try {
+    const previewSpec: GreyboxRoomSpec = {
+      width: 14,
+      depth: 11,
+      cameraView: "auto",
+      openings: [
+        { id: "d1", type: "door", wall: "south", t: 0.3, widthFt: 3 },
+        { id: "w1", type: "window", wall: "east", t: 0.5, widthFt: 4 },
+      ],
+    };
+    promptPreview = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
+      roomSpec: previewSpec,
+    });
+  } catch (e) {
+    promptPreview = `preview failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
-    { passed: results.length - failed.length, failed: failed.length, results },
+    {
+      passed: results.length - failed.length,
+      failed: failed.length,
+      promptPreview,
+      promptPreviewChars: promptPreview.length,
+      results,
+    },
     { status: failed.length ? 500 : 200 },
   );
 }

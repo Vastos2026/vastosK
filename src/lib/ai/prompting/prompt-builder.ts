@@ -1,7 +1,11 @@
 import "server-only";
-import { buildFurnitureMaterials } from "@/lib/greybox/furniture-layout";
+import { buildFurnitureMaterials, buildMappedFurnitureLine, toWorldFurniture } from "@/lib/greybox/furniture-layout";
+import { describeFurniture } from "@/lib/greybox/furniture-descriptors";
+import { greyboxCamera } from "@/lib/greybox/camera";
+import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import { fnv1a } from "@/lib/greybox/greybox-hash";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./types";
+import type { GreyboxCameraView, GreyboxOpening, GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
 
 /**
@@ -23,7 +27,13 @@ import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
 /** Section 1, R1. Hard ceiling. Throw and fail the job — never send over. */
 const MAX_PROMPT_CHARS = 1800;
 /** Section 4.4 per-section budgets. */
-const BUDGET = { brief: 240, furniture: 200, accent: 100 } as const;
+// furniture raised 200 -> 460 when the mapped form landed. The old unmapped
+// line was a bare list of materials; the mapped one spends characters naming
+// WHICH box each material belongs to, so at 200 a three-piece room silently
+// lost two pieces to the priority trim — observed in a real assembled prompt.
+// Furniture identity is the user's stated priority 2, and a full prompt still
+// lands near 1,200 of the 1,800 cap, so the headroom was simply unused.
+const BUDGET = { brief: 240, furniture: 460, accent: 100 } as const;
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
@@ -47,44 +57,63 @@ function cap(s: string): string {
  * darker reveal frame, and an unlit near-white panel that is the brightest
  * thing in frame by construction.
  */
-function structuralContract(hasFurniture: boolean): string {
+function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger): string {
   const furnitureClause = hasFurniture
     ? " Darker grey volumes are furniture: keep their position, footprint and approximate size."
     : "";
+  // Collapsed at the END, over the whole assembled string. openingCensus and
+  // furnitureClause each carry their own boundary space so they can be empty
+  // without leaving a gap, which means the junction between them can hold two.
+  // Collapsing inside either piece alone cannot see that junction.
   return (
     "Image 1 is an untextured grey massing render of this exact room, from the exact camera the " +
     "output must use. Preserve without deviation: camera position, angle and field of view; room " +
     "proportions and all wall positions; the position, width and height of every opening. A framed " +
-    "recessed panel is a closed door. A bright panel is a window. Every other surface is solid " +
-    `wall.${furnitureClause} Change only surfaces, materials, lighting and furnishing.`
-  );
+    `recessed panel is a closed door. A bright panel is a window. ${openingCensus(ledger)}` +
+    `${furnitureClause} Change only surfaces, materials, lighting and furnishing.`
+  ).replace(/ {2,}/g, " ");
 }
 
 /**
- * Section 4.2. Counts come from the Pass B mask, never from
- * placedOpenings.length — an opening clipped at the frame edge, behind the
- * camera, or occluded by furniture is not visible in the output, and claiming
- * it tells the model to invent one.
+ * The exact opening count, stated INSIDE the structural contract rather than
+ * as its own later stanza.
+ *
+ * Two changes from the old separate ledger sentence, both requested after
+ * real outputs kept inventing extra doors. First, position: the count now
+ * sits immediately after the sentences that teach the model what a door and a
+ * window LOOK like in the reference, so the definition and the quantity are
+ * one thought instead of two paragraphs apart. Second, and more important,
+ * the closing clause — the prompt never used to say that the listed openings
+ * were the ONLY ones. "The room has one door" is not a claim that there is
+ * exactly one door, and a model filling a large wall will happily add another.
+ *
+ * Positive phrasing throughout, per this file's header: "exactly N, and every
+ * other surface is unbroken solid wall" states what is there. Writing "no
+ * extra doors" would name the unwanted object, which on a model with no
+ * negativePrompt channel makes it MORE likely to appear.
+ *
+ * Counts still come from the Pass B mask (see buildRoomPrompt's caller), never
+ * from placedOpenings.length: an opening clipped at the frame edge, behind the
+ * camera, or hidden behind furniture is not in the output, and claiming it
+ * tells the model to invent one.
  */
-function openingLedger(ledger: GreyboxLedger, furnitureCount: number): string {
+function openingCensus(ledger?: GreyboxLedger): string {
+  const doors = ledger?.doors ?? 0;
+  const windows = ledger?.windows ?? 0;
+  if (doors === 0 && windows === 0) {
+    return "Every wall in this room is unbroken solid wall, with no doors and no windows. ";
+  }
   const parts: string[] = [];
-  const { doors, windows } = ledger;
-  if (windows > 0 && doors > 0) {
-    parts.push(`The room has ${word(windows)} ${plural(windows, "window")} and ${word(doors)} ${plural(doors, "door")}.`);
-  } else if (windows > 0) {
-    parts.push(`The room has ${word(windows)} ${plural(windows, "window")}.`);
-  } else if (doors > 0) {
-    parts.push(`The room has ${word(doors)} ${plural(doors, "door")}.`);
-  } else {
-    parts.push("Every wall in this room is solid.");
-  }
-  if (doors > 0) parts.push("All doors are closed.");
-  if (furnitureCount > 0) {
-    const verb = furnitureCount === 1 ? "is" : "are";
-    parts.push(`${cap(word(furnitureCount))} furniture ${plural(furnitureCount, "piece")} ${verb} already placed.`);
-  }
-  return parts.join(" ");
+  if (doors > 0) parts.push(`${word(doors)} ${plural(doors, "door")}`);
+  if (windows > 0) parts.push(`${word(windows)} ${plural(windows, "window")}`);
+  const closed = doors > 0 ? " All doors are closed." : "";
+  return (
+    `This room has exactly ${parts.join(" and ")}, only where Image 1 shows ${
+      doors + windows === 1 ? "it" : "them"
+    }. Every other surface is unbroken solid wall.${closed} `
+  );
 }
+
 
 /**
  * Positive-contents clause for service/back-of-house room types that carry
@@ -124,11 +153,57 @@ const SERVICE_ROOM_CONTENTS: Record<string, string> = {
  * templates.ts because the prompt_templates row and its admin UI still
  * exist; it simply has no consumer in the image path any more.
  */
+/**
+ * Pairs each in-frame furniture proxy with its material phrase, keyed to the
+ * box it actually is in the reference image.
+ *
+ * The camera is rebuilt here from the same `greyboxCamera(spec, aspect)` the
+ * render used. That is safe and deliberate rather than duplicated state:
+ * greyboxCamera is a deterministic pure function of the spec and aspect (a
+ * dev-check fixture proves the same inputs always yield an identical camera),
+ * so reconstructing it server-side lands on exactly the viewpoint the client
+ * rendered from, without shipping camera internals through the request body
+ * and without trusting the client to describe its own layout.
+ */
+function mappedFurnitureFor(
+  roomSpec: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView },
+  furniture: PlacedFurniture[],
+  tokens: { wood: string; soft: string; stone: string },
+): string {
+  const full: GreyboxRoomSpec = {
+    width: roomSpec.width,
+    depth: roomSpec.depth,
+    openings: roomSpec.openings,
+    cameraView: roomSpec.cameraView,
+    furniture: toWorldFurniture(furniture, roomSpec.width, roomSpec.depth),
+  };
+  const camera = greyboxCamera(full, GREYBOX_ASPECT);
+  const described = describeFurniture(full, camera);
+  // toWorldFurniture drops unknown kinds, so `described` indexes into the
+  // FILTERED world list, not the caller's raw array. Pair against that same
+  // filtered list rather than `furniture` or the two can fall out of step.
+  const world = full.furniture ?? [];
+  const items = described
+    .filter((d) => d.inFrame)
+    .map((d) => ({ kind: world[d.index]?.kind ?? d.kind, phrase: d.phrase }));
+  return buildMappedFurnitureLine(items, tokens, BUDGET.furniture);
+}
+
 export async function buildRoomPrompt(
   input: UniversalInput,
   room: UniversalInputRoom,
   spec: DesignSpecification,
-  opts: { ledger?: GreyboxLedger; furniture?: PlacedFurniture[]; hasGreybox: boolean },
+  opts: {
+    ledger?: GreyboxLedger;
+    furniture?: PlacedFurniture[];
+    hasGreybox: boolean;
+    /**
+     * The room's greybox geometry, so each furniture piece can be tied to the
+     * specific box it is in the reference image. Optional: without it the
+     * furniture line falls back to the old unmapped set.
+     */
+    roomSpec?: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
+  },
 ): Promise<string> {
   const furniture = opts.furniture ?? [];
 
@@ -137,40 +212,36 @@ export async function buildRoomPrompt(
   //    without moving openings, and naming a focal length buys camera fidelity
   //    that isn't required at the cost of barrel distortion.
   //
-  //    UNVERIFIED (2026-08-10): the trailing surface-texture sentence is a
-  //    prompt-side response to a user complaint that painted walls sometimes
-  //    render as smooth wax/thick oil paint. A separate investigation of
-  //    runware-client.ts found no server-side lever for this on the active
-  //    model (bfl:5@1 / FLUX.2 [pro]): `steps` is rejected outright
-  //    (unsupportedArchitectureSteps), CFGScale doesn't exist as a parameter
-  //    on this model, and output is already lossless PNG, so there is no
-  //    JPEG-artefact or sampler explanation either. Positive phrasing only,
-  //    per this file's header: state what the surface IS (faint roller-nap
-  //    texture, natural sheen variation), never what it should avoid being
-  //    (naming "waxy" or "oil painting" would make the model more likely to
-  //    produce it, per section 2.4's "every constraint gets a positive
-  //    phrasing or gets deleted"). Appended to `medium` rather than a new
-  //    section: this is the one line in the whole template that is fixed
-  //    boilerplate and never touched by the overflow ladder (see the
-  //    `assemble` closure below), so a texture clause placed here costs a
-  //    known, constant number of characters and can never be silently
-  //    dropped ahead of the structural contract or opening ledger — exactly
-  //    the "don't let it starve the higher-priority sections, but don't let
-  //    it be the first thing cut either" placement this needed. Not yet
-  //    validated against a real generated image.
+  //    The surface sentence was previously "faint roller-nap texture and
+  //    natural SHEEN variation", added 2026-08-10 to fight a report of walls
+  //    rendering as smooth wax. It made things worse and was the likely cause:
+  //    "sheen" means shine, and asking for sheen variation on top of a brief
+  //    that already says "lime walls" is close to a direct instruction toward
+  //    the oily plaster look that was being complained about. Replaced with
+  //    unambiguously matte language. Still positive phrasing only (state what
+  //    the surface IS, never name the artefact — there is no negativePrompt
+  //    channel on bfl:* models and naming "waxy" makes it more likely), and
+  //    still appended to `medium` because that is the one line the overflow
+  //    ladder never touches, so it costs a constant number of characters and
+  //    can neither starve nor be starved by the sections below.
   const medium =
-    "Photorealistic interior photograph, wide angle, eye level. Painted walls show faint " +
-    "roller-nap texture and natural sheen variation.";
+    "Photorealistic interior photograph, wide angle, eye level. Wall paint and plaster are " +
+    "flat matte, chalky and light-absorbing.";
 
   // 2. Structural contract, or a one-line geometry statement when there is no
   //    reference image. One code path, one budget, one assert.
   const contract = opts.hasGreybox
-    ? structuralContract(furniture.length > 0)
+    ? structuralContract(furniture.length > 0, opts.ledger)
     : `A ${input.design.luxury_level.toLowerCase()} "${input.design.style}" ${input.project.subcategory}. ` +
       "Straight walls, level camera, eye level.";
 
-  // 3. Opening ledger.
-  const ledger = opts.hasGreybox && opts.ledger ? openingLedger(opts.ledger, furniture.length) : "";
+  // 3. The opening ledger used to be its own stanza here. It is now folded
+  //    into the contract above (openingCensus), so that the definition of
+  //    what a door looks like and the statement of how many there are sit in
+  //    one paragraph. Section order is a truncation-safety mechanism, and
+  //    merging them means the single most important fact in the whole prompt
+  //    cannot end up a paragraph away from its own definition.
+  const ledger = "";
 
   // 4. Room brief.
   const roomLabel =
@@ -190,9 +261,18 @@ export async function buildRoomPrompt(
   //    positive statement in the same slot instead. Rooms with furniture, or
   //    with no furniture and no service-room entry (e.g. an empty Living
   //    Room mid-furnish), keep the prior "line omitted" behaviour.
+  //    When the caller supplies the room's geometry, each piece is bound to
+  //    the specific grey box it is in the reference image rather than listed
+  //    as an unattached set — see buildMappedFurnitureLine. Pieces the camera
+  //    cannot see are dropped here, not described: naming a piece that is not
+  //    in frame tells the model to invent one, the same failure the opening
+  //    census avoids by counting from the mask. Falls back to the old
+  //    unmapped line when no geometry was passed, so a caller that hasn't
+  //    been updated still produces a valid prompt.
   const serviceContents = SERVICE_ROOM_CONTENTS[room.type?.trim().toLowerCase() ?? ""];
+  const mapped = opts.roomSpec ? mappedFurnitureFor(opts.roomSpec, furniture, spec.materialTokens) : "";
   const furnitureLine = furniture.length
-    ? buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture)
+    ? mapped || buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture)
     : (serviceContents ?? "").slice(0, BUDGET.furniture);
 
   // 6. Accent — optional, always last, engineered to be the thing that gets

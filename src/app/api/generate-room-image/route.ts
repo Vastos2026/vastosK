@@ -25,6 +25,7 @@ import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject, isOwnedGreyboxKey } from "@/lib/supabase/projects";
 import { countOpenings } from "@/lib/greybox/count-openings";
 import type { ProjectedOpening } from "@/lib/greybox/render-mask";
+import type { GreyboxCameraView, GreyboxOpening } from "@/lib/greybox/types";
 import { GREYBOX_RENDER_W, GREYBOX_RENDER_H } from "@/lib/greybox/dimensions";
 import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
 
@@ -50,6 +51,14 @@ interface Body {
   projected?: ProjectedOpening[];
   /** Phase B furniture proxies placed in this room's greybox, if any — see furniture-layout.ts. */
   furniture?: PlacedFurniture[];
+  /**
+   * The room's greybox geometry, so the prompt can tie each furniture piece
+   * to the specific grey box it is in the reference image (prompt-builder's
+   * mappedFurnitureFor rebuilds the same deterministic camera from it).
+   * Optional: without it the furniture line falls back to an unmapped set,
+   * which is what every caller produced before this existed.
+   */
+  roomSpec?: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
 }
 
 async function loadGreyboxDataUri(key: string): Promise<string> {
@@ -72,7 +81,8 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, universalInput, room, designSpec, greyboxKey, greyboxMaskKey, projected, furniture } = body;
+  const { projectId, universalInput, room, designSpec, greyboxKey, greyboxMaskKey, projected, furniture, roomSpec } =
+    body;
   if (!projectId || !universalInput || !room || !designSpec) {
     return Response.json(
       { error: "projectId, universalInput, room and designSpec are required" },
@@ -130,6 +140,7 @@ export async function POST(request: Request) {
       hasGreybox: !!greyboxKey,
       ledger,
       furniture,
+      roomSpec,
     });
     const referenceImages = greyboxKey ? [await loadGreyboxDataUri(greyboxKey)] : undefined;
     const referenceImageUrls = greyboxKey ? [`/api/render?key=${encodeURIComponent(greyboxKey)}`] : undefined;

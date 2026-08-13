@@ -157,21 +157,72 @@ function buildBed(): THREE.Group {
   return group;
 }
 
+/**
+ * 1.6ft total sat well below mattress height (a real mattress top is
+ * typically ~2-2.3ft off the floor with a bed frame), so the nightstand read
+ * shorter than the bed it sits beside. 2.0ft (1.85ft carcass + 0.15ft top
+ * slab) is a realistic nightstand height. Also no longer a solid cube: a
+ * proud drawer-line strip on the front face and a slightly overhanging top
+ * slab give it a carcass silhouette instead of a featureless box.
+ */
+const NIGHTSTAND_W = 1.3;
+const NIGHTSTAND_D = 1.3;
+
 function buildNightstand(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 1.3, 1.6, 1.3, 0, 0, 0);
+  const carcassW = 1.2;
+  const carcassD = 1.2;
+  const carcassH = 1.85;
+  addBox(group, frameMat(), carcassW, carcassH, carcassD, 0, 0, 0);
+  // Drawer line: a thin proud strip across the front (+Z) face, roughly
+  // mid-height, reading as a surface break rather than a flat panel.
+  addBox(group, frameMat(), carcassW * 0.85, 0.12, 0.05, 0, carcassH * 0.55, carcassD / 2);
+  // Top slab, overhanging the carcass slightly on every side.
+  addBox(group, frameMat(), NIGHTSTAND_W, 0.15, NIGHTSTAND_D, 0, carcassH, 0);
   return group;
 }
 
+/**
+ * A real double wardrobe is 4-6ft wide and roughly 2ft deep, 6.5-7ft tall —
+ * 2ft wide (a single-door footprint) read as a narrow cabinet, not a
+ * wardrobe. Now 5ft wide x 2ft deep x 6.8ft tall. Also no longer a solid
+ * slab: a proud vertical seam splits the front face into two doors, with
+ * small handle nibs near the inner edge of each, so the silhouette reads as
+ * a double-door wardrobe rather than an unmarked box the same size as a
+ * fridge or a bookshelf.
+ */
+const WARDROBE_W = 5;
+const WARDROBE_D = 2;
+const WARDROBE_H = 6.8;
+
 function buildWardrobe(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 2, 6.5, 2, 0, 0, 0);
+  addBox(group, frameMat(), WARDROBE_W, WARDROBE_H, WARDROBE_D, 0, 0, 0);
+  // Vertical seam between the two doors: a thin proud strip running nearly
+  // the full height down the centre of the front (+Z) face.
+  addBox(group, frameMat(), 0.05, WARDROBE_H * 0.94, 0.04, 0, WARDROBE_H * 0.03, WARDROBE_D / 2);
+  // Handle nibs, one per door, near the inner (split) edge, mid-height.
+  const handleY = WARDROBE_H * 0.45;
+  addCylinder(group, frameMat(), 0.035, 0.035, 0.6, -0.35, handleY, WARDROBE_D / 2);
+  addCylinder(group, frameMat(), 0.035, 0.035, 0.6, 0.35, handleY, WARDROBE_D / 2);
   return group;
 }
 
 function buildDresser(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 3.5, 2.8, 1.6, 0, 0, 0);
+  const w = 3.5;
+  const d = 1.6;
+  const topH = 0.12;
+  const carcassH = 2.8 - topH;
+  addBox(group, frameMat(), w, carcassH, d, 0, 0, 0);
+  // Top slab, overhanging the carcass slightly on every side.
+  addBox(group, frameMat(), w + 0.15, topH, d + 0.1, 0, carcassH, 0);
+  // Three drawer lines: thin proud strips across the front (+Z) face,
+  // evenly spaced, dividing the carcass into three drawer fronts.
+  const lineW = w * 0.88;
+  for (const frac of [0.28, 0.55, 0.82]) {
+    addBox(group, frameMat(), lineW, 0.06, 0.03, 0, carcassH * frac, d / 2);
+  }
   return group;
 }
 
@@ -203,9 +254,37 @@ function buildCoffeeTable(): THREE.Group {
   return buildLeggedSlab(3.5, 0.4, 1.8, 1.0, 0.06, 0.2);
 }
 
+/**
+ * 4.5ft is narrow for a media console meant to sit under a wall-mounted TV
+ * and span most of a living-room wall; 5-6ft is typical. Now 5.5ft wide.
+ * Also no longer a solid box: a shallower, inset plinth lifts the main body
+ * off the floor (reading as a shadow gap along the bottom edge instead of a
+ * slab sitting flush on the ground), and a darker screen-height panel stands
+ * proud of the front face so the unit reads as "console + mounted screen"
+ * rather than one undifferentiated block.
+ */
+const TV_UNIT_W = 5.5;
+const TV_UNIT_D = 1.4;
+
 function buildTvUnit(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 4.5, 1.8, 1.3, 0, 0, 0);
+  const plinthH = 0.15;
+  const bodyH = 1.55;
+  addBox(group, frameMat(), TV_UNIT_W - 0.3, plinthH, TV_UNIT_D - 0.3, 0, 0, 0);
+  addBox(group, frameMat(), TV_UNIT_W, bodyH, TV_UNIT_D, 0, plinthH, 0);
+  // Screen panel: a darker rectangle standing proud of the front (+Z) face,
+  // vertically centred within the body, reading as a distinct screen rather
+  // than part of the console carcass.
+  addBox(
+    group,
+    seatMat(),
+    TV_UNIT_W * 0.55,
+    bodyH * 0.55,
+    0.04,
+    0,
+    plinthH + bodyH * 0.2,
+    TV_UNIT_D / 2,
+  );
   return group;
 }
 
@@ -224,9 +303,29 @@ function buildDiningChair(): THREE.Group {
   return group;
 }
 
+/**
+ * 4ft is narrow for a sideboard meant to run along a dining-room wall; 5-6ft
+ * is typical. Now 5.5ft wide. Also no longer a solid box: like the dresser
+ * it gets a slightly overhanging top slab, but the front face is divided by
+ * two vertical door seams instead of horizontal drawer lines, so it reads as
+ * a longer, lower cabinet with doors rather than a stack of drawers.
+ */
+const SIDEBOARD_W = 5.5;
+const SIDEBOARD_D = 1.6;
+
 function buildSideboard(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 4, 2.8, 1.4, 0, 0, 0);
+  const h = 2.5;
+  const topH = 0.1;
+  const carcassH = h - topH;
+  addBox(group, frameMat(), SIDEBOARD_W, carcassH, SIDEBOARD_D, 0, 0, 0);
+  // Top slab, overhanging the carcass slightly on every side.
+  addBox(group, frameMat(), SIDEBOARD_W + 0.1, topH, SIDEBOARD_D + 0.08, 0, carcassH, 0);
+  // Two vertical door seams, evenly spaced, dividing the front (+Z) face
+  // into three door panels rather than the dresser's horizontal drawer lines.
+  for (const x of [-SIDEBOARD_W / 6, SIDEBOARD_W / 6]) {
+    addBox(group, frameMat(), 0.04, carcassH * 0.9, 0.03, x, carcassH * 0.05, SIDEBOARD_D / 2);
+  }
   return group;
 }
 
@@ -253,9 +352,33 @@ function buildOfficeChair(): THREE.Group {
   return group;
 }
 
+/**
+ * Was a solid 3x6.5x1ft slab — indistinguishable from a wardrobe or a fridge
+ * at the same footprint, since a bookshelf's whole identity is that it's
+ * OPEN. Rebuilt as two side panels, a back panel, and 5 evenly-spaced
+ * horizontal shelf slabs with real open gaps between them; the voids (not
+ * the panels) are what read as a bookshelf. Overall footprint unchanged.
+ */
 function buildBookshelf(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 3, 6.5, 1, 0, 0, 0);
+  const w = 3;
+  const d = 1;
+  const h = 6.5;
+  const panelT = 0.1;
+  const shelfT = 0.08;
+  // Side panels, full height.
+  addBox(group, frameMat(), panelT, h, d, -w / 2 + panelT / 2, 0, 0);
+  addBox(group, frameMat(), panelT, h, d, w / 2 - panelT / 2, 0, 0);
+  // Back panel, thin, full height, inset between the sides.
+  addBox(group, frameMat(), w - 2 * panelT, h, panelT, 0, 0, -d / 2 + panelT / 2);
+  // Five horizontal shelves, evenly spaced with open gaps between them —
+  // the gaps are what make this read as a bookshelf rather than a slab.
+  const shelfCount = 5;
+  for (let i = 0; i < shelfCount; i++) {
+    const yTop = (h / (shelfCount - 1)) * i;
+    const yBottom = Math.min(yTop, h - shelfT);
+    addBox(group, frameMat(), w - 2 * panelT, shelfT, d, 0, yBottom, 0);
+  }
   return group;
 }
 
@@ -273,8 +396,12 @@ function buildKitchenIsland(): THREE.Group {
   const group = new THREE.Group();
   const topH = 0.3;
   const baseH = 2.5 - topH;
+  const overhang = 0.6;
   addBox(group, frameMat(), ISLAND_W, baseH, ISLAND_D, 0, 0, 0);
-  addBox(group, seatMat(), ISLAND_W, topH, ISLAND_D, 0, baseH, 0);
+  // Worktop overhangs the base on the +Z side only (where stools tuck
+  // under), so the silhouette reads as an island rather than a plain block
+  // the same size top-to-bottom.
+  addBox(group, seatMat(), ISLAND_W, topH, ISLAND_D + overhang, 0, baseH, overhang / 2);
   return group;
 }
 
@@ -288,17 +415,32 @@ function buildBarStool(): THREE.Group {
 
 function buildPoojaMandir(): THREE.Group {
   const group = new THREE.Group();
-  // Two stacked boxes of decreasing size — a tiered altar look.
-  const baseH = 2.4;
+  // Base cabinet.
+  const baseH = 2.2;
   addBox(group, frameMat(), 2, baseH, 1.5, 0, 0, 0);
-  addBox(group, seatMat(), 1.3, 4 - baseH, 1, 0, baseH, 0);
+  // Upper shrine, narrower than the base.
+  const shrineH = 1.4;
+  addBox(group, seatMat(), 1.3, shrineH, 1, 0, baseH, 0);
+  // Stepped, tapering top plus a small domed finial — two shrinking tiers
+  // and a cylinder cap — so the silhouette reads as a shrine roof instead of
+  // two flat stacked boxes.
+  const tier1H = 0.35;
+  addBox(group, seatMat(), 0.9, tier1H, 0.7, 0, baseH + shrineH, 0);
+  const tier2H = 0.25;
+  addBox(group, seatMat(), 0.55, tier2H, 0.45, 0, baseH + shrineH + tier1H, 0);
+  addCylinder(group, seatMat(), 0.02, 0.15, 0.3, 0, baseH + shrineH + tier1H + tier2H, 0);
   return group;
 }
 
+/**
+ * 1.2ft total was coffee-table height, not console-table height — a real
+ * console table (the slim hall/entryway kind meant to be walked past, not
+ * sat at) is ~2.5-2.8ft tall. Now 2.6ft (2.45ft legs + 0.15ft top), built via
+ * the shared buildLeggedSlab helper so it's a slim top on four legs rather
+ * than the solid block it was before.
+ */
 function buildConsoleTable(): THREE.Group {
-  const group = new THREE.Group();
-  addBox(group, frameMat(), 4, 1.2, 0.9, 0, 0, 0);
-  return group;
+  return buildLeggedSlab(4, 0.15, 0.9, 2.45, 0.05, 0.15);
 }
 
 function buildBench(): THREE.Group {
@@ -328,7 +470,11 @@ function buildOutdoorChair(): THREE.Group {
 
 function buildSideTable(): THREE.Group {
   const group = new THREE.Group();
-  addBox(group, frameMat(), 1.5, 1.8, 1.5, 0, 0, 0);
+  const h = 1.8;
+  const topH = 0.12;
+  // Slim top slab on a single tapered pedestal, not a solid cube.
+  addBox(group, frameMat(), 1.5, topH, 1.5, 0, h - topH, 0);
+  addCylinder(group, frameMat(), 0.12, 0.25, h - topH, 0, 0, 0);
   return group;
 }
 
@@ -365,7 +511,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "nightstand",
     label: "Nightstand",
-    footprintFt: { w: 1.3, d: 1.3 },
+    footprintFt: { w: NIGHTSTAND_W, d: NIGHTSTAND_D },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildNightstand,
     materialPhrase: "{wood} nightstand",
@@ -375,7 +521,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "wardrobe",
     label: "Wardrobe",
-    footprintFt: { w: 2, d: 2 },
+    footprintFt: { w: WARDROBE_W, d: WARDROBE_D },
     roomTypes: ["Master Bedroom", "Bedroom", "Guest Room"],
     build: buildWardrobe,
     materialPhrase: "{wood} wardrobe",
@@ -421,7 +567,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "tv-unit",
     label: "TV Unit",
-    footprintFt: { w: 4.5, d: 1.3 },
+    footprintFt: { w: TV_UNIT_W, d: TV_UNIT_D },
     roomTypes: ["Living Room", "Lounge", "Living + Dining"],
     build: buildTvUnit,
     materialPhrase: "low {wood} media console with a black screen",
@@ -449,7 +595,7 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
   {
     kind: "sideboard",
     label: "Sideboard",
-    footprintFt: { w: 4, d: 1.4 },
+    footprintFt: { w: SIDEBOARD_W, d: SIDEBOARD_D },
     roomTypes: ["Dining Room"],
     build: buildSideboard,
     materialPhrase: "{wood} sideboard",

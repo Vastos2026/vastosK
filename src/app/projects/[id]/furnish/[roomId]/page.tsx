@@ -183,6 +183,14 @@ function FurnishContent({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [occlusion, setOcclusion] = useState<OcclusionViolation[]>([]);
   const [notice, setNotice] = useState<string[]>([]);
+  // Separate from `notice` on purpose. `resolveOcclusion`'s "drop" rung
+  // DELETES furniture the user placed — that is destructive in a way
+  // "moved this out of the camera's view" (the only other thing that lands
+  // in `notice`) is not, and the two must never look like the same kind of
+  // message. This one gets its own danger-coloured panel, never folds into
+  // the muted "Adjusted on save" one, and — like `notice` — is only ever
+  // cleared by the user, never by a timer.
+  const [removedNotice, setRemovedNotice] = useState<string[]>([]);
   const [addError, setAddError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -398,7 +406,10 @@ function FurnishContent({
   async function save(): Promise<{ furniture: PlacedFurniture[]; gb: GreyboxResult } | undefined> {
     const { furniture: resolved, changes } = resolveOcclusion(furniture, occlusion);
     if (changes.length) {
-      setNotice(changes);
+      // `changes` is resolveOcclusion's only rung right now (drop) so every
+      // entry here is a deletion — routed to the loud danger panel, never
+      // the muted `notice` one. See removedNotice's own comment above.
+      setRemovedNotice(changes);
       setFurniture(resolved);
       setSelectedId((cur) => (cur && resolved.some((f) => f.id === cur) ? cur : null));
       updateRoom(projectId, room.id, { furniture: resolved });
@@ -633,6 +644,30 @@ function FurnishContent({
               </p>
 
               <div className="absolute inset-x-3 bottom-3 space-y-2">
+                {removedNotice.length > 0 && (
+                  <div className="space-y-1.5 rounded-xl border border-danger/50 bg-danger/20 p-2.5 backdrop-blur">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="flex items-center gap-1.5 text-xs font-semibold text-danger">
+                        <Icon name="Trash2" className="size-3.5 shrink-0" />
+                        Furniture removed on save
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setRemovedNotice([])}
+                        className="shrink-0 text-danger/70 hover:text-danger cursor-pointer"
+                        aria-label="Dismiss"
+                      >
+                        <Icon name="X" className="size-3.5" />
+                      </button>
+                    </div>
+                    {removedNotice.map((n, i) => (
+                      <p key={i} className="text-xs text-danger">
+                        {n}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
                 {outOfView.length > 0 && (
                   <div className="rounded-xl border border-warning/30 bg-warning/15 p-2.5 backdrop-blur">
                     <div className="flex items-start gap-2">

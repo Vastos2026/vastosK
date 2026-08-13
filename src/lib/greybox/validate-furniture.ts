@@ -13,6 +13,7 @@
 import * as THREE from "three";
 import { catalogueEntry } from "./furniture-catalogue";
 import { openingFaceSamples } from "./build-scene";
+import { projectOpenings } from "./camera";
 import type { GreyboxRoomSpec } from "./types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -131,8 +132,40 @@ export interface OcclusionViolation {
 
 /**
  * Section 6.1's raycast gate. Samples a 5x5 grid across each opening's face
- * and counts how many rays reach the opening itself rather than something in
- * front of it.
+ * and counts how many rays are blocked by FURNITURE rather than reaching the
+ * opening cleanly.
+ *
+ * Two things this deliberately does NOT flag, both explained on the file's
+ * top comment ("furniture always yields; an opening never moves; furniture
+ * is the ONLY mechanism by which... accuracy" — nothing else can yield):
+ *
+ * 1. An opening the camera cannot see at all. `Room.cameraView` lets the
+ *    user stand the camera against a wall, and that wall's own openings are
+ *    then behind the camera by construction (GreyboxCameraView's doc
+ *    comment) — a corner/off-axis pick can also push an opening off to the
+ *    side, outside the frame. Neither is furniture's fault and moving
+ *    furniture cannot fix either one; it is a camera-coverage fact, already
+ *    surfaced to the user through `cameraCoverage()`'s angle picker. Openings
+ *    that fail this test are excluded from the raycast pass entirely — see
+ *    `inView` below, which reuses `projectOpenings`'s own in-front-of-camera
+ *    + on-screen (NDC) test rather than re-deriving it, so this function and
+ *    the picker's "sees N of M openings" count can never disagree about
+ *    which openings are in view. (Skipping the in-front check would be a
+ *    real bug: `Vector3.project()` mirrors points BEHIND the camera back
+ *    into valid NDC range instead of erroring, so an opening directly behind
+ *    the camera would otherwise register as "on screen" — the exact trap
+ *    `projectOpenings`'s own comment warns about.)
+ * 2. A ray blocked by the room's OWN geometry — a reveal jamb, a corner
+ *    post, another opening's filler at a grazing angle — rather than by
+ *    furniture. Nothing about that is a placement problem the user can act
+ *    on, so only a hit that resolves to a `furnitureId` counts against an
+ *    opening's visible fraction.
+ *
+ * Together these guarantee the invariant `resolveOcclusion`/the editor rely
+ * on: a violation this function returns always has furniture to blame, so
+ * `blockerId` is always set below (`blocked` only increments alongside a
+ * `blockers` entry, and `blocked > 0` is required to drop `fraction` under
+ * the threshold) — never something to paper over with a "Something" label.
  *
  * `scene` must be the SAME scene graph being rendered, and `camera` the
  * locked export camera — a visibility answer from a different viewpoint is
@@ -147,9 +180,17 @@ export function checkOcclusion(
   const origin = camera.getWorldPosition(new THREE.Vector3());
   const out: OcclusionViolation[] = [];
 
+  const inView = new Set(
+    projectOpenings(spec, camera)
+      .filter((p) => p.px !== -1)
+      .map((p) => p.id),
+  );
+
   for (const opening of spec.openings) {
+    if (!inView.has(opening.id)) continue; // camera-coverage fact, not an occlusion violation
+
     const samples = openingFaceSamples(spec, opening);
-    let visible = 0;
+    let blocked = 0;
     const blockers = new Map<string, number>();
 
     for (const p of samples) {
@@ -157,19 +198,17 @@ export function checkOcclusion(
       raycaster.set(origin, dir);
       const hit = raycaster.intersectObject(scene, true)[0];
       if (!hit) continue;
-      if (hit.object.userData.openingId === opening.id) {
-        visible++;
-        continue;
-      }
+      if (hit.object.userData.openingId === opening.id) continue; // reached the opening cleanly
+
       let o: THREE.Object3D | null = hit.object;
       while (o && !o.userData.furnitureId) o = o.parent;
-      if (o?.userData.furnitureId) {
-        const id = o.userData.furnitureId as string;
-        blockers.set(id, (blockers.get(id) ?? 0) + 1);
-      }
+      if (!o?.userData.furnitureId) continue; // blocked by static room geometry, not furniture — not this function's concern
+      const id = o.userData.furnitureId as string;
+      blockers.set(id, (blockers.get(id) ?? 0) + 1);
+      blocked++;
     }
 
-    const fraction = visible / samples.length;
+    const fraction = 1 - blocked / samples.length;
     if (fraction < MIN_VISIBLE_FRACTION) {
       let worst: string | undefined;
       let worstN = 0;
@@ -218,7 +257,7 @@ export function resolveOcclusion(
     if (!item) continue;
     const label = catalogueEntry(item.kind)?.label ?? item.kind;
     dropped.add(v.blockerId);
-    changes.push(`Removed the ${label.toLowerCase()} — it was blocking a ${v.openingType} the camera needs to see.`);
+    changes.push(`Removed the ${label.toLowerCase()}. It was blocking a ${v.openingType} the camera needs to see.`);
   }
 
   return { furniture: furniture.filter((f) => !dropped.has(f.id)), changes };

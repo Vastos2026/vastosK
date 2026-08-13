@@ -91,6 +91,65 @@ export function buildFurnitureMaterials(
   return render(entries);
 }
 
+/**
+ * The furniture line, but with each material phrase BOUND to the specific
+ * grey box it belongs to ("the long low box at centre-left is a cotton
+ * sofa; the large box at right is a teak media console").
+ *
+ * `buildFurnitureMaterials` above produces an unordered set instead — it
+ * derives from the set of TYPES present and deliberately says nothing about
+ * which box is which, because the original rule was "the render owns
+ * position, the prompt owns material". That rule is right about placement and
+ * wrong about identity: with three grey boxes in frame and three unattached
+ * material phrases, the model has to guess the pairing, and it guesses by
+ * plausibility rather than by the arrangement the user built in the editor.
+ *
+ * These descriptors are derived FROM the render (furniture-descriptors.ts
+ * projects each piece through the same locked camera), so they are pointers
+ * into the reference image rather than a second, competing source of spatial
+ * truth. They never instruct where a piece should go.
+ *
+ * Pieces the camera cannot see must be filtered out by the CALLER before
+ * getting here: naming a piece that is not in frame tells the model to invent
+ * one, the same failure the opening ledger avoids by counting from the mask.
+ *
+ * Ordering is left-to-right across the frame rather than catalogue order,
+ * because that is the order a reader (and the model) scans the image in, and
+ * it keeps the sentence parseable when several pieces share a band.
+ */
+export function buildMappedFurnitureLine(
+  items: { kind: string; phrase: string }[],
+  tokens: MaterialTokens,
+  budget = 460,
+): string {
+  const usable = items.filter((i) => i.phrase && catalogueEntry(i.kind));
+  if (usable.length === 0) return "";
+
+  const render = (list: typeof usable) =>
+    `The grey volumes are furniture, each keeping its exact position and footprint: ${list
+      // Colon rather than "X is Y": materialPhrase entries are written without
+      // a leading article ("cream boucle sofa"), so "the box is cream boucle
+      // sofa" reads as broken English to a prose-trained text encoder. A colon
+      // sidesteps article agreement entirely and costs fewer characters.
+      .map((i) => `${i.phrase}: ${interpolate(catalogueEntry(i.kind)!.materialPhrase, tokens)}`)
+      .join("; ")}.`;
+
+  // Drop the lowest-priority piece first, exactly as buildFurnitureMaterials
+  // does, rather than truncating mid-phrase and leaving a dangling pointer to
+  // a box with no stated identity.
+  let list = usable;
+  while (render(list).length > budget && list.length > 1) {
+    let worst = 0;
+    for (let i = 1; i < list.length; i++) {
+      const a = catalogueEntry(list[i].kind)!.promptPriority;
+      const b = catalogueEntry(list[worst].kind)!.promptPriority;
+      if (a < b) worst = i;
+    }
+    list = list.filter((_, i) => i !== worst);
+  }
+  return render(list);
+}
+
 function interpolate(phrase: string, t: MaterialTokens): string {
   return phrase.replace(/\{wood\}/g, t.wood).replace(/\{soft\}/g, t.soft).replace(/\{stone\}/g, t.stone);
 }
