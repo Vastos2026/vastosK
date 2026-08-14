@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { parsePlanViaApi } from "@/lib/parse-plan-client";
+import { takePendingUploadFile } from "@/lib/pending-upload";
 import { emptyPlan } from "@/lib/pipeline/empty-plan";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { Button } from "@/components/ui/button";
@@ -26,9 +27,30 @@ export default function UploadPage() {
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const setStatus = useVasto((s) => s.setStatus);
 
-  const [stage, setStage] = useState<Stage>("idle");
+  // Picks up a file chosen on the floor-plan page's own "Yes, upload it"
+  // button (pending-upload.ts) so that page's native-dialog click doesn't
+  // have to survive this route change to here — see that file's doc comment.
+  //
+  // Read exactly once, inside a useState lazy initializer — never in an
+  // effect (an effect calling setState right after mount is exactly the
+  // "cascading render" pattern this repo's set-state-in-effect lint rule
+  // forbids, and it would flash the empty dropzone for one frame before
+  // jumping to the preview) and never via a ref (this repo's react-hooks/refs
+  // rule forbids reading ref.current during render at all, even guarded).
+  // `stage` and `selected` both need the SAME file, so it is taken once into
+  // this throwaway seed state — a second, independent call from either of
+  // their own initializers would find takePendingUploadFile() already
+  // cleared and silently lose the file for whichever ran second.
+  const [initialPending] = useState<Selected | null>(() => {
+    const file = takePendingUploadFile();
+    if (!file) return null;
+    const isImage = file.type.startsWith("image/");
+    return { file, name: file.name, url: isImage ? URL.createObjectURL(file) : undefined, isImage };
+  });
+
+  const [stage, setStage] = useState<Stage>(initialPending ? "selected" : "idle");
   const [drag, setDrag] = useState(false);
-  const [selected, setSelected] = useState<Selected | null>(null);
+  const [selected, setSelected] = useState<Selected | null>(initialPending);
   const [error, setError] = useState<string | null>(null);
   const [unreadable, setUnreadable] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);

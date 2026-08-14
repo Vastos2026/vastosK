@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { emptyPlan } from "@/lib/pipeline/empty-plan";
+import { setPendingUploadFile } from "@/lib/pending-upload";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,20 @@ export default function FloorPlanPage() {
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const setStatus = useVasto((s) => s.setStatus);
   const [choice, setChoice] = useState<"yes" | "no" | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Hands the picked file to pending-upload.ts and moves on — see that
+  // file's doc comment for why the File itself, not another click, is what
+  // crosses the route change to /upload. An empty FileList means the user
+  // cancelled the native dialog; nothing happens and they stay here, with
+  // the manual "Continue to upload" button below still available as a
+  // fallback path.
+  const onFileChosen = (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setPendingUploadFile(file);
+    router.push(`/projects/${id}/upload`);
+  };
 
   if (!project) return null;
 
@@ -40,7 +55,15 @@ export default function FloorPlanPage() {
 
         <div className="mt-8 grid grid-cols-2 gap-4">
           <button
-            onClick={() => setChoice("yes")}
+            onClick={() => {
+              // setChoice first so the card's selected state and the
+              // fallback button below are already visible the instant the
+              // native file dialog is dismissed, cancelled, or backgrounded.
+              // The click() call right after is still the SAME synchronous
+              // gesture, so the dialog opens directly from this one click.
+              setChoice("yes");
+              fileInputRef.current?.click();
+            }}
             className={cn(
               "hover-lift group flex flex-col items-center gap-3 rounded-2xl border px-6 py-8 transition-colors cursor-pointer",
               choice === "yes" ? "border-accent/60 bg-accent/5" : "border-border bg-surface hover:border-border-strong",
@@ -49,7 +72,7 @@ export default function FloorPlanPage() {
             <span className="grid size-12 place-items-center rounded-xl bg-accent/10 text-accent transition-transform group-hover:scale-110">
               <Icon name="FileUp" className="size-6" />
             </span>
-            <span className="font-medium">Yes, I have one</span>
+            <span className="font-medium">Yes, upload it</span>
           </button>
           <button
             onClick={() => setChoice("no")}
@@ -71,15 +94,23 @@ export default function FloorPlanPage() {
           </Button>
         )}
 
+        {/* Primary path: the click above already opened this. Kept as a
+            visible fallback for the rare case the browser didn't honour the
+            programmatic click (or the user cancelled the native dialog and
+            wants another go) rather than leaving them with no way forward. */}
         {choice === "yes" && (
-          <Button
-            className="mt-6"
-            iconRight="ArrowRight"
-            onClick={() => router.push(`/projects/${id}/upload`)}
-          >
-            Continue to upload
+          <Button className="mt-6" iconRight="ArrowRight" onClick={() => fileInputRef.current?.click()}>
+            Open file picker
           </Button>
         )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,application/pdf"
+          className="hidden"
+          onChange={(e) => onFileChosen(e.target.files)}
+        />
       </div>
     </div>
   );

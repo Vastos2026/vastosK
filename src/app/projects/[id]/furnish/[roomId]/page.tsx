@@ -646,16 +646,32 @@ function FurnishContent({
 
       <div className="min-h-0 flex-1 overflow-hidden bg-bg p-6">
         <div className="mx-auto flex h-full max-w-6xl gap-5">
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            {/* Every transient panel below lives INSIDE this box, absolutely
-                positioned. They used to be siblings in the flex column, which
-                meant one appearing or disappearing changed the column's
-                height — and since the canvas is aspect-ratio locked and
-                centred, it resized to match. Dragging a piece out of view or
-                switching camera angle therefore made the whole 3D viewport
-                jump up and down (reported as wobbling). Overlaying them costs
-                nothing and the viewport now never changes size. */}
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-grid">
+          <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+            <p className="shrink-0 text-[11px] text-muted">
+              Click an item to select it, then drag to move. Arrow keys nudge, [ ] rotates, Delete removes.
+            </p>
+
+            {/*
+              Sized by its own WIDTH via CSS aspect-ratio (matching
+              GREYBOX_ASPECT, the same aspect the canvas inside locks its
+              rendered image to — see furniture-editor-canvas.tsx's own doc
+              comment), not by flex-1 filling whatever height the column has
+              left. That is what makes it safe for the panels below to appear
+              and disappear in normal document flow: the earlier "wobble" bug
+              (reported 2026-08-10) came from flex-1 distributing LEFTOVER
+              height among siblings, so a warning appearing changed how much
+              was left and the canvas box resized under it. An
+              aspect-ratio-driven box has no leftover height to distribute —
+              its height is a pure function of its width, which sibling
+              panels never touch. This also closes the visual gap the old
+              flex-1 box left above/below the actual rendered image
+              (reported): the box now hugs the image instead of stretching
+              past it and centring the image inside the extra space.
+            */}
+            <div
+              className="relative w-full shrink-0 overflow-hidden rounded-2xl border border-border bg-grid"
+              style={{ aspectRatio: GREYBOX_ASPECT }}
+            >
               <FurnitureEditorCanvas
                 spec={spec}
                 furniture={furniture}
@@ -664,85 +680,80 @@ function FurnishContent({
                 onCommit={handleFurnitureCommit}
                 onOcclusionChange={setOcclusion}
               />
-              <p className="pointer-events-none absolute left-3 top-3 rounded-lg bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
-                Click an item to select it, then drag to move. Arrow keys nudge, [ ] rotates, Delete removes.
-              </p>
-
-              <div className="absolute inset-x-3 bottom-3 space-y-2">
-                {removedNotice.length > 0 && (
-                  <div className="space-y-1.5 rounded-xl border border-danger/50 bg-danger/20 p-2.5 backdrop-blur">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="flex items-center gap-1.5 text-xs font-semibold text-danger">
-                        <Icon name="Trash2" className="size-3.5 shrink-0" />
-                        Furniture removed on save
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setRemovedNotice([])}
-                        className="shrink-0 text-danger/70 hover:text-danger cursor-pointer"
-                        aria-label="Dismiss"
-                      >
-                        <Icon name="X" className="size-3.5" />
-                      </button>
-                    </div>
-                    {removedNotice.map((n, i) => (
-                      <p key={i} className="text-xs text-danger">
-                        {n}
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                {outOfView.length > 0 && (
-                  <div className="rounded-xl border border-warning/30 bg-warning/15 p-2.5 backdrop-blur">
-                    <div className="flex items-start gap-2">
-                      <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0 text-warning" />
-                      <p className="min-w-0 flex-1 text-xs text-warning">
-                        {outOfView.length === 1 ? "One piece is" : `${outOfView.length} pieces are`} outside this
-                        camera&apos;s view:{" "}
-                        {outOfView.map((f) => catalogueEntry(f.kind)?.label ?? f.kind).join(", ")}. They will not
-                        appear in the generated image.
-                      </p>
-                      <Button size="sm" variant="outline" className="shrink-0" onClick={bringIntoView}>
-                        Bring into view
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {occlusion.length > 0 && (
-                  <div className="space-y-1.5 rounded-xl border border-warning/30 bg-warning/15 p-2.5 backdrop-blur">
-                    {occlusion.map((v) => (
-                      <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
-                        <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
-                        <span>{occlusionMessage(v)}</span>
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                {notice.length > 0 && (
-                  <div className="space-y-1.5 rounded-xl border border-border bg-surface/95 p-2.5 backdrop-blur">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-xs font-medium text-foreground">Adjusted on save</p>
-                      <button
-                        type="button"
-                        onClick={() => setNotice([])}
-                        className="shrink-0 text-faint hover:text-muted cursor-pointer"
-                        aria-label="Dismiss"
-                      >
-                        <Icon name="X" className="size-3.5" />
-                      </button>
-                    </div>
-                    {notice.map((n, i) => (
-                      <p key={i} className="text-xs text-muted">
-                        {n}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
+
+            {removedNotice.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-xl border border-danger/50 bg-danger/20 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-danger">
+                    <Icon name="Trash2" className="size-3.5 shrink-0" />
+                    Furniture removed on save
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setRemovedNotice([])}
+                    className="shrink-0 text-danger/70 hover:text-danger cursor-pointer"
+                    aria-label="Dismiss"
+                  >
+                    <Icon name="X" className="size-3.5" />
+                  </button>
+                </div>
+                {removedNotice.map((n, i) => (
+                  <p key={i} className="text-xs text-danger">
+                    {n}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {outOfView.length > 0 && (
+              <div className="shrink-0 rounded-xl border border-warning/30 bg-warning/15 p-2.5">
+                <div className="flex items-start gap-2">
+                  <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                  <p className="min-w-0 flex-1 text-xs text-warning">
+                    {outOfView.length === 1 ? "One piece is" : `${outOfView.length} pieces are`} outside this
+                    camera&apos;s view:{" "}
+                    {outOfView.map((f) => catalogueEntry(f.kind)?.label ?? f.kind).join(", ")}. They will not
+                    appear in the generated image.
+                  </p>
+                  <Button size="sm" variant="outline" className="shrink-0" onClick={bringIntoView}>
+                    Bring into view
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {occlusion.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-xl border border-warning/30 bg-warning/15 p-2.5">
+                {occlusion.map((v) => (
+                  <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
+                    <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
+                    <span>{occlusionMessage(v)}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {notice.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-xl border border-border bg-surface-2 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs font-medium text-foreground">Adjusted on save</p>
+                  <button
+                    type="button"
+                    onClick={() => setNotice([])}
+                    className="shrink-0 text-faint hover:text-muted cursor-pointer"
+                    aria-label="Dismiss"
+                  >
+                    <Icon name="X" className="size-3.5" />
+                  </button>
+                </div>
+                {notice.map((n, i) => (
+                  <p key={i} className="text-xs text-muted">
+                    {n}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
 
           <aside className="w-96 shrink-0 space-y-4 overflow-y-auto">

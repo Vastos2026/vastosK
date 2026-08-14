@@ -133,9 +133,15 @@ async function callModel<T>(
         thinkingConfig = { thinkingBudget: opts.thinkingBudget };
       }
     } else {
-      // Gemini 3.x Flash/Flash-Lite can't fully disable thinking — "minimal"
-      // is its lowest tier, the closest analog to budget:0's intent.
-      thinkingConfig = { thinkingLevel: opts.thinkingBudget === 0 ? "minimal" : "high" };
+      // Gemini 3.x Flash/Flash-Lite can't fully disable thinking, and "minimal"
+      // is NOT a universally accepted tier across the 3.x family — live-verified
+      // 400 ("Thinking level MINIMAL is not supported for this model") against
+      // whatever gemini-flash-latest currently resolves to, and independently
+      // confirmed against gemini-3.1-flash-lite and other 3.x variants, which
+      // only accept "low"/"medium"/"high". "low" is the tier that's actually
+      // supported everywhere in the 3.x family, so it's the closest analog to
+      // budget:0's intent that won't itself 400.
+      thinkingConfig = { thinkingLevel: opts.thinkingBudget === 0 ? "low" : "high" };
     }
   }
 
