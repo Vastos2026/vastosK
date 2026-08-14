@@ -60,6 +60,12 @@ export function generateRoomImage(input: {
    * Optional, and the prompt degrades to the old unmapped line without it.
    */
   roomSpec?: { width: number; depth: number; openings: PlacedOpening[]; cameraView?: GreyboxCameraView };
+  /**
+   * The numbered annotation render. Forwarded as a second reference image for
+   * the Gemini image model only; the server drops it for FLUX.2. See the
+   * route's own note on why FLUX must never see numerals.
+   */
+  greyboxAnnotatedKey?: string;
 }): Promise<{ imageUrl: string; key: string; prompt: string }> {
   return postJson("/api/generate-room-image", input);
 }

@@ -13,7 +13,7 @@ import { MAX_FURNITURE, resolveOcclusion, resolvePlacement, type OcclusionViolat
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { cameraCoverage, greyboxCamera } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
-import { layoutSize } from "@/lib/pipeline/empty-plan";
+import { roomSpecFor } from "@/lib/greybox/room-spec";
 import { generateRoomImage } from "@/lib/design-plan-client";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
@@ -156,8 +156,28 @@ function FurnishContent({
   // them ahead of the first useState costs nothing and lets that state's
   // initializer place its seed against the real camera — see
   // defaultArrangementFor's doc comment for why a camera-blind seed was a bug.
-  const { width, height: depth } = layoutSize(room);
-  const openings = room.placedOpenings ?? EMPTY_OPENINGS;
+  // Derived through the SAME helper ensureGreybox uses, not hand-rolled here.
+  // This previously read `room.placedOpenings ?? []`, which silently diverged
+  // for a room added by hand in Room Confirmation: such a room has door and
+  // window COUNTS per side but no positions, and ensureGreybox spreads them
+  // evenly along their walls (seedPlacedOpenings) before rendering. The editor
+  // saw none of them, so it picked a camera for an opening-free box while the
+  // actual reference image was rendered from a different viewpoint, and the
+  // furniture the user arranged here was framed by the wrong camera.
+  //
+  // Memoised on the geometry inputs specifically, NOT on `room`: the store
+  // hands back a new room object on every furniture edit, and keying this on
+  // the object would rebuild the camera each time a piece moves. Never
+  // rebuilding the camera on a furniture-only edit is the guarantee this whole
+  // editor exists to provide (see furniture-editor-canvas.tsx's camera effect).
+  const base = useMemo(
+    () => roomSpecFor(room),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [room.width, room.height, room.placedOpenings, room.openings, room.cameraView],
+  );
+  const width = base.width;
+  const depth = base.depth;
+  const openings = base.openings.length ? base.openings : EMPTY_OPENINGS;
   const catalogue = furnitureForRoomType(room.type);
 
   // Local mirror of room.cameraView so the 3D preview switches the instant
@@ -493,6 +513,11 @@ function FurnishContent({
         greyboxMaskKey: gb.greyboxMaskKey,
         projected: gb.projected,
         furniture: savedFurniture,
+        // Same payload the gallery pages send: lets the prompt name which
+        // grey box each piece is. `cameraView` rides along, so a room the
+        // user re-angled here is described from the angle it renders at.
+        roomSpec: { width, depth, openings, cameraView },
+        greyboxAnnotatedKey: gb.greyboxAnnotatedKey,
       });
       const createdAt = new Date().toISOString();
       addGeneration(projectId, room.id, {

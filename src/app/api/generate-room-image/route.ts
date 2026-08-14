@@ -24,6 +24,7 @@ import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject, isOwnedGreyboxKey } from "@/lib/supabase/projects";
 import { countOpenings } from "@/lib/greybox/count-openings";
+import { getProviderPrimary } from "@/lib/settings/provider-settings";
 import type { ProjectedOpening } from "@/lib/greybox/render-mask";
 import type { GreyboxCameraView, GreyboxOpening } from "@/lib/greybox/types";
 import { GREYBOX_RENDER_W, GREYBOX_RENDER_H } from "@/lib/greybox/dimensions";
@@ -59,6 +60,15 @@ interface Body {
    * which is what every caller produced before this existed.
    */
   roomSpec?: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
+  /**
+   * The annotated greybox: the same render with a numbered badge over each
+   * furniture piece (render-annotated.ts). Sent as a SECOND reference image
+   * to the Gemini (Nano Banana) model only, as a key mapping box number to
+   * item. Deliberately never sent to FLUX.2, which has no reasoning pass,
+   * treats references as structural conditioning, and would likely reproduce
+   * the numerals as markings on the furniture.
+   */
+  greyboxAnnotatedKey?: string;
 }
 
 async function loadGreyboxDataUri(key: string): Promise<string> {
@@ -81,8 +91,18 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, universalInput, room, designSpec, greyboxKey, greyboxMaskKey, projected, furniture, roomSpec } =
-    body;
+  const {
+    projectId,
+    universalInput,
+    room,
+    designSpec,
+    greyboxKey,
+    greyboxMaskKey,
+    projected,
+    furniture,
+    roomSpec,
+    greyboxAnnotatedKey,
+  } = body;
   if (!projectId || !universalInput || !room || !designSpec) {
     return Response.json(
       { error: "projectId, universalInput, room and designSpec are required" },
@@ -126,6 +146,12 @@ export async function POST(request: Request) {
   if (greyboxMaskKey && !isOwnedGreyboxKey(greyboxMaskKey, projectId)) {
     return Response.json({ error: "Not found" }, { status: 403 });
   }
+  // Same prefix authorisation as the other two keys. Without it an
+  // authenticated caller could point this at another project's stored render
+  // and have it loaded server-side and fed to the model as a reference.
+  if (greyboxAnnotatedKey && !isOwnedGreyboxKey(greyboxAnnotatedKey, projectId)) {
+    return Response.json({ error: "Not found" }, { status: 403 });
+  }
 
   try {
     // Re-derived from the stored mask rather than trusting a client-sent
@@ -136,14 +162,36 @@ export async function POST(request: Request) {
       ledger = await countOpenings(await getObject(greyboxMaskKey), projected ?? []);
     }
 
+    // Which model will actually run, from the same setting the console's
+    // model switcher writes. It decides BOTH the prompt flow (prose for
+    // FLUX.2's prose-trained Mistral encoder, structured for Gemini's
+    // reasoning pass) and whether the numbered annotation image is sent.
+    const provider = await getProviderPrimary("image_gen");
+    const useNumbered = provider === "gemini" && !!greyboxAnnotatedKey;
+
     const prompt = await buildRoomPrompt(universalInput, room, designSpec, {
       hasGreybox: !!greyboxKey,
       ledger,
       furniture,
       roomSpec,
+      provider,
+      numberedFurniture: useNumbered,
     });
-    const referenceImages = greyboxKey ? [await loadGreyboxDataUri(greyboxKey)] : undefined;
-    const referenceImageUrls = greyboxKey ? [`/api/render?key=${encodeURIComponent(greyboxKey)}`] : undefined;
+    // The annotated copy goes SECOND so "Image 1" in the prompt keeps meaning
+    // the clean conditioning render, which every geometry instruction refers
+    // to. Order here is part of the prompt's contract, not a detail.
+    const referenceImages = greyboxKey
+      ? [
+          await loadGreyboxDataUri(greyboxKey),
+          ...(useNumbered ? [await loadGreyboxDataUri(greyboxAnnotatedKey!)] : []),
+        ]
+      : undefined;
+    const referenceImageUrls = greyboxKey
+      ? [
+          `/api/render?key=${encodeURIComponent(greyboxKey)}`,
+          ...(useNumbered ? [`/api/render?key=${encodeURIComponent(greyboxAnnotatedKey!)}`] : []),
+        ]
+      : undefined;
     const image = await generateImage(
       prompt,
       { projectId, userId: guard.id },

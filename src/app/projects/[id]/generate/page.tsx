@@ -16,6 +16,7 @@ import { RoomNavRail } from "@/components/project/room-nav-rail";
 import { FloorPlanSidePanel } from "@/components/project/floor-plan-side-panel";
 import { uid, cn, slugifyRoomName } from "@/lib/utils";
 import type { Room, RoomCard, RoomGeneration } from "@/lib/types";
+import { roomSpecFor } from "@/lib/greybox/room-spec";
 
 // Stable reference for the "no rooms generating" case — `?? []` in the
 // selector below would otherwise allocate a NEW array every call, which
@@ -142,6 +143,9 @@ export default function GeneratePage() {
         greyboxMaskKey: gb?.greyboxMaskKey,
         projected: gb?.projected,
         furniture: room.furniture,
+        // See design/page.tsx: identifies each grey box in the prompt.
+        roomSpec: roomSpecFor(room),
+        greyboxAnnotatedKey: gb?.greyboxAnnotatedKey,
       });
       addGeneration(id, room.id, {
         id: uid("gen"),

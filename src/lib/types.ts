@@ -93,6 +93,17 @@ export interface Room {
   /** Pass B opening mask, stored beside greyboxKey as `{greyboxKey}-mask`. */
   greyboxMaskKey?: string;
   /**
+   * The same conditioning render with numbered badges drawn over each
+   * furniture piece (see greybox/render-annotated.ts) — a second reference
+   * image for the Gemini (Nano Banana) image model ONLY, never sent to
+   * FLUX.2. Stored beside greyboxKey as `{greyboxKey}-annotated`. Optional
+   * and additive: absent whenever the room has no furniture in frame to
+   * badge (render-mask.ts's renderGreyboxBundle produces no annotated image
+   * at all in that case, rather than an unmodified duplicate), and for any
+   * room rendered before this field existed.
+   */
+  greyboxAnnotatedKey?: string;
+  /**
    * Content hash of everything the greybox render depends on. When this
    * differs from a freshly computed hash, the cached greyboxKey is stale and
    * must be re-rendered. Fixes the bug where editing a door in the Plan

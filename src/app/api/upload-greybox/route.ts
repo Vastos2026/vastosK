@@ -13,6 +13,17 @@
  * trusting this response, so a stale or tampered client value can't leak
  * into the prompt.
  *
+ * Optionally also stores a THIRD image, the annotated reference (same
+ * conditioning render with numbered furniture badges drawn on — see
+ * greybox/render-annotated.ts), when the room had furniture to badge.
+ * `annotatedDataUri`/`annotatedKey` are absent, not merely empty, for a
+ * furniture-free room or one whose furniture all falls outside the locked
+ * camera's frame — render-mask.ts's renderGreyboxBundle produces no
+ * annotated image at all in that case rather than a wasted duplicate. Stored
+ * under the same key's `-annotated` suffix, alongside `-mask`, so it shares
+ * the `renders/<projectId>/greybox/` prefix `isOwnedGreyboxKey`
+ * (src/lib/supabase/projects.ts) authorises by.
+ *
  * No AI/provider cost here — this is a plain storage PUT — so no `checkUsage`,
  * just auth + a modest rate limit against abuse.
  */
@@ -34,6 +45,8 @@ interface Body {
   projectId?: string;
   dataUri?: string;
   maskDataUri?: string;
+  /** Optional third reference image — see this route's header comment. */
+  annotatedDataUri?: string;
   projected?: ProjectedOpening[];
 }
 
@@ -66,6 +79,16 @@ export async function POST(request: Request) {
   if (image instanceof Response) return image;
   const maskBytes = decodePng(body.maskDataUri, "maskDataUri");
   if (maskBytes instanceof Response) return maskBytes;
+  // Genuinely optional, unlike the two above — decodePng is only called when
+  // the client actually sent one, so a furniture-free room's request (no
+  // `annotatedDataUri` key at all) never fails a "must be a data URI" check
+  // for a field it was never supposed to send.
+  let annotatedBytes: Buffer | undefined;
+  if (body.annotatedDataUri) {
+    const decoded = decodePng(body.annotatedDataUri, "annotatedDataUri");
+    if (decoded instanceof Response) return decoded;
+    annotatedBytes = decoded;
+  }
 
   // Decode + count BEFORE either putObject call below. sharp only actually
   // parses the PNG here — base64-valid-but-not-a-real-PNG bytes pass
@@ -85,8 +108,13 @@ export async function POST(request: Request) {
 
   const key = `renders/${body.projectId}/greybox/${randomUUID()}.png`;
   const maskKey = `${key}-mask`;
+  // Same prefix as `key`/`maskKey` (`renders/<projectId>/greybox/...`),
+  // required by `isOwnedGreyboxKey` — a key stored anywhere else is rejected
+  // with a 403 the moment /api/generate-room-image tries to read it back.
+  const annotatedKey = annotatedBytes ? `${key}-annotated` : undefined;
   await putObject(key, image, "image/png");
   await putObject(maskKey, maskBytes, "image/png");
+  if (annotatedBytes) await putObject(annotatedKey!, annotatedBytes, "image/png");
 
-  return Response.json({ key, maskKey, ledger });
+  return Response.json({ key, maskKey, annotatedKey, ledger });
 }

@@ -12,6 +12,7 @@ import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn, uid } from "@/lib/utils";
+import { roomSpecFor } from "@/lib/greybox/room-spec";
 
 /**
  * Design step (revamp Workstream 8, plan flow step 5/5a) — the ONE global
@@ -205,6 +206,12 @@ export default function DesignPage() {
               greyboxMaskKey: gb?.greyboxMaskKey,
               projected: gb?.projected,
               furniture: room.furniture,
+              // Lets the server rebuild this room's locked camera and name
+              // which grey box each furniture piece is. Derived through the
+              // shared roomSpecFor so it cannot drift from the spec
+              // ensureGreybox actually rendered.
+              roomSpec: roomSpecFor(room),
+              greyboxAnnotatedKey: gb?.greyboxAnnotatedKey,
             });
             useVasto.getState().addGeneration(id, room.id, {
               id: uid("gen"),

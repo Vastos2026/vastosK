@@ -43,7 +43,10 @@ interface VastoState {
   setRoomGreybox: (
     id: string,
     roomId: string,
-    patch: Pick<Room, "furniture" | "greyboxKey" | "greyboxMaskKey" | "greyboxHash" | "greyboxLedger">,
+    patch: Pick<
+      Room,
+      "furniture" | "greyboxKey" | "greyboxMaskKey" | "greyboxAnnotatedKey" | "greyboxHash" | "greyboxLedger"
+    >,
   ) => void;
   /** Append a room to the plan (lasso-extracted rooms). */
   addRoom: (id: string, room: Room) => void;

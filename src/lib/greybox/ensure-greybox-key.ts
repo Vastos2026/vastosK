@@ -5,8 +5,7 @@ import { greyboxHashFor } from "./greybox-hash";
 import { toWorldFurniture } from "./furniture-layout";
 import { greyboxCamera, projectOpenings } from "./camera";
 import { GREYBOX_ASPECT } from "./dimensions";
-import { seedPlacedOpenings } from "@/lib/plan-editor/geometry";
-import { layoutSize } from "@/lib/pipeline/empty-plan";
+import { roomSpecFor } from "./room-spec";
 import type { GreyboxRoomSpec } from "./types";
 import type { Room } from "@/lib/types";
 
@@ -15,7 +14,10 @@ import type { Room } from "@/lib/types";
  * locked camera's pixel projection belongs in the store) — it's derived fresh
  * on every call (see below) so callers always have it, cache hit or miss.
  */
-export type GreyboxResult = Pick<Room, "greyboxKey" | "greyboxMaskKey" | "greyboxHash" | "greyboxLedger"> & {
+export type GreyboxResult = Pick<
+  Room,
+  "greyboxKey" | "greyboxMaskKey" | "greyboxAnnotatedKey" | "greyboxHash" | "greyboxLedger"
+> & {
   projected: ProjectedOpening[];
 };
 
@@ -48,30 +50,29 @@ export type GreyboxResult = Pick<Room, "greyboxKey" | "greyboxMaskKey" | "greybo
  * and the R2 upload, never this.
  */
 export async function ensureGreybox(projectId: string, room: Room): Promise<GreyboxResult | undefined> {
-  const openings = room.placedOpenings?.length
-    ? room.placedOpenings
-    : // A manually-entered room never passed through the Plan editor, so it has
-      // door/window counts per side but no positions. Spreading them evenly along
-      // their walls gives real opening conditioning instead of falling back to
-      // text-only. room.shape is NOT required: it is the rectangle on the plan
-      // IMAGE, which the greybox never reads.
-      seedPlacedOpenings(room.openings ?? []);
+  // roomSpecFor is the ONE place width/depth/openings/cameraView are derived
+  // from a Room — the server now reconstructs the same locked camera from
+  // this exact payload (see room-spec.ts's own doc comment) to describe
+  // which grey box in the annotated reference image is which piece of
+  // furniture, so this file must not keep a second, parallel derivation that
+  // could drift from it. It covers the same two rules the inlined version
+  // here used to: openings fall back to seedPlacedOpenings(room.openings)
+  // for a manually-entered room that never passed through the Plan editor
+  // (door/window counts per side but no positions), and sizes come from
+  // layoutSize rather than room.width/room.height directly, since those are
+  // undefined for a room whose dimensions were never legible on the plan.
+  const { width, depth, openings, cameraView } = roomSpecFor(room);
 
-  // See layoutSize's own doc comment: it must not be used to build an AI
-  // prompt or display a size as fact. This doesn't — the greybox's contract is
-  // camera + openings only, never a claim about the room's real size — so an
-  // internal rendering proportion is a deliberate narrow exception.
-  const { width, height } = layoutSize(room);
   // Built once, before the cache-hit branch returns, so both branches can
   // derive `projected` from the identical spec a fresh render would use.
   const spec: GreyboxRoomSpec = {
     width,
-    depth: height,
+    depth,
     openings,
-    furniture: toWorldFurniture(room.furniture ?? [], width, height),
+    furniture: toWorldFurniture(room.furniture ?? [], width, depth),
     // Undefined here means "auto", which is greyboxCamera's own default, so a
     // room that never chose an angle renders exactly as it always did.
-    cameraView: room.cameraView,
+    cameraView,
   };
 
   const hash = greyboxHashFor({ ...room, placedOpenings: openings });
@@ -79,6 +80,7 @@ export async function ensureGreybox(projectId: string, room: Room): Promise<Grey
     return {
       greyboxKey: room.greyboxKey,
       greyboxMaskKey: room.greyboxMaskKey,
+      greyboxAnnotatedKey: room.greyboxAnnotatedKey,
       greyboxHash: room.greyboxHash,
       greyboxLedger: room.greyboxLedger,
       // Same camera construction renderGreyboxBundle would use (greyboxCamera
@@ -90,17 +92,22 @@ export async function ensureGreybox(projectId: string, room: Room): Promise<Grey
     };
   }
 
-  const { dataUri, maskDataUri, projected } = renderGreyboxBundle(spec);
+  const { dataUri, maskDataUri, annotatedDataUri, projected } = await renderGreyboxBundle(spec);
 
   const res = await fetch("/api/upload-greybox", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, dataUri, maskDataUri, projected }),
+    // JSON.stringify drops `annotatedDataUri` entirely when it's undefined
+    // (a furniture-free room, or one with nothing in this camera's frame —
+    // see renderGreyboxBundle's own doc comment), so /api/upload-greybox
+    // sees exactly the same shape it always did for such a room.
+    body: JSON.stringify({ projectId, dataUri, maskDataUri, annotatedDataUri, projected }),
   });
   if (!res.ok) throw new Error(`Greybox upload failed (${res.status})`);
-  const { key, maskKey, ledger } = (await res.json()) as {
+  const { key, maskKey, annotatedKey, ledger } = (await res.json()) as {
     key: string;
     maskKey: string;
+    annotatedKey?: string;
     ledger: { doors: number; windows: number };
   };
   // `projected` here is renderGreyboxBundle's own return value, not a second
@@ -112,5 +119,12 @@ export async function ensureGreybox(projectId: string, room: Room): Promise<Grey
   // (greyboxCamera is deterministic — same spec, same aspect, same camera —
   // and projectOpenings has no other input), but there's no reason to pay for
   // a second call when the first one's result is already in hand.
-  return { greyboxKey: key, greyboxMaskKey: maskKey, greyboxHash: hash, greyboxLedger: ledger, projected };
+  return {
+    greyboxKey: key,
+    greyboxMaskKey: maskKey,
+    greyboxAnnotatedKey: annotatedKey,
+    greyboxHash: hash,
+    greyboxLedger: ledger,
+    projected,
+  };
 }

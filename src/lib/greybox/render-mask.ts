@@ -11,6 +11,7 @@ import {
   disposeScene,
   renderToContext,
 } from "./render-to-data-uri";
+import { annotateFurniture, type FurnitureBadge } from "./render-annotated";
 import type { GreyboxRoomSpec } from "./types";
 
 // projectOpenings/ProjectedOpening live in ./camera (no "use client") rather
@@ -104,16 +105,70 @@ function classPixelIndex(labelCtx: CanvasRenderingContext2D): Map<GreyboxClass, 
 }
 
 /**
- * Everything a save needs, from one set of renders through one camera: the
- * conditioning PNG, the Pass B mask PNG, and each opening's projected pixel.
- * They MUST share a camera instance — a ledger derived from a different
- * viewpoint than the reference image is worse than no ledger at all.
+ * Pixel position for each furniture piece's numbered badge in the annotated
+ * reference image, projected through the same locked camera as the
+ * conditioning render, the mask and the opening ledger. Deliberately a
+ * separate function from `furniture-descriptors.ts`'s `describeFurniture`
+ * rather than a shared helper: that module returns a text PHRASE for the
+ * FLUX prompt line (out of this task's scope — do not touch), this one
+ * returns a PIXEL for a canvas draw call, and decoupling them means a change
+ * meant for one image can never silently move the other's numbers. The two
+ * still agree on the underlying geometry test (same eye height 1.5ft, same
+ * mandatory in-front dot-product check camera.ts's `projectOpenings` and
+ * `score` both already perform) because both are projecting the identical
+ * furniture centres through the identical camera — there is only one correct
+ * answer for "is this point on screen", not two implementations that happen
+ * to match.
+ *
+ * 1-based numbering (`label = index + 1`) over `spec.furniture`'s own order —
+ * the same order `toWorldFurniture` preserves from `Room.furniture` (it only
+ * ever drops unknown-kind entries, never reorders) — so the prompt's per-box
+ * text and this image's painted numerals name the same piece. A piece behind
+ * the camera or outside the frame is skipped entirely, matching
+ * `describeFurniture`'s own "not in frame -> not described" rule: a badge on
+ * a piece the model cannot otherwise see would point at nothing.
  */
-export function renderGreyboxBundle(spec: GreyboxRoomSpec): {
+function projectFurniture(spec: GreyboxRoomSpec, camera: THREE.PerspectiveCamera): FurnitureBadge[] {
+  const forward = camera.getWorldDirection(new THREE.Vector3());
+  const badges: FurnitureBadge[] = [];
+  (spec.furniture ?? []).forEach((f, index) => {
+    // Same low judging height furniture-descriptors.ts uses: these are
+    // floor-seated proxies, not eye-height subjects.
+    const point = new THREE.Vector3(f.x, 1.5, f.z);
+    const inFront = point.clone().sub(camera.position).dot(forward) > 0;
+    const p = point.clone().project(camera);
+    if (!inFront || Math.abs(p.x) > 1 || Math.abs(p.y) > 1) return;
+    badges.push({
+      label: index + 1,
+      px: Math.round(((p.x + 1) / 2) * GREYBOX_RENDER_W),
+      py: Math.round(((1 - p.y) / 2) * GREYBOX_RENDER_H),
+    });
+  });
+  return badges;
+}
+
+/**
+ * Everything a save needs, from one set of renders through one camera: the
+ * conditioning PNG, the Pass B mask PNG, the Gemini-only annotated PNG (when
+ * there's furniture to badge), and each opening's projected pixel. The first
+ * three MUST share a camera instance — a ledger, or a badge, derived from a
+ * different viewpoint than the reference image is worse than no ledger/badge
+ * at all.
+ *
+ * `annotatedDataUri` is `undefined`, not an unmodified copy of `dataUri`,
+ * whenever there is nothing to badge — either the room has no furniture, or
+ * every piece it has falls outside this camera's frame. Drawing and
+ * returning an identical-looking second copy of the conditioning image would
+ * cost a real canvas pass plus (via `ensureGreybox`) a wasted upload and a
+ * stored object nothing ever points at usefully; `undefined` lets callers
+ * skip both and simply omit the second reference image from the Gemini call.
+ */
+export async function renderGreyboxBundle(spec: GreyboxRoomSpec): Promise<{
   dataUri: string;
   maskDataUri: string;
+  annotatedDataUri?: string;
   projected: ProjectedOpening[];
-} {
+}> {
   const camera = greyboxCamera(spec, GREYBOX_ASPECT);
 
   // Declared here, not as `const` inside the try below, so `finally` can
@@ -141,9 +196,17 @@ export function renderGreyboxBundle(spec: GreyboxRoomSpec): {
     mask = buildMaskScene(spec);
     const maskCtx = renderToContext(mask, camera, { supersample: false, antialias: false });
 
+    const dataUri = realCtx.canvas.toDataURL("image/png");
+    const badges = projectFurniture(spec, camera);
+    // See this function's own doc comment: no badges means no annotated
+    // image at all, not a wasted redraw-and-upload of an identical copy.
+    const annotatedDataUri =
+      badges.length > 0 ? await annotateFurniture(dataUri, badges, GREYBOX_RENDER_W, GREYBOX_RENDER_H) : undefined;
+
     return {
-      dataUri: realCtx.canvas.toDataURL("image/png"),
+      dataUri,
       maskDataUri: maskCtx.canvas.toDataURL("image/png"),
+      annotatedDataUri,
       projected: projectOpenings(spec, camera),
     };
   } finally {

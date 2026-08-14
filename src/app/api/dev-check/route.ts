@@ -26,11 +26,12 @@ import { countOpenings } from "@/lib/greybox/count-openings";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { checkOcclusion, footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildGreyboxScene } from "@/lib/greybox/build-scene";
+import { roomSpecFor } from "@/lib/greybox/room-spec";
 import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import * as THREE from "three";
 import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
 import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
-import type { PlacedFurniture } from "@/lib/types";
+import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
 import { clamp } from "@/lib/ai/prompting/design-planning";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
@@ -710,13 +711,14 @@ export async function GET() {
   };
 
   await checkAsync("the verbose design spec never reaches the prompt", async () => {
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 2 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 2 } });
     assert(!p.includes("x".repeat(50)), "a verbose field leaked into the prompt");
     assert(!p.includes("y".repeat(50)), "verbose room guidance leaked into the prompt");
   });
 
   await checkAsync("prompt stays under the 1800-char cap", async () => {
     const p = await buildRoomPrompt(uiInput, { ...uiRoom, additional_notes: "z".repeat(2000) }, dspec, {
+      provider: "runware",
       hasGreybox: true,
       ledger: { doors: 1, windows: 2 },
       furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
@@ -725,7 +727,7 @@ export async function GET() {
   });
 
   await checkAsync("the opening census uses number words, not digits", async () => {
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 2 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 2 } });
     assert(p.includes("one door and two windows"), `expected word-form counts, got: ${p}`);
     assert(!/\b[0-9]+ (window|door)/.test(p), "digits used for opening counts");
   });
@@ -736,7 +738,7 @@ export async function GET() {
     // extras. Positive phrasing only: state that the rest is solid wall, never
     // "no extra doors" — naming the unwanted object on a model with no
     // negativePrompt channel makes it MORE likely to appear.
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 2, windows: 1 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 2, windows: 1 } });
     assert(p.includes("exactly two doors and one window"), `expected an exact-count claim, got: ${p}`);
     assert(p.includes("only where Image 1 shows them"), `expected the placement restriction, got: ${p}`);
     assert(p.includes("Every other surface is unbroken solid wall."), `expected the solid-wall closure, got: ${p}`);
@@ -749,7 +751,7 @@ export async function GET() {
     // Section order is a truncation-safety mechanism, and the count is the
     // single most important fact in the prompt. It must not drift a paragraph
     // away from the sentences that define what a door and a window look like.
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 1 } });
     const defIdx = p.indexOf("A bright panel is a window.");
     const countIdx = p.indexOf("exactly one door and one window");
     assert(defIdx >= 0 && countIdx > defIdx, `census must follow the door/window definitions, got: ${p}`);
@@ -758,6 +760,7 @@ export async function GET() {
 
   await checkAsync("no deleted phrasing survives", async () => {
     const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
       furniture: [f("1", "bed")],
@@ -768,7 +771,7 @@ export async function GET() {
   });
 
   await checkAsync("a room with no openings gets a positive statement", async () => {
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 0, windows: 0 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 0, windows: 0 } });
     assert(
       p.includes("Every wall in this room is unbroken solid wall, with no doors and no windows."),
       `expected positive phrasing, got: ${p}`,
@@ -790,11 +793,13 @@ export async function GET() {
       "fixture must present furniture in genuinely different orders, or this proves nothing",
     );
     const pA = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
       furniture: furnitureA,
     });
     const pB = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
       furniture: furnitureB,
@@ -817,7 +822,7 @@ export async function GET() {
     let threw = false;
     let message = "";
     try {
-      await buildRoomPrompt(overlongInput, uiRoom, dspec, { hasGreybox: false });
+      await buildRoomPrompt(overlongInput, uiRoom, dspec, { provider: "runware", hasGreybox: false });
     } catch (e) {
       threw = true;
       message = (e as Error).message;
@@ -841,6 +846,7 @@ export async function GET() {
       design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
     };
     const p = await buildRoomPrompt(overflowInput, uiRoom, dspec, {
+      provider: "runware",
       hasGreybox: false,
       furniture: [f("1", "bed")],
     });
@@ -861,6 +867,7 @@ export async function GET() {
     "a service room (Bathroom) with no furniture gets the positive-contents clause and never a sofa/living-room material phrase",
     async () => {
       const p = await buildRoomPrompt(uiInput, bathroomRoom, dspec, {
+        provider: "runware",
         hasGreybox: true,
         ledger: { doors: 1, windows: 1 },
         furniture: [],
@@ -882,6 +889,7 @@ export async function GET() {
     "a Pooja Room with no furniture placed yet also gets its own positive-contents clause",
     async () => {
       const p = await buildRoomPrompt(uiInput, poojaRoom, dspec, {
+        provider: "runware",
         hasGreybox: true,
         ledger: { doors: 1, windows: 0 },
         furniture: [],
@@ -895,6 +903,7 @@ export async function GET() {
     "a service room WITH furniture placed (e.g. a pooja mandir) still describes that furniture normally, not the fallback clause",
     async () => {
       const p = await buildRoomPrompt(uiInput, poojaRoom, dspec, {
+        provider: "runware",
         hasGreybox: true,
         ledger: { doors: 1, windows: 0 },
         furniture: [f("1", "pooja-mandir")],
@@ -907,6 +916,7 @@ export async function GET() {
     "the service-room contents clause still respects the 1800-char cap under a worst-case long accent/notes input",
     async () => {
       const p = await buildRoomPrompt(uiInput, { ...bathroomRoom, additional_notes: "z".repeat(2000) }, dspec, {
+        provider: "runware",
         hasGreybox: true,
         ledger: { doors: 1, windows: 1 },
         furniture: [],
@@ -925,7 +935,7 @@ export async function GET() {
   // a fixed, always-present, positively-phrased addition to the `medium`
   // boilerplate line) ----
   await checkAsync("the wall surface-texture clause is present in a built prompt", async () => {
-    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 1 } });
     assert(p.includes("flat matte"), `expected the matte surface clause, got: ${p}`);
     for (const shiny of ["sheen", "glossy", "roller-nap", "satin"]) {
       assert(!p.toLowerCase().includes(shiny), `prompt still asks for "${shiny}", which reads as the oily wall look`);
@@ -942,6 +952,7 @@ export async function GET() {
         design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
       };
       const p = await buildRoomPrompt(overflowInput, uiRoom, dspec, {
+        provider: "runware",
         hasGreybox: false,
         furniture: [f("1", "bed")],
       });
@@ -1620,6 +1631,159 @@ export async function GET() {
     }
   });
 
+  // Minimal Room the roomSpecFor checks below vary one field at a time from.
+  const baseRoom: Room = {
+    id: "r1",
+    name: "Hall",
+    type: "Living Room",
+    width: 14,
+    height: 11,
+    x: 0,
+    y: 0,
+    color: "#888888",
+  };
+
+  // ---- roomSpecFor: the client/server camera agreement ----
+  // The server rebuilds the locked camera from this payload purely so the
+  // prompt can say "the long low box at centre-left is the sofa". If it
+  // reconstructs a different camera than the one that rendered the reference
+  // image, every pointer phrase names the wrong box — worse than having no
+  // phrases at all, because a confident wrong pointer actively misleads.
+
+  check("roomSpecFor: a room with hand-placed openings passes them through untouched", () => {
+    const placed: PlacedOpening[] = [
+      { id: "a", type: "door", wall: "south", t: 0.4, widthFt: 3 },
+      { id: "b", type: "window", wall: "east", t: 0.6, widthFt: 4 },
+    ];
+    const out = roomSpecFor({ ...baseRoom, placedOpenings: placed });
+    eq(out.openings, placed, "hand-placed openings must not be re-derived");
+  });
+
+  check("roomSpecFor: a manually added room gets its openings SEEDED, not dropped", () => {
+    // The divergence this helper exists to prevent. A room added by hand in
+    // Room Confirmation has counts per side but no positions; ensureGreybox
+    // spreads them along their walls before rendering. Returning [] here
+    // would pick a camera for an opening-free box while the real reference
+    // image was rendered from a different viewpoint.
+    const out = roomSpecFor({
+      ...baseRoom,
+      placedOpenings: undefined,
+      openings: [
+        { type: "door", side: "south", connectsTo: null },
+        { type: "window", side: "north", connectsTo: "exterior" },
+      ],
+    });
+    eq(out.openings.length, 2, `expected two seeded openings, got ${JSON.stringify(out.openings)}`);
+    assert(
+      out.openings.every((o) => o.t > 0 && o.t < 1 && o.widthFt > 0),
+      "seeded openings must have a real position and width",
+    );
+  });
+
+  check("roomSpecFor: the camera it yields matches the camera the render uses", () => {
+    // The actual invariant, asserted end to end rather than by inspection:
+    // build a camera from roomSpecFor's payload and from a spec assembled the
+    // way ensureGreybox assembles one, and require they land in the same place.
+    const room = {
+      ...baseRoom,
+      placedOpenings: undefined,
+      cameraView: "east" as const,
+      openings: [{ type: "door" as const, side: "west" as const, connectsTo: null }],
+    };
+    const payload = roomSpecFor(room);
+    const fromPayload = greyboxCamera(
+      { width: payload.width, depth: payload.depth, openings: payload.openings, cameraView: payload.cameraView },
+      GREYBOX_ASPECT,
+    );
+    const asRendered = greyboxCamera(
+      {
+        width: payload.width,
+        depth: payload.depth,
+        openings: payload.openings,
+        cameraView: room.cameraView,
+        // Furniture never affects camera selection, so its presence here must
+        // make no difference. If it ever does, this check catches it.
+        furniture: [{ kind: "sofa", x: 0, z: 0, rotation: 0 }],
+      },
+      GREYBOX_ASPECT,
+    );
+    eq(
+      { x: fromPayload.position.x, z: fromPayload.position.z },
+      { x: asRendered.position.x, z: asRendered.position.z },
+      "the server would rebuild a different camera than the render used",
+    );
+  });
+
+  check("roomSpecFor: the chosen camera view survives the round trip", () => {
+    for (const view of ["auto", "north", "south", "east", "west"] as const) {
+      eq(roomSpecFor({ ...baseRoom, cameraView: view }).cameraView, view, `cameraView "${view}" was lost`);
+    }
+  });
+
+  // ---- The two prompt flows ----
+  // FLUX.2's encoder is Mistral-Small-3.2-24B-Instruct, an instruction-tuned
+  // LLM trained on PROSE; structured input reads to it as poorly-formed
+  // English, and BFL's own guidance is plain prose. Gemini's image path has a
+  // reasoning pass and takes structured input well. So the flows are opposite
+  // by design, and picking the wrong one for a model is a silent quality loss
+  // with no error to notice.
+
+  await checkAsync("the runware flow emits prose, never JSON", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "sofa")],
+    });
+    assert(!p.trimStart().startsWith("{"), "FLUX must not be sent JSON");
+    assert(p.includes("Photorealistic interior photograph"), `expected the prose medium line, got: ${p.slice(0, 120)}`);
+  });
+
+  await checkAsync("the gemini flow emits parseable JSON carrying the same priorities", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "gemini",
+      hasGreybox: true,
+      ledger: { doors: 2, windows: 1 },
+      furniture: [f("1", "sofa"), f("2", "tv-unit")],
+      roomSpec: { width: 14, depth: 11, openings: [] },
+      numberedFurniture: true,
+    });
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(p) as Record<string, unknown>;
+    } catch {
+      throw new Error(`gemini flow did not emit valid JSON: ${p.slice(0, 200)}`);
+    }
+    const openings = parsed.openings as { doors?: number; windows?: number } | undefined;
+    eq(openings?.doors, 2, "door count missing or wrong in the JSON flow");
+    eq(openings?.windows, 1, "window count missing or wrong in the JSON flow");
+    // Numbered mode must key furniture off the badge numbers in image 2.
+    const furniture = parsed.furniture as { items?: { box?: number }[] } | undefined;
+    assert(
+      (furniture?.items ?? []).every((i) => typeof i.box === "number"),
+      `numbered mode must emit numeric box keys, got: ${JSON.stringify(furniture)}`,
+    );
+    // And must tell the model not to paint those numerals into the output.
+    assert(/not be reproduced|must NOT/i.test(p), "the JSON never warns against reproducing the badge numerals");
+  });
+
+  await checkAsync("neither flow ever asks for a shiny wall", async () => {
+    // "sheen" specifically caused the reported oily walls. Guard both flows,
+    // not just the prose one.
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider,
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 1 },
+        furniture: [f("1", "sofa")],
+        roomSpec: { width: 12, depth: 10, openings: [] },
+      });
+      for (const shiny of ["sheen", "glossy", "roller-nap", "satin"]) {
+        assert(!p.toLowerCase().includes(shiny), `${provider} flow still asks for "${shiny}"`);
+      }
+    }
+  });
+
   // A real assembled prompt, returned alongside the assertions so the exact
   // text that would reach the image model can be read without spending a
   // paid generation. Dev-only, same as everything else in this route.
@@ -1635,6 +1799,7 @@ export async function GET() {
       ],
     };
     promptPreview = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
       furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
@@ -1644,6 +1809,22 @@ export async function GET() {
     promptPreview = `preview failed: ${e instanceof Error ? e.message : String(e)}`;
   }
 
+  // The same room through the Gemini flow, with numbered boxes, so both
+  // prompts can be compared side by side without spending a generation.
+  let geminiPromptPreview: string;
+  try {
+    geminiPromptPreview = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
+      roomSpec: { width: 14, depth: 11, cameraView: "auto", openings: [] },
+      provider: "gemini",
+      numberedFurniture: true,
+    });
+  } catch (e) {
+    geminiPromptPreview = `preview failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     {
@@ -1651,6 +1832,8 @@ export async function GET() {
       failed: failed.length,
       promptPreview,
       promptPreviewChars: promptPreview.length,
+      geminiPromptPreview,
+      geminiPromptPreviewChars: geminiPromptPreview.length,
       results,
     },
     { status: failed.length ? 500 : 200 },

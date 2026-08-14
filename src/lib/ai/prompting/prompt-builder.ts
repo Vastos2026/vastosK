@@ -1,9 +1,16 @@
 import "server-only";
-import { buildFurnitureMaterials, buildMappedFurnitureLine, toWorldFurniture } from "@/lib/greybox/furniture-layout";
+import {
+  buildFurnitureMaterials,
+  buildMappedFurnitureLine,
+  toWorldFurniture,
+  type MaterialTokens,
+} from "@/lib/greybox/furniture-layout";
 import { describeFurniture } from "@/lib/greybox/furniture-descriptors";
 import { greyboxCamera } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import { fnv1a } from "@/lib/greybox/greybox-hash";
+import { catalogueEntry } from "@/lib/greybox/furniture-catalogue";
+import { getProviderPrimary, type ProviderChoice } from "@/lib/settings/provider-settings";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./types";
 import type { GreyboxCameraView, GreyboxOpening, GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
@@ -22,6 +29,28 @@ import type { GreyboxLedger, PlacedFurniture } from "@/lib/types";
  *
  * Section order is a safety mechanism, not style: truncation eats the tail,
  * so geometry goes first and expendable detail goes last.
+ *
+ * TWO FLOWS, chosen by which image model will actually run
+ * (`getProviderPrimary("image_gen")`, overridable via `opts.provider`):
+ *
+ *   - "runware" (FLUX.2 [pro]): everything above. FLUX.2's encoder is
+ *     Mistral-Small-3.2-24B-Instruct, an instruction-tuned LLM trained on
+ *     PROSE — tag lists and structured input read to it as poorly-formed
+ *     English, and Black Forest Labs' own guidance is plain prose. This flow
+ *     is untouched by the JSON flow below: same functions, same budgets,
+ *     same 1,800-char cap.
+ *   - "gemini" (Nano Banana / Nano Banana Pro): `buildGeminiPrompt` below.
+ *     Gemini's image path has an explicit reasoning pass before generation,
+ *     follows long structured instructions well, and JSON-structured
+ *     prompting is an established effective pattern for it — it has no
+ *     512-token encoder cliff, so it gets a generous sanity ceiling instead
+ *     of a hard truncation-safety budget. It carries the SAME information in
+ *     the SAME PRIORITY ORDER as the FLUX flow (openings, then furniture,
+ *     then geometry/surfaces, then colour/lighting, then additional
+ *     requirements), built from the same underlying values so the two flows
+ *     cannot silently drift apart — see `openingCounts`, `mappedFurnitureItems`,
+ *     `roomLabelFor`, `guidanceFor`, `serviceContentsFor` below, each shared
+ *     by both flows.
  */
 
 /** Section 1, R1. Hard ceiling. Throw and fail the job — never send over. */
@@ -34,6 +63,24 @@ const MAX_PROMPT_CHARS = 1800;
 // Furniture identity is the user's stated priority 2, and a full prompt still
 // lands near 1,200 of the 1,800 cap, so the headroom was simply unused.
 const BUDGET = { brief: 240, furniture: 460, accent: 100 } as const;
+
+/**
+ * Gemini-flow sanity ceiling — NOT a truncation budget. `MAX_PROMPT_CHARS`
+ * above exists because FLUX.2's encoder actually cuts text off at that
+ * length; Gemini has no equivalent cliff, so nothing here is ever trimmed to
+ * fit under this number the way the FLUX ladder trims toward 1,800. This
+ * exists only to catch a genuinely pathological input (e.g. a multi-KB
+ * `additional_notes` paste, or a future bug that stops filtering the verbose
+ * DesignSpecification fields) before it reaches a network call, per this
+ * file's "throw rather than send invisibly wrong" rule.
+ *
+ * 12,000 was picked as roughly 6-7x the entire FLUX prompt's cap: generous
+ * enough that JSON's structural overhead (quotes, braces, repeated keys) and
+ * an unclamped accent/guidance field never trip it under any legitimate
+ * input this app produces, while still being a hard, finite number rather
+ * than "however big JSON.stringify happens to make it."
+ */
+const MAX_JSON_PROMPT_CHARS = 12_000;
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
@@ -75,6 +122,19 @@ function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger): stri
 }
 
 /**
+ * The exact door/window counts driving BOTH flows' opening statements —
+ * extracted so the FLUX prose (`openingCensus` below) and the Gemini JSON
+ * flow (`buildGeminiPrompt`'s `openings` field) read the identical numbers
+ * off the identical source instead of two call sites each writing
+ * `ledger?.doors ?? 0` and risking one of them drifting to `openings.length`.
+ * Counts come from the Pass B mask ledger, never from placedOpenings.length —
+ * see openingCensus's doc comment below for why.
+ */
+function openingCounts(ledger?: GreyboxLedger): { doors: number; windows: number } {
+  return { doors: ledger?.doors ?? 0, windows: ledger?.windows ?? 0 };
+}
+
+/**
  * The exact opening count, stated INSIDE the structural contract rather than
  * as its own later stanza.
  *
@@ -98,8 +158,7 @@ function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger): stri
  * tells the model to invent one.
  */
 function openingCensus(ledger?: GreyboxLedger): string {
-  const doors = ledger?.doors ?? 0;
-  const windows = ledger?.windows ?? 0;
+  const { doors, windows } = openingCounts(ledger);
   if (doors === 0 && windows === 0) {
     return "Every wall in this room is unbroken solid wall, with no doors and no windows. ";
   }
@@ -153,9 +212,13 @@ const SERVICE_ROOM_CONTENTS: Record<string, string> = {
  * templates.ts because the prompt_templates row and its admin UI still
  * exist; it simply has no consumer in the image path any more.
  */
+/** Shared shape for the room geometry a camera can be rebuilt from — the same subset of GreyboxRoomSpec both mappedFurnitureItems and the caller's opts.roomSpec already use. */
+type CameraRoomSpec = { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
+
 /**
- * Pairs each in-frame furniture proxy with its material phrase, keyed to the
- * box it actually is in the reference image.
+ * Pairs each in-frame furniture proxy with its material phrase and its
+ * index into the room's own furniture array, keyed to the box it actually
+ * is in the reference image.
  *
  * The camera is rebuilt here from the same `greyboxCamera(spec, aspect)` the
  * render used. That is safe and deliberate rather than duplicated state:
@@ -164,12 +227,20 @@ const SERVICE_ROOM_CONTENTS: Record<string, string> = {
  * so reconstructing it server-side lands on exactly the viewpoint the client
  * rendered from, without shipping camera internals through the request body
  * and without trusting the client to describe its own layout.
+ *
+ * Split out from the old `mappedFurnitureFor` so both flows describe the
+ * SAME set of in-frame pieces, through the SAME camera math, and can never
+ * drift apart: the FLUX flow turns this into one prose sentence via
+ * `buildMappedFurnitureLine` (see the thin wrapper directly below), and the
+ * Gemini flow turns it into per-box JSON entries (`buildGeminiPrompt`),
+ * using `index` as the box number when `opts.numberedFurniture` is set —
+ * that index is exactly the position each piece has in the array the
+ * (separately-built) numbered annotation image is expected to number from.
  */
-function mappedFurnitureFor(
-  roomSpec: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView },
+function mappedFurnitureItems(
+  roomSpec: CameraRoomSpec,
   furniture: PlacedFurniture[],
-  tokens: { wood: string; soft: string; stone: string },
-): string {
+): { index: number; kind: string; phrase: string }[] {
   const full: GreyboxRoomSpec = {
     width: roomSpec.width,
     depth: roomSpec.depth,
@@ -183,10 +254,216 @@ function mappedFurnitureFor(
   // FILTERED world list, not the caller's raw array. Pair against that same
   // filtered list rather than `furniture` or the two can fall out of step.
   const world = full.furniture ?? [];
-  const items = described
+  return described
     .filter((d) => d.inFrame)
-    .map((d) => ({ kind: world[d.index]?.kind ?? d.kind, phrase: d.phrase }));
-  return buildMappedFurnitureLine(items, tokens, BUDGET.furniture);
+    .map((d) => ({ index: d.index, kind: world[d.index]?.kind ?? d.kind, phrase: d.phrase }));
+}
+
+/** FLUX-only: the mapped items above, joined into one prose sentence. Untouched behaviour from before the split. */
+function mappedFurnitureFor(
+  roomSpec: CameraRoomSpec,
+  furniture: PlacedFurniture[],
+  tokens: { wood: string; soft: string; stone: string },
+): string {
+  return buildMappedFurnitureLine(mappedFurnitureItems(roomSpec, furniture), tokens, BUDGET.furniture);
+}
+
+/**
+ * Section 4's room label ("Name, a type" when they differ, else the bare
+ * name) — shared by both flows so a wording change can't drift them apart.
+ */
+function roomLabelFor(room: UniversalInputRoom): string {
+  return room.type && room.type.trim() && room.type.trim().toLowerCase() !== room.name.trim().toLowerCase()
+    ? `${room.name}, a ${room.type.toLowerCase()}`
+    : room.name;
+}
+
+/** This room's slice of the Design Planning Layer's per-room guidance, or "" when none was produced. Shared by both flows. */
+function guidanceFor(spec: DesignSpecification, room: UniversalInputRoom): string {
+  return spec.roomGuidelines.find((g) => g.room === room.name)?.compactGuidance ?? "";
+}
+
+/** SERVICE_ROOM_CONTENTS lookup by this room's type, or undefined for a room with no matching entry. Shared by both flows. */
+function serviceContentsFor(room: UniversalInputRoom): string | undefined {
+  return SERVICE_ROOM_CONTENTS[room.type?.trim().toLowerCase() ?? ""];
+}
+
+/**
+ * furniture-layout.ts's token interpolation (`{wood}`/`{soft}`/`{stone}` ->
+ * the design spec's chosen materials) is a private, unexported helper there,
+ * and this file's scope is prompt-builder.ts alone — it cannot be exported
+ * without editing that file. This is a one-line reimplementation of that
+ * exact regex, not a fork of anything with real logic in it (the camera
+ * projection, in-frame filtering and priority-based trimming all stay fully
+ * shared via `mappedFurnitureItems`/`buildMappedFurnitureLine` above).
+ */
+function interpolateTokens(phrase: string, tokens: MaterialTokens): string {
+  return phrase.replace(/\{wood\}/g, tokens.wood).replace(/\{soft\}/g, tokens.soft).replace(/\{stone\}/g, tokens.stone);
+}
+
+/**
+ * One mapped furniture item -> one Gemini-flow JSON entry.
+ *
+ * `box` is the model's pointer into image 2 (the annotated numbered greybox,
+ * built elsewhere — see buildGeminiPrompt's header) when `numbered` is true:
+ * `item.index` is this piece's position in the room's own furniture array
+ * (see mappedFurnitureItems), which is exactly the array position a numbered
+ * annotation drawn "one number per box, in furniture-array order" would use,
+ * so `index + 1` is the number that piece carries in that image. When
+ * `numbered` is false (no such image exists yet, or this call predates one),
+ * `box` falls back to the same positional descriptor phrase the FLUX flow
+ * already uses ("the long low box at centre-left").
+ */
+function geminiFurnitureEntry(
+  item: { index: number; kind: string; phrase: string },
+  tokens: MaterialTokens,
+  numbered: boolean,
+): { box: number | string; is: string } {
+  const entry = catalogueEntry(item.kind);
+  const materialPhrase = entry ? interpolateTokens(entry.materialPhrase, tokens) : item.kind;
+  return { box: numbered ? item.index + 1 : item.phrase, is: materialPhrase };
+}
+
+/**
+ * The Gemini (Nano Banana) flow — see this file's header for why it exists
+ * as a second flow instead of reusing the FLUX prose. Same information, same
+ * priority order (openings, furniture, geometry/surfaces, colour/lighting,
+ * additional requirements last), emitted as COMPACT JSON (no pretty-print —
+ * `JSON.stringify` with no indent argument) rather than prose. Object key
+ * insertion order IS the priority order: JS/JSON preserve string-key
+ * insertion order, so the literal below reads top-to-bottom exactly as the
+ * five priority tiers are numbered in this file's header.
+ *
+ * Positive phrasing only, same rule as the FLUX flow (see openingCensus and
+ * buildFurnitureMaterials's doc comments): there is no negativePrompt
+ * channel on either model family, so this never states what should NOT
+ * appear, only what does.
+ */
+function buildGeminiPrompt(
+  input: UniversalInput,
+  room: UniversalInputRoom,
+  spec: DesignSpecification,
+  opts: {
+    ledger?: GreyboxLedger;
+    furniture?: PlacedFurniture[];
+    hasGreybox: boolean;
+    roomSpec?: CameraRoomSpec;
+    numberedFurniture?: boolean;
+  },
+): string {
+  const furniture = opts.furniture ?? [];
+  const numbered = opts.numberedFurniture ?? false;
+  const payload: Record<string, unknown> = {};
+
+  // Priority 0 (framing, not itself one of the five priority tiers — the
+  // FLUX flow's `medium` line plays the same unconditional, always-first
+  // role). Identifies what each reference image IS so the priority-ordered
+  // fields below can refer to "image 1"/"image 2" without redefining them
+  // every time.
+  if (opts.hasGreybox) {
+    const referenceImages: Record<string, string> = {
+      image1:
+        "An untextured grey massing render of this exact room, from the exact camera the output must use. " +
+        "A framed recessed panel is a closed door; a bright panel is a window.",
+    };
+    if (numbered) {
+      referenceImages.image2 =
+        "A key: the same room with a number drawn on each furniture box, for matching entries in the " +
+        "furniture field below only. The numerals identify boxes to you and must NOT be reproduced, drawn " +
+        "or rendered anywhere in the output image.";
+    }
+    payload.referenceImages = referenceImages;
+  } else {
+    payload.scene = `A ${input.design.luxury_level.toLowerCase()} "${input.design.style}" ${input.project.subcategory}.`;
+  }
+
+  // Priority 1: openings — exact counts, from the Pass B mask ledger via the
+  // same openingCounts() the FLUX census uses, and the fact that they are
+  // the only ones. Digits, not word-forms: word-forms exist only because
+  // FLUX's text encoder represents them as cleaner single tokens (see
+  // `word()`'s doc comment) — that reasoning is specific to FLUX and doesn't
+  // apply here, and a numeric JSON field is the more natural shape.
+  if (opts.hasGreybox) {
+    const { doors, windows } = openingCounts(opts.ledger);
+    const openings: Record<string, unknown> = {
+      doors,
+      windows,
+      rule:
+        doors + windows === 0
+          ? "Every wall in this room is unbroken solid wall."
+          : "These are the only openings, positioned only where image 1 shows them; every other wall surface is unbroken solid wall.",
+    };
+    if (doors > 0) openings.doorsClosed = true;
+    payload.openings = openings;
+  }
+
+  // Priority 2: furniture — which grey box (or, once numbered, which number)
+  // is which piece. Mirrors the FLUX flow's three-way branch (mapped ->
+  // unmapped fallback -> service-room contents -> omitted) so a room that
+  // renders nothing on the FLUX flow renders nothing here either.
+  const furnitureItems = opts.roomSpec ? mappedFurnitureItems(opts.roomSpec, furniture) : [];
+  const serviceContents = serviceContentsFor(room);
+  if (furniture.length && furnitureItems.length) {
+    payload.furniture = {
+      items: furnitureItems.map((item) => geminiFurnitureEntry(item, spec.materialTokens, numbered)),
+    };
+  } else if (furniture.length) {
+    // No roomSpec/camera available (caller hasn't updated, matching the FLUX
+    // flow's own fallback note) — fall back to the unmapped, un-positioned
+    // set via the same buildFurnitureMaterials() the FLUX flow's own
+    // fallback uses, wrapped as a single JSON string rather than duplicating
+    // its catalogue-ordering/priority-drop logic. Budget is generous (no
+    // FLUX-style 200-char retry needed) since this flow has no char cap.
+    const summary = buildFurnitureMaterials(furniture, spec.materialTokens, 4000);
+    if (summary) payload.furniture = { summary };
+  } else if (serviceContents) {
+    payload.furniture = { contents: serviceContents };
+  }
+
+  // Priority 3: "nothing abnormal" — geometry lock and matte, non-reflective
+  // wall surfaces. Always present regardless of hasGreybox, mirroring the
+  // FLUX flow's `medium` wall-finish clause, which is likewise unconditional.
+  // Never say "sheen"/"gloss"/"glossy"/"satin"/"roller-nap" — see this
+  // file's header on the oily-wall bug those words caused.
+  payload.geometryLock = opts.hasGreybox
+    ? "Camera position, angle and field of view; room proportions; every wall position; and the position, " +
+      "width and height of every opening match image 1 exactly, with no deviation."
+    : "Straight walls, level camera, eye level.";
+  payload.wallSurfaces =
+    "Wall paint and plaster are flat matte, chalky and light-absorbing. Change only surfaces, materials, lighting and furnishing.";
+
+  // Priority 4: colour/palette and lighting, bundled with the room's label
+  // and per-room guidance — the same content the FLUX flow's "Room brief"
+  // section carries (compactBrief is documented there as "palette, key
+  // materials, light quality"). Unlike the FLUX flow, neither field is
+  // sliced to BUDGET.brief: that budget exists to protect FLUX's 1,800-char
+  // cap, which does not apply here.
+  const guidance = guidanceFor(spec, room);
+  payload.roomBrief = {
+    label: cap(roomLabelFor(room)),
+    ...(spec.compactBrief ? { brief: spec.compactBrief } : {}),
+    ...(guidance ? { guidance } : {}),
+  };
+
+  // Priority 5: additional requirements, always last, omitted when empty —
+  // same rule as the FLUX flow's accent line.
+  const accent = (room.additional_notes ?? "").trim();
+  if (accent) payload.additionalRequirements = accent;
+
+  const prompt = JSON.stringify(payload);
+
+  // Sanity ceiling, not a truncation budget — see MAX_JSON_PROMPT_CHARS's
+  // doc comment. Throw rather than silently send an enormous prompt, same
+  // "fail loud" rule Section 1 R1 states for the FLUX cap.
+  if (prompt.length > MAX_JSON_PROMPT_CHARS) {
+    throw new Error(
+      `Gemini prompt is ${prompt.length} chars, over the ${MAX_JSON_PROMPT_CHARS}-char sanity ceiling for room "${room.name}"`,
+    );
+  }
+
+  // Section 1, R3 — same observability both flows share.
+  console.log(`[prompt-builder] room="${room.name}" provider=gemini chars=${prompt.length} hash=${fnv1a(prompt)}`);
+  return prompt;
 }
 
 export async function buildRoomPrompt(
@@ -203,8 +480,29 @@ export async function buildRoomPrompt(
      * furniture line falls back to the old unmapped set.
      */
     roomSpec?: { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
+    /**
+     * Explicit override for which image model this prompt targets. Defaults
+     * to `getProviderPrimary("image_gen")` — the same DB-backed setting the
+     * console's model switcher writes — but dev-check needs to exercise both
+     * flows deterministically without depending on Supabase state, hence the
+     * override.
+     */
+    provider?: ProviderChoice;
+    /**
+     * Set once the second reference image exists: an annotated copy of the
+     * greybox with a number drawn on each furniture box (built elsewhere —
+     * not this file's concern). Gemini-flow only; ignored on the FLUX flow,
+     * which never had a second reference image and still doesn't. See
+     * `geminiFurnitureEntry`'s doc comment for the numbering contract.
+     */
+    numberedFurniture?: boolean;
   },
 ): Promise<string> {
+  const provider = opts.provider ?? (await getProviderPrimary("image_gen"));
+  if (provider === "gemini") {
+    return buildGeminiPrompt(input, room, spec, opts);
+  }
+
   const furniture = opts.furniture ?? [];
 
   // 1. Medium + lens. No focal length: section 2.3 tested naming one against a
@@ -244,11 +542,8 @@ export async function buildRoomPrompt(
   const ledger = "";
 
   // 4. Room brief.
-  const roomLabel =
-    room.type && room.type.trim() && room.type.trim().toLowerCase() !== room.name.trim().toLowerCase()
-      ? `${room.name}, a ${room.type.toLowerCase()}`
-      : room.name;
-  const guidance = spec.roomGuidelines.find((g) => g.room === room.name)?.compactGuidance ?? "";
+  const roomLabel = roomLabelFor(room);
+  const guidance = guidanceFor(spec, room);
   // Section 2.4: room dimensions in feet are deleted — the greybox encodes
   // proportion far more precisely than a number in prose can.
   const brief = [`${cap(roomLabel)}.`, spec.compactBrief, guidance].filter(Boolean).join(" ").slice(0, BUDGET.brief);
@@ -269,7 +564,7 @@ export async function buildRoomPrompt(
   //    census avoids by counting from the mask. Falls back to the old
   //    unmapped line when no geometry was passed, so a caller that hasn't
   //    been updated still produces a valid prompt.
-  const serviceContents = SERVICE_ROOM_CONTENTS[room.type?.trim().toLowerCase() ?? ""];
+  const serviceContents = serviceContentsFor(room);
   const mapped = opts.roomSpec ? mappedFurnitureFor(opts.roomSpec, furniture, spec.materialTokens) : "";
   const furnitureLine = furniture.length
     ? mapped || buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture)
