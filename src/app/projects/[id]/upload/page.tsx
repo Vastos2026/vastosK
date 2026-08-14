@@ -283,7 +283,11 @@ export default function UploadPage() {
           <p className="mt-4 text-lg font-medium">
             Drag & drop, or <span className="text-accent">browse</span>
           </p>
-          <p className="mt-1 text-sm text-muted">Supports JPG, PNG and PDF · up to 25 MB</p>
+          {/* No size ceiling stated: MAX_UPLOAD_BYTES in
+              /api/parse-plan/route.ts enforces 20MB server-side, not the 25MB
+              this used to claim, and a stated cap the server would then
+              reject is worse than none at all. */}
+          <p className="mt-1 text-sm text-muted">Supports JPG, PNG and PDF</p>
         </div>
 
         <input

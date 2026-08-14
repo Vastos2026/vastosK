@@ -73,6 +73,15 @@ export default function FloorPlanPage() {
               <Icon name="FileUp" className="size-6" />
             </span>
             <span className="font-medium">Yes, upload it</span>
+            {/* No size ceiling stated: MAX_UPLOAD_BYTES in
+                /api/parse-plan/route.ts enforces 20MB server-side, and this
+                page used to claim "up to 25 MB" — a real cap the server would
+                then reject, wrong in the direction that misleads. PDF is
+                deliberately not listed: it's selectable but /upload's
+                runDetection rejects it outright before analysis (PDFs are
+                rejected outright — export to PNG/JPG first, per CLAUDE.md),
+                so naming it here would promise something that doesn't work. */}
+            <span className="text-xs text-faint">Supports PNG, JPEG</span>
           </button>
           <button
             onClick={() => setChoice("no")}
@@ -91,16 +100,6 @@ export default function FloorPlanPage() {
         {choice === "no" && (
           <Button className="mt-6" icon="ListPlus" onClick={goManual}>
             Enter rooms manually
-          </Button>
-        )}
-
-        {/* Primary path: the click above already opened this. Kept as a
-            visible fallback for the rare case the browser didn't honour the
-            programmatic click (or the user cancelled the native dialog and
-            wants another go) rather than leaving them with no way forward. */}
-        {choice === "yes" && (
-          <Button className="mt-6" iconRight="ArrowRight" onClick={() => fileInputRef.current?.click()}>
-            Open file picker
           </Button>
         )}
 
