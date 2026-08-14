@@ -1,6 +1,11 @@
 /* Domain types for the Vastos frontend (mock layer). */
 
-import type { DesignSpecification, LuxuryLevel, UniversalInput } from "./ai/prompting/types";
+import type {
+  DesignReferenceAttributes,
+  DesignSpecification,
+  LuxuryLevel,
+  UniversalInput,
+} from "./ai/prompting/types";
 import type { GreyboxCameraView, GreyboxWall } from "./greybox/types";
 
 export type PropertyType = "apartment" | "villa" | "office" | "commercial";
@@ -347,6 +352,31 @@ export interface Walkthrough {
   error?: string;
 }
 
+/**
+ * A design reference photo the user uploaded on the Design step, plus what
+ * was read off it. When present, the Style / Luxury level / Colour palette
+ * pickers are hidden and these attributes feed the Design Planning call in
+ * their place (see src/lib/ai/prompting/design-reference.ts).
+ *
+ * Cached on the project alongside `universalInput`/`designSpec` for the same
+ * reason those are: the analysis is one paid Gemini vision call, and it must
+ * run once per uploaded image, never per generation.
+ */
+export interface DesignReference {
+  attributes: DesignReferenceAttributes;
+  /**
+   * A small JPEG data URI of the upload, so the user can see WHICH reference
+   * is active. Deliberately not a storage key: the original bytes are never
+   * stored (see /api/design-reference's header), and a few tens of KB is what
+   * this local-first, localStorage-backed store can actually carry. Absent if
+   * the server couldn't re-encode the upload.
+   */
+  thumbnail?: string;
+  /** short sha256 prefix of the uploaded bytes — the part of designSignature that changes when the reference does */
+  hash: string;
+  analysedAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -381,6 +411,15 @@ export interface Project {
   colourPalette?: string;
   /** Hex codes chosen via "Choose custom color" (colourPalette === "custom") — absent for a preset palette. */
   customColourHexes?: string[];
+  /**
+   * An uploaded design reference, when the user chose one instead of the
+   * three pickers above. Those three fields keep whatever the pickers last
+   * held while a reference is active — deliberately NOT overwritten with the
+   * derived values, since `colourPalette` is a preset ID and would stop
+   * matching any preset the moment prose was written into it, silently
+   * breaking the picker the user sees again after removing the reference.
+   */
+  designReference?: DesignReference;
   /** One global free-text note (Workstream 8.5) — replaces the earlier per-room field. */
   additionalRequirements?: string;
   /** Cached Universal Input + Design Specification from the last Design Planning run. */

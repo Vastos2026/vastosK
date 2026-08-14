@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
 import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
-import { runDesignPlan, generateRoomImage } from "@/lib/design-plan-client";
+import { runDesignPlan, generateRoomImage, analyseDesignReferenceViaApi } from "@/lib/design-plan-client";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
+import type { DesignReference } from "@/lib/types";
 import { formatRoomSize } from "@/lib/ai/prompting/build-universal-input";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -44,8 +45,35 @@ export default function DesignPage() {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An uploaded reference photo and what was read off it. When set, the three
+  // look pickers below are hidden and these attributes take their place in
+  // the Design Planning call — see src/lib/ai/prompting/design-reference.ts.
+  // Project type stays visible either way: it describes what the space IS,
+  // which a photo of somebody else's cafe says nothing about.
+  const [reference, setReference] = useState<DesignReference | undefined>(project?.designReference);
+  const [referenceBusy, setReferenceBusy] = useState(false);
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  const referenceInput = useRef<HTMLInputElement>(null);
 
   const rooms = useMemo(() => project?.floorPlan?.rooms ?? [], [project?.floorPlan?.rooms]);
+  // Every field the reference produced, shown back to the user verbatim, so a
+  // generation they didn't expect is traceable to a line they can read rather
+  // than to a black box. Read-only on purpose: these are the exact strings
+  // that go to the planner, and an editable copy would be a fourth place the
+  // design can be set.
+  const derivedRows: [string, string][] = useMemo(() => {
+    const a = reference?.attributes;
+    return a
+      ? [
+          ["Style", a.style],
+          ["Luxury", a.luxuryLevel],
+          ["Colours", a.colourPalette],
+          ["Materials", a.materials],
+          ["Lighting", a.lighting],
+          ["Furniture", a.furniture],
+        ]
+      : [];
+  }, [reference]);
   const style = STYLES.find((s) => s.id === styleId) ?? STYLES[0];
   // "Choose custom color" sends the literal hex codes the user picked to the
   // model as a list, instead of one of the preset labels — COLOUR_PALETTES
@@ -68,6 +96,37 @@ export default function DesignPage() {
     );
   }
 
+  const analyseReference = async (file: File | undefined) => {
+    if (!file || referenceBusy) return;
+    setReferenceError(null);
+    setReferenceBusy(true);
+    try {
+      const result = await analyseDesignReferenceViaApi(file, id);
+      const next: DesignReference = {
+        attributes: result.attributes,
+        thumbnail: result.thumbnail,
+        hash: result.hash,
+        analysedAt: new Date().toISOString(),
+      };
+      setReference(next);
+      // Cached on the project the moment it's derived, not held until
+      // Confirm: this is one paid Gemini vision call per image, so a reload
+      // (or a hop to Review and back) between upload and Confirm must not
+      // quietly buy it a second time.
+      useVasto.getState().patchProject(id, { designReference: next });
+    } catch (e) {
+      setReferenceError(e instanceof Error ? e.message : "Could not read that reference image");
+    } finally {
+      setReferenceBusy(false);
+    }
+  };
+
+  const removeReference = () => {
+    setReference(undefined);
+    setReferenceError(null);
+    useVasto.getState().patchProject(id, { designReference: undefined });
+  };
+
   const confirm = async () => {
     if (busy) return;
     if (!subcategory.trim()) {
@@ -83,13 +142,25 @@ export default function DesignPage() {
     // below to decide whether a room that already has an image should keep
     // it (nothing that would change its render actually changed) or get
     // regenerated (the design itself changed, not just the room list).
+    //
+    // The three picker values are in here only when no reference is active.
+    // While one IS active they are hidden and feed nothing, so including them
+    // would make the signature react to state the render can't see; the
+    // reference's own hash plus its derived attributes are what actually
+    // drive the plan, so those are what the fingerprint tracks instead.
+    // Swapping one reference photo for another therefore invalidates
+    // already-generated rooms exactly as switching palette does.
     const signature = JSON.stringify({
       subcategory,
-      styleId,
-      luxuryLevel,
-      colourPalette,
-      customColors: isCustomPalette ? customColors : undefined,
       notes: additionalRequirements.trim(),
+      ...(reference
+        ? { reference: { hash: reference.hash, attributes: reference.attributes } }
+        : {
+            styleId,
+            luxuryLevel,
+            colourPalette,
+            customColors: isCustomPalette ? customColors : undefined,
+          }),
     });
     const signatureUnchanged = project.designSignature === signature;
     setBusy(true);
@@ -115,12 +186,17 @@ export default function DesignPage() {
           luxuryLevel,
           colourPalette: colourPaletteText,
         },
+        // Overrides `design` entirely, server-side (/api/design-plan). Sent
+        // as the derived attributes, never the image: the analysis already
+        // ran once, at upload.
+        designReference: reference?.attributes,
       });
       setDesignPlan(id, {
         subcategory,
         luxuryLevel,
         colourPalette,
         customColourHexes: isCustomPalette ? customColors : undefined,
+        designReference: reference,
         additionalRequirements: additionalRequirements.trim() || undefined,
         universalInput,
         designSpec,
@@ -276,6 +352,99 @@ export default function DesignPage() {
           </Section>
         )}
 
+        <Section title="Design reference">
+          {reference ? (
+            <div className="rounded-2xl border border-accent/40 bg-accent/5 p-3.5">
+              <div className="flex items-start gap-4">
+                {reference.thumbnail && (
+                  // eslint-disable-next-line @next/next/no-img-element -- a base64 data URI, which next/image's loader can't take
+                  <img
+                    src={reference.thumbnail}
+                    alt="Your design reference"
+                    className="size-24 shrink-0 rounded-xl border border-border object-cover"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">Design taken from your reference photo</p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Style, luxury level and colour palette are read from this image, so those pickers are hidden.
+                  </p>
+                  <dl className="mt-3 space-y-1">
+                    {derivedRows.map(([label, value]) => (
+                      <div key={label} className="flex gap-2 text-xs">
+                        <dt className="w-20 shrink-0 text-faint">{label}</dt>
+                        <dd className="min-w-0 flex-1 text-muted">{value || "not read"}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              </div>
+              <div className="mt-3.5 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  icon="ImagePlus"
+                  onClick={() => referenceInput.current?.click()}
+                  loading={referenceBusy}
+                  disabled={referenceBusy}
+                >
+                  {referenceBusy ? "Reading your reference…" : "Replace image"}
+                </Button>
+                <Button size="sm" variant="ghost" icon="Trash2" onClick={removeReference} disabled={referenceBusy}>
+                  Remove and pick manually
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border bg-surface p-4">
+              <p className="text-sm font-medium">Have a photo of an interior you want yours to look like?</p>
+              <p className="mt-1 text-xs text-muted">
+                Upload it and we read the style, colours, materials, lighting and furniture character straight off
+                the image, instead of you picking from the presets below. PNG or JPG, up to 20MB.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3"
+                icon="ImagePlus"
+                onClick={() => referenceInput.current?.click()}
+                loading={referenceBusy}
+                disabled={referenceBusy}
+              >
+                {referenceBusy ? "Reading your reference…" : "Upload design reference"}
+              </Button>
+            </div>
+          )}
+
+          <input
+            ref={referenceInput}
+            type="file"
+            accept="image/png,image/jpeg"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Cleared so re-picking the SAME file still fires a change
+              // event — otherwise a failed analysis can't be retried without
+              // choosing a different image first.
+              e.target.value = "";
+              void analyseReference(file);
+            }}
+          />
+
+          {referenceError && (
+            <div className="mt-2.5 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/5 px-3.5 py-2.5 text-xs text-danger">
+              <Icon name="CircleAlert" className="mt-0.5 size-4 shrink-0" />
+              <span>{referenceError}</span>
+            </div>
+          )}
+        </Section>
+
+        {/* Hidden while a reference is active: the reference already answers
+            all three, and leaving them on screen would invite the user to set
+            a value that feeds nothing. Project type and Additional
+            requirements stay, above and below. */}
+        {!reference && (
+          <>
         <Section title="Style">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {STYLES.map((s) => (
@@ -386,6 +555,8 @@ export default function DesignPage() {
             </div>
           )}
         </Section>
+          </>
+        )}
 
         <Section title="Additional requirements">
           <textarea

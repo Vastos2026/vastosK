@@ -6,7 +6,12 @@
  */
 
 import type { DesignSelection, RoomSelection } from "./ai/prompting/build-universal-input";
-import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "./ai/prompting/types";
+import type {
+  DesignReferenceAttributes,
+  DesignSpecification,
+  UniversalInput,
+  UniversalInputRoom,
+} from "./ai/prompting/types";
 import type { ProjectedOpening } from "./greybox/render-mask";
 import type { GreyboxCameraView } from "./greybox/types";
 import type { PlacedFurniture, PlacedOpening } from "./types";
@@ -36,8 +41,55 @@ export function runDesignPlan(input: {
   subcategory: string;
   rooms: RoomSelection[];
   design: DesignSelection;
+  /**
+   * The attributes read off an uploaded design reference. When present the
+   * route ignores `design` entirely and composes the design selections from
+   * these instead (see /api/design-plan) — `design` is still sent so an
+   * older/other caller keeps working unchanged.
+   */
+  designReference?: DesignReferenceAttributes;
 }): Promise<{ universalInput: UniversalInput; designSpec: DesignSpecification }> {
   return postJson("/api/design-plan", input);
+}
+
+export interface DesignReferenceResult {
+  attributes: DesignReferenceAttributes;
+  /** small JPEG data URI, or absent if the upload couldn't be re-encoded — see the route */
+  thumbnail?: string;
+  /** short sha256 prefix of the uploaded bytes, for the Design page's designSignature */
+  hash: string;
+}
+
+/**
+ * Posts a design reference photo to `POST /api/design-reference` and gets
+ * back the six design-look attributes read off it. Multipart, not JSON: the
+ * upload is a raw image up to 20MB, same as parse-plan-client's own call.
+ *
+ * Fires ONCE per uploaded image — the caller caches the result on the project
+ * (Project.designReference), and the design plan re-sends only the derived
+ * attributes, never the image.
+ */
+export async function analyseDesignReferenceViaApi(
+  file: File,
+  projectId: string,
+): Promise<DesignReferenceResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("projectId", projectId);
+
+  const res = await fetch("/api/design-reference", { method: "POST", body: form });
+  if (!res.ok) {
+    let msg = `Reference analysis returned ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(msg);
+  }
+
+  return (await res.json()) as DesignReferenceResult;
 }
 
 export function generateRoomImage(input: {

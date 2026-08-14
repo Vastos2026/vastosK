@@ -14,6 +14,17 @@ import type { LuxuryLevel, UniversalInput, UniversalInputOpening } from "./types
 const NOTES_MAX_LEN = 500;
 const LUXURY_LEVELS: LuxuryLevel[] = ["Standard", "Premium", "Ultra Luxury"];
 
+/**
+ * Exported so a caller that DERIVES a luxury level rather than reading it off
+ * the Design page's three-button picker (design-reference.ts, which takes it
+ * from a Gemini reading of an uploaded photo) can normalise against the same
+ * three values this function validates against, instead of re-typing the
+ * literal union and letting the two drift.
+ */
+export function isLuxuryLevel(value: unknown): value is LuxuryLevel {
+  return typeof value === "string" && (LUXURY_LEVELS as string[]).includes(value);
+}
+
 // Cost-amplification caps — this whole object gets JSON.stringify'd into the
 // Gemini prompt (design-planning.ts), so an unbounded room count or unbounded
 // free-text field directly amplifies token cost per request.
@@ -21,7 +32,14 @@ const MAX_ROOMS = 60;
 const ROOM_NAME_MAX_LEN = 200;
 const CATEGORY_MAX_LEN = 100;
 const STYLE_MAX_LEN = 200;
-const COLOUR_PALETTE_MAX_LEN = 500;
+/**
+ * Exported for the same reason as `isLuxuryLevel` above: design-reference.ts
+ * composes a colour-palette string out of four separate model-written fields
+ * and has to land under this cap, which is a hard THROW here — not a clamp. A
+ * duplicated `500` there would have failed the whole design plan the first
+ * time this number moved.
+ */
+export const COLOUR_PALETTE_MAX_LEN = 500;
 
 export interface RoomSelection {
   name: string;
@@ -75,7 +93,7 @@ export function buildUniversalInput(
   if (rooms.length > MAX_ROOMS) {
     throw new ProviderError("ValidationError", `too many rooms (max ${MAX_ROOMS})`);
   }
-  if (!LUXURY_LEVELS.includes(design.luxuryLevel)) {
+  if (!isLuxuryLevel(design.luxuryLevel)) {
     throw new ProviderError("ValidationError", `invalid luxury level: ${design.luxuryLevel}`);
   }
   if (!design.style.trim() || !design.colourPalette.trim()) {

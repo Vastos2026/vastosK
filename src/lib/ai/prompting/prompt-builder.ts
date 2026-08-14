@@ -98,8 +98,14 @@ const MAX_JSON_PROMPT_CHARS = 12_000;
  * for a wordy Custom subcategory ("Ayurvedic wellness centre with treatment
  * rooms" is 46) and for the free-text style string a design-reference upload
  * can produce.
+ *
+ * Exported for exactly that last case: design-reference.ts turns an uploaded
+ * photo into a free-text style string, and a value over this bound would be
+ * silently cut mid-word HERE, in the one section the overflow ladder never
+ * touches. Clamping at the source against this same constant (rather than a
+ * copied `60`) is what keeps the two ends from drifting apart.
  */
-const LABEL_BUDGET = { style: 60, subcategory: 80 } as const;
+export const LABEL_BUDGET = { style: 60, subcategory: 80 } as const;
 
 /** The design style and project subcategory, bounded — see LABEL_BUDGET. */
 function labelsFor(input: UniversalInput): { style: string; subcategory: string } {

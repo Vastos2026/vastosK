@@ -11,8 +11,10 @@
 
 import { buildUniversalInput, type DesignSelection, type RoomSelection } from "@/lib/ai/prompting/build-universal-input";
 import { runDesignPlanning } from "@/lib/ai/prompting/design-planning";
+import { referenceDesignSelection } from "@/lib/ai/prompting/design-reference";
 import { toErrorResponse } from "@/lib/ai/errors";
 import { assertAllowed } from "@/lib/api-guard";
+import type { DesignReferenceAttributes } from "@/lib/ai/prompting/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +26,12 @@ interface Body {
   subcategory?: string;
   rooms?: RoomSelection[];
   design?: DesignSelection;
+  /**
+   * Present when the user uploaded a design reference instead of using the
+   * Style / Luxury level / Colour palette pickers (which the Design page
+   * hides in that case). Overrides `design` below — see the call site.
+   */
+  designReference?: DesignReferenceAttributes;
 }
 
 export async function POST(request: Request) {
@@ -41,17 +49,28 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, category, subcategory, rooms, design } = body;
+  const { projectId, category, subcategory, rooms, design, designReference } = body;
   if (!projectId) {
     return Response.json({ error: "projectId is required" }, { status: 400 });
   }
 
   try {
+    // A reference REPLACES the three picker values rather than sitting beside
+    // them: the Design page hides those pickers while one is active, so
+    // whatever they still hold client-side is stale defaults, not a choice
+    // the user made. Composed here, server-side, rather than by the page —
+    // `referenceDesignSelection` re-sanitises (clamp + stripWallFinishes)
+    // attributes that have round-tripped through the client's cached project
+    // since the analysis call, on the same principle build-universal-input.ts
+    // re-checks caps the frontend should already enforce.
+    const selection = designReference
+      ? referenceDesignSelection(designReference)
+      : (design ?? { style: "", luxuryLevel: "Standard" as const, colourPalette: "" });
     const universalInput = buildUniversalInput(
       category ?? "",
       subcategory ?? "",
       rooms ?? [],
-      design ?? { style: "", luxuryLevel: "Standard", colourPalette: "" },
+      selection,
     );
     const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id });
     return Response.json({ universalInput, designSpec });

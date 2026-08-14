@@ -945,6 +945,67 @@ export async function generateStructured<T>(
   });
 }
 
+/**
+ * `generateStructured`'s sibling for a structured call that must LOOK at an
+ * image — currently the Design page's reference-photo analysis
+ * (ai/prompting/design-reference.ts). Builds its `GeminiPart[]` image-part-
+ * first and downscales through `downscaleForGemini`, exactly as
+ * `extractFloorPlan` above does, and keeps the same `instrumented(...)` usage
+ * logging and `ProviderError` shape as both of its neighbours.
+ *
+ * A separate function rather than an optional `image` argument on
+ * `generateStructured`: that function's `debugLogPrompt` stage names the
+ * Design Planning call specifically and states `referenceImages: null`, which
+ * is a true statement about that one call that an optional image would
+ * quietly make false. Same reason the label below names this call rather than
+ * being generic.
+ *
+ * ALWAYS Gemini. `extractFloorPlan` and `generateStructured` are both
+ * deliberately outside the `IMAGE_PROVIDER`/`VIDEO_PROVIDER` Runware toggle
+ * (that toggle covers `generateImage`/`editImage`/`generateVideo` only — see
+ * `resolveProvider`), and this call follows the same rule: it does not touch
+ * `resolveProvider` at all, so unsetting or setting RUNWARE_API_KEY cannot
+ * move it.
+ */
+export async function generateStructuredFromImage<T>(
+  prompt: string,
+  schema: object,
+  image: Buffer,
+  ctx?: CallContext,
+): Promise<T> {
+  if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
+  if (!geminiConfigured()) {
+    throw new ProviderError("ValidationError", "GEMINI_API_KEY is not configured");
+  }
+  const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
+  const img = await downscaleForGemini(image);
+  const parts: GeminiPart[] = [
+    { inlineData: { mimeType: img.mimeType, data: img.data } },
+    { text: prompt },
+  ];
+
+  debugLogPrompt("2c. Design → design-reference analysis (generateStructuredFromImage)", {
+    prompt,
+    chain: `Gemini ${model} (direct, vision, structured JSON)`,
+    referenceImages: [`the uploaded design reference image (${img.mimeType})`],
+  });
+
+  return instrumented("planning", model, ctx, async () => {
+    const out = await generateJson<T>(parts, {
+      // Low but not floor-zero: this is a subjective reading of a photograph,
+      // not the near-deterministic transcription extractFloorPlan does at 0.1.
+      temperature: 0.2,
+      thinkingBudget: 0,
+      // Six short fields — this cap only bounds a runaway generation. Nowhere
+      // near extractFloorPlan's 65536, which exists for dense multi-room plans.
+      maxOutputTokens: 2048,
+      responseSchema: schema,
+    });
+    if (out === null) throw new ProviderError("AiProviderError", "structured image analysis failed");
+    return out;
+  });
+}
+
 interface GeminiImageResponse {
   candidates?: {
     content?: { parts?: { inlineData?: { mimeType?: string; data?: string }; text?: string }[] };

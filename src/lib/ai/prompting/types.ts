@@ -57,6 +57,42 @@ export interface UniversalInputRoom {
 
 export type LuxuryLevel = "Standard" | "Premium" | "Ultra Luxury";
 
+/**
+ * What a Design-page reference PHOTO is reduced to (see design-reference.ts).
+ * The user uploads an interior they want their project to look like; Gemini
+ * reads it and fills exactly these six fields, which then replace the Style /
+ * Luxury level / Colour palette pickers feeding `UniversalInput.design`.
+ *
+ * The CLOSED shape is the security boundary, not a convenience. This text is
+ * written by a model looking at a user-supplied image and ends up inside a
+ * prompt that also carries the room's geometry rules, so a single field the
+ * model can write anything into (`notes`, `extraInstructions`, an
+ * `additionalPrompt`) would be a prompt-injection channel straight at those
+ * rules. Six short, individually-clamped, individually-named descriptive
+ * fields cannot carry an instruction the way one open field can — which is
+ * why there is no seventh field here and must never be one.
+ *
+ * Free text on purpose, and deliberately NOT snapped to a `STYLES` /
+ * `COLOUR_PALETTES` preset (src/lib/data.ts): the whole point of a reference
+ * upload is the detail a preset would round away. Nothing downstream ever
+ * validated `style` against that list, so an unseen string ("Retro pastel
+ * cafe, rounded forms") needs no new code path anywhere — it is handled
+ * exactly as "Modern Indian" is.
+ */
+export interface DesignReferenceAttributes {
+  /** e.g. "Retro pastel cafe, rounded forms, playful soft-industrial" */
+  style: string;
+  luxuryLevel: LuxuryLevel;
+  /** colour names WITH hex codes — prose alone loses the exact tone, so hex is the mitigation */
+  colourPalette: string;
+  /** e.g. "pink lacquered millwork, cream terrazzo, brass trim, cane seating" */
+  materials: string;
+  /** the QUALITY of the light and the fittings, never where they are */
+  lighting: string;
+  /** the CHARACTER of the furniture (era, shape language) — never its positions */
+  furniture: string;
+}
+
 export interface UniversalInput {
   project: {
     /** "Residential" | "Apartment" | "Commercial" | "Custom" */

@@ -73,7 +73,7 @@ interface VastoState {
     id: string,
     plan: Pick<
       Project,
-      "subcategory" | "luxuryLevel" | "colourPalette" | "customColourHexes" | "additionalRequirements" | "universalInput" | "designSpec" | "designSignature"
+      "subcategory" | "luxuryLevel" | "colourPalette" | "customColourHexes" | "designReference" | "additionalRequirements" | "universalInput" | "designSpec" | "designSignature"
     >,
   ) => void;
 
