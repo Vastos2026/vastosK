@@ -18,13 +18,13 @@ import { uid, cn, slugifyRoomName } from "@/lib/utils";
 import type { Room, RoomCard, RoomGeneration } from "@/lib/types";
 import { roomSpecFor } from "@/lib/greybox/room-spec";
 
-// Stable reference for the "no rooms generating" case — `?? []` in the
-// selector below would otherwise allocate a NEW array every call, which
+// Stable reference for the "no rooms generating" case — `?? {}` in the
+// selector below would otherwise allocate a NEW object every call, which
 // breaks Zustand's useSyncExternalStore-based subscription (React requires a
 // selector's result to be referentially stable across calls with the same
 // state) and causes "getServerSnapshot should be cached to avoid an infinite
 // loop" / "Maximum update depth exceeded".
-const NO_GENERATING_IDS: string[] = [];
+const NO_GENERATING_COUNTS: Record<string, number> = {};
 
 /**
  * Room Generation Gallery (rebuilt) — one SECTION per room. Each section is a
@@ -42,7 +42,7 @@ export default function GeneratePage() {
   const project = useProject(id);
   const addGeneration = useVasto((s) => s.addGeneration);
   const updateRoom = useVasto((s) => s.updateRoom);
-  const generatingIds = useVasto((s) => s.generatingRoomIds[id] ?? NO_GENERATING_IDS);
+  const generatingCounts = useVasto((s) => s.generatingRoomIds[id] ?? NO_GENERATING_COUNTS);
   const startGenerating = useVasto((s) => s.startGenerating);
   const stopGenerating = useVasto((s) => s.stopGenerating);
 
@@ -201,7 +201,7 @@ export default function GeneratePage() {
                 key={room.id}
                 room={room}
                 card={cardOf(room.id)}
-                generating={generatingIds.includes(room.id)}
+                generatingCount={generatingCounts[room.id] ?? 0}
                 onGenerateMore={(note) => generateMore(room, note)}
                 onRetryFirst={() => generateMore(room)}
                 onView={(genId) =>
@@ -221,7 +221,7 @@ export default function GeneratePage() {
 function RoomSection({
   room,
   card,
-  generating,
+  generatingCount,
   onGenerateMore,
   onRetryFirst,
   onView,
@@ -229,35 +229,34 @@ function RoomSection({
 }: {
   room: Room;
   card?: RoomCard;
-  generating: boolean;
+  generatingCount: number;
   onGenerateMore: (note?: string) => Promise<void>;
   onRetryFirst: () => Promise<void>;
   onView: (genId?: string) => void;
   onFurnish: () => void;
 }) {
   const generations = card?.generations ?? [];
-  const failed = generations.length === 0 && !generating;
+  const failed = generations.length === 0 && generatingCount === 0;
   const stripRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to the newest tile on arrival, and again after every new
-  // generation lands — the previous image keeps its position and size and
-  // the new one lands beside it, so direct comparison is always in view.
+  // Auto-scroll to the newest tile on arrival, again after every new
+  // generation lands, and again the moment a fresh one starts (generatingCount
+  // ticking up) — a generation kicked off from "Adjust with 3D" or a second
+  // Generate More click needs its placeholder tile to scroll into view too,
+  // not just the completed image that eventually replaces it.
   useEffect(() => {
     stripRef.current?.scrollTo({ left: stripRef.current.scrollWidth, behavior: "smooth" });
-  }, [generations.length]);
+  }, [generations.length, generatingCount]);
 
   return (
     <section id={`room-${room.id}`} className="scroll-mt-4 pt-6 first:pt-0">
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <div className="flex items-center gap-3">
           <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
-          <Button
-            size="sm"
-            icon="Sofa"
-            onClick={onFurnish}
-            disabled={generating}
-            title={generating ? "Wait for this room to finish generating" : undefined}
-          >
+          {/* No longer disabled while a generation is in flight — rooms can
+              now run several generations at once (see generatingRoomIds'
+              doc comment in store.ts), so there's nothing left to wait for. */}
+          <Button size="sm" icon="Sofa" onClick={onFurnish}>
             Adjust with 3D
           </Button>
         </div>
@@ -265,26 +264,35 @@ function RoomSection({
       </div>
 
       <div className="flex gap-3 overflow-x-auto pb-2" ref={stripRef}>
-        {generations.length === 0 ? (
-          <GenerationTile
-            room={room}
-            version={1}
-            isLatest
-            generating={generating}
-            failed={failed}
-            onRetry={onRetryFirst}
-          />
+        {failed ? (
+          <GenerationTile room={room} version={1} isLatest failed onRetry={onRetryFirst} />
         ) : (
-          generations.map((gen, i) => (
-            <GenerationTile
-              key={gen.id}
-              room={room}
-              gen={gen}
-              version={i + 1}
-              isLatest={i === generations.length - 1}
-              onOpen={() => onView(gen.id)}
-            />
-          ))
+          <>
+            {generations.map((gen, i) => (
+              <GenerationTile
+                key={gen.id}
+                room={room}
+                gen={gen}
+                version={i + 1}
+                isLatest={i === generations.length - 1}
+                onOpen={() => onView(gen.id)}
+              />
+            ))}
+            {/* One placeholder tile per generation currently running for this
+                room. Generate More used to swap its whole card for a spinner
+                (blocking a second click); now the in-flight state lives here
+                instead, so any number of these can appear alongside the
+                Generate More card at once. */}
+            {Array.from({ length: generatingCount }, (_, i) => (
+              <GenerationTile
+                key={`generating-${i}`}
+                room={room}
+                version={generations.length + i + 1}
+                isLatest
+                generating
+              />
+            ))}
+          </>
         )}
         <GenerateMoreCard disabled={generations.length === 0} onGenerateMore={onGenerateMore} />
       </div>
@@ -379,22 +387,23 @@ function GenerateMoreCard({
   disabled: boolean;
   onGenerateMore: (note?: string) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const run = async () => {
-    if (busy || disabled) return;
-    setBusy(true);
+  // Fires and returns immediately, instead of the old awaited flow that
+  // swapped this whole card for a spinner (which blocked a second click
+  // until the first request settled). The in-flight state now lives in the
+  // store (generatingRoomIds) and renders as a placeholder tile in
+  // RoomSection's strip, so this card stays a usable form the whole time —
+  // click Generate More twice in a row and two placeholder tiles appear.
+  const run = () => {
+    if (disabled) return;
     setError(null);
-    try {
-      await onGenerateMore(note.trim() || undefined);
-      setNote("");
-    } catch (e) {
+    const fired = note.trim() || undefined;
+    setNote("");
+    onGenerateMore(fired).catch((e) => {
       setError(e instanceof Error ? e.message : "Generation failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   return (
@@ -404,30 +413,21 @@ function GenerateMoreCard({
         disabled && "opacity-40",
       )}
     >
-      {busy ? (
-        <div className="absolute inset-0 grid place-items-center">
-          <div className="flex flex-col items-center gap-3">
-            <GeneratingProgressRing active={busy} estimatedMs={15000} />
-            <p className="text-xs text-muted">Generating another version…</p>
-          </div>
-        </div>
-      ) : (
-        <div className="flex h-full flex-col items-center justify-center gap-3 p-5 text-center">
-          <Icon name="RefreshCw" className="size-6 text-faint" />
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            disabled={disabled}
-            placeholder="Other requirements for this version, e.g. make it brighter"
-            className="input w-full resize-none text-xs disabled:cursor-not-allowed"
-          />
-          {error && <p className="text-[11px] text-danger">{error}</p>}
-          <Button size="sm" variant="outline" disabled={disabled} onClick={run}>
-            Generate More
-          </Button>
-        </div>
-      )}
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-5 text-center">
+        <Icon name="RefreshCw" className="size-6 text-faint" />
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          disabled={disabled}
+          placeholder="Other requirements for this version, e.g. make it brighter"
+          className="input w-full resize-none text-xs disabled:cursor-not-allowed"
+        />
+        {error && <p className="text-[11px] text-danger">{error}</p>}
+        <Button size="sm" variant="outline" disabled={disabled} onClick={run}>
+          Generate More
+        </Button>
+      </div>
     </div>
   );
 }

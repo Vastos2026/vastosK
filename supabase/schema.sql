@@ -715,7 +715,7 @@ alter table prompt_templates enable row level security;
 -- type/category exists, so re-running this file never clobbers admin edits).
 insert into prompt_templates (type, category, version, body, published)
 select 'system', null, 1,
-  '{"rules":"Photorealistic interior-design magazine photograph. Realistic materials, lighting, shadows and reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and fixtures implied by the brief below - do not invent unrelated objects."}'::jsonb,
+  '{"rules":"Photorealistic photograph of a real, ordinary home interior. Realistic materials, lighting, shadows and reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and fixtures implied by the brief below - do not invent unrelated objects."}'::jsonb,
   true
 where not exists (select 1 from prompt_templates where type = 'system');
 

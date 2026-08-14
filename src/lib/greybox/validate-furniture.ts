@@ -121,6 +121,60 @@ export function resolvePlacement(
   return { x: input.fromX, z: input.fromZ };
 }
 
+/** Why `resolvePlacement` would not accept a raw proposed position as-is. */
+export interface BounceReason {
+  kind: "bounds" | "exclusion" | "overlap";
+  /** id of the furniture item the position would have overlapped — only set when `kind === "overlap"`. */
+  blockerId?: string;
+}
+
+/**
+ * Diagnoses WHY `resolvePlacement` rejected `input`'s raw (x, z) — the
+ * furnish editor's live drag/nudge/rotate feedback bounces a piece back to a
+ * legal spot correctly, but gave no indication of WHY, which is what
+ * furniture-editor-canvas.tsx's onCommit surfaces this for (reported
+ * 2026-08-14). Deliberately a separate function rather than a change to
+ * `resolvePlacement` itself: that function's contract (four-candidate
+ * fallback, unconditional last resort) is exercised by dev-check and other
+ * callers and must not change shape just to grow a reason code.
+ *
+ * Checks in the exact same order `legal()` above does — bounds, then camera
+ * exclusion, then overlap — so this can never name a reason `resolvePlacement`
+ * itself would not have rejected on first. Returns null when the raw position
+ * was actually legal, i.e. there was nothing for resolvePlacement to correct.
+ *
+ * `others` takes an id per item (`resolvePlacement`'s own `others` doesn't)
+ * purely so a caller can name the specific piece a proposal collided with;
+ * the geometry check itself is identical to `legal()`'s overlap branch.
+ */
+export function explainPlacementBounce(
+  input: PlacementInput,
+  others: { id: string; kind: string; x: number; z: number; rotation: number }[],
+  room: { width: number; depth: number },
+  cameraPos: { x: number; z: number },
+): BounceReason | null {
+  const box = footprintAabb(input.kind, input.x, input.z, input.rotation);
+  if (
+    box.minX < -room.width / 2 + WALL_GAP_FT ||
+    box.maxX > room.width / 2 - WALL_GAP_FT ||
+    box.minZ < -room.depth / 2 + WALL_GAP_FT ||
+    box.maxZ > room.depth / 2 - WALL_GAP_FT
+  ) {
+    return { kind: "bounds" };
+  }
+  const reach = Math.max(box.maxX - box.minX, box.maxZ - box.minZ) / 2;
+  if (Math.hypot(input.x - cameraPos.x, input.z - cameraPos.z) < CAMERA_EXCLUSION_FT + reach) {
+    return { kind: "exclusion" };
+  }
+  if (!OVERLAP_EXEMPT.has(input.kind)) {
+    const blocker = others.find(
+      (o) => !OVERLAP_EXEMPT.has(o.kind) && overlaps(box, footprintAabb(o.kind, o.x, o.z, o.rotation)),
+    );
+    if (blocker) return { kind: "overlap", blockerId: blocker.id };
+  }
+  return null;
+}
+
 export interface OcclusionViolation {
   openingId: string;
   openingType: "door" | "window";

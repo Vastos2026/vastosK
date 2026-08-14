@@ -14,6 +14,7 @@ const DESIGN_SPEC_SCHEMA = {
     cameraGuidelines: { type: "STRING" },
     negativeConstraints: { type: "STRING" },
     compactBrief: { type: "STRING" },
+    wallColour: { type: "STRING" },
     materialTokens: {
       type: "OBJECT",
       properties: { wood: { type: "STRING" }, soft: { type: "STRING" }, stone: { type: "STRING" } },
@@ -41,6 +42,7 @@ const DESIGN_SPEC_SCHEMA = {
     "cameraGuidelines",
     "negativeConstraints",
     "compactBrief",
+    "wallColour",
     "materialTokens",
     "roomGuidelines",
   ],
@@ -78,9 +80,24 @@ room should be framed and shot; negative constraints (what must never appear); a
 per room in the brief (covering that room's furniture, layout and focal point), for EVERY room named: \
 ${roomNames}.
 
+Two rules override everything above, and apply to EVERY field you return.
+
+WALLS: name wall COLOURS only, never a wall finish or technique. Never write limewash, lime-wash, \
+lime plaster, venetian plaster, microcement, tadelakt, stucco, chalky, patina or textured plaster \
+about any surface you describe as a wall. The walls in this project are ordinary smooth painted \
+plaster, exactly as in a normal home, and that is already stated elsewhere — your job is only the \
+colour they are painted.
+
+REALISM: you are specifying a real, ordinary, buildable home that a photographer would shoot \
+exactly as it stands. Never specify a showroom, a display set, a magazine shoot or a staged \
+arrangement.
+
 Additionally return, for a strict character budget in a downstream image prompt:
 - compactBrief: AT MOST 240 characters. One or two sentences naming the palette, the two or three \
 key materials, and the quality of light. No preamble, no room names, no furniture.
+- wallColour: AT MOST 40 characters. The colour the walls are painted, taken from the colour \
+palette above — for example "warm sand", "soft off-white", "muted sage green". A colour and \
+nothing else: no finish, no material, no sentence.
 - materialTokens: three short noun phrases, at most three words each, naming the specific dominant \
 wood ("walnut", "light oak"), the dominant soft/upholstery material ("cream boucle", "charcoal linen") \
 and the dominant stone ("carrara marble", "honed granite") for this project.
@@ -93,11 +110,51 @@ fixes those.`;
   // The prompt asks for these limits; a hard clamp is what guarantees them.
   // buildRoomPrompt's 1800-char assert throws and fails the job, so an
   // overlong brief must not be able to reach it.
+  //
+  // stripWallFinishes is the same argument applied to the WALLS rule above:
+  // an instruction is a request, and this one had already been ignored often
+  // enough to be reported as a bug. Applied to exactly the three fields that
+  // reach an image prompt (compactBrief, wallColour, compactGuidance) — the
+  // verbose fields are display-only and are allowed to read like a designer
+  // wrote them.
   return {
     ...spec,
-    compactBrief: clamp(spec.compactBrief, 240),
-    roomGuidelines: spec.roomGuidelines.map((g) => ({ ...g, compactGuidance: clamp(g.compactGuidance, 120) })),
+    compactBrief: clamp(stripWallFinishes(spec.compactBrief), 240),
+    wallColour: clamp(stripWallFinishes(spec.wallColour), 40),
+    roomGuidelines: spec.roomGuidelines.map((g) => ({
+      ...g,
+      compactGuidance: clamp(stripWallFinishes(g.compactGuidance), 120),
+    })),
   };
+}
+
+/**
+ * Wall finishes and techniques, removed rather than requested away.
+ *
+ * A named wall TREATMENT is what produces the oily/waxy wall look users kept
+ * reporting: the palette legitimately supplies a colour ("warm sand", from
+ * data.ts's Sage & Sand entry) and the planner would append a finish it was
+ * never asked for, arriving at "warm sand lime-wash walls". The model then
+ * rendered exactly that. See DesignSpecification.wallColour for the full
+ * history.
+ *
+ * Deliberately a fixed list of finish nouns, not a general "texture word"
+ * heuristic: the brief SHOULD still be free to say "honed limestone" or
+ * "cane" about a floor or a worktop. Only these specific wall treatments are
+ * removed. The trailing cleanup collapses the gap the removal leaves and
+ * repairs the punctuation around it, so "warm sand lime-wash walls" becomes
+ * "warm sand walls" rather than "warm sand  walls" or a dangling comma.
+ */
+const WALL_FINISHES =
+  /\b(lime[-\s]?wash(ed)?|lime[-\s]plaster|venetian[-\s]plaster|micro[-\s]?cement|tadelakt|stucco|chalky|chalk[-\s]finish|patina(ted)?|textured[-\s]plaster)\b/gi;
+
+export function stripWallFinishes(s: string | undefined): string {
+  return (s ?? "")
+    .replace(WALL_FINISHES, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;])/g, "$1")
+    .replace(/([,;])\s*([,.;])/g, "$2")
+    .trim();
 }
 
 /** Trims to `max` chars at the last sentence or word boundary, so a clamp never cuts mid-word. */

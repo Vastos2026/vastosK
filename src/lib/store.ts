@@ -94,16 +94,24 @@ interface VastoState {
   /** Walkthrough screen — full replace (generating/completed/failed states). */
   setWalkthrough: (id: string, walkthrough: Walkthrough) => void;
 
-  /** Rooms currently generating an image, per project. Included in
-   *  `partialize` below so the shape round-trips through storage cleanly,
-   *  but reset to empty on every rehydration — see the `onRehydrateStorage`
-   *  comment for why a flag that survives a real reload can never be
-   *  trusted anyway. Client-side (soft) navigation between pages never
-   *  touches this at all — the store is a module-level singleton, so plain
-   *  in-memory state already survives route changes with no persistence
-   *  involved. */
-  generatingRoomIds: Record<string, string[]>;
+  /** In-flight generation COUNT per room, per project — projectId -> roomId
+   *  -> number of generations currently running for that room. Was a deduped
+   *  `Record<string, string[]>` (room id present or absent, i.e. a boolean),
+   *  which could not represent "Generate More" firing a second generation on
+   *  a room that already has one in flight (from Design's auto-fire loop, or
+   *  a previous Generate More click, or "Adjust with 3D"'s Save+Generate).
+   *  Included in `partialize` below so the shape round-trips through storage
+   *  cleanly, but reset to empty on every rehydration — see the
+   *  `onRehydrateStorage` comment for why a flag that survives a real reload
+   *  can never be trusted anyway. Client-side (soft) navigation between pages
+   *  never touches this at all — the store is a module-level singleton, so
+   *  plain in-memory state already survives route changes with no
+   *  persistence involved. */
+  generatingRoomIds: Record<string, Record<string, number>>;
+  /** Increments the room's in-flight count. */
   startGenerating: (projectId: string, roomId: string) => void;
+  /** Decrements the room's in-flight count, deleting the room's entry once it
+   *  hits zero rather than leaving a stale `0` around — never goes negative. */
   stopGenerating: (projectId: string, roomId: string) => void;
 }
 
@@ -293,7 +301,7 @@ export const useVasto = create<VastoState>()(
                 })
               : p,
           ),
-          generatingRoomIds: { ...s.generatingRoomIds, [id]: [] },
+          generatingRoomIds: { ...s.generatingRoomIds, [id]: {} },
         })),
 
       applyPlanLayout: (id, rooms) =>
@@ -563,20 +571,28 @@ export const useVasto = create<VastoState>()(
 
       startGenerating: (projectId, roomId) =>
         set((s) => {
-          const existing = s.generatingRoomIds[projectId] ?? [];
-          if (existing.includes(roomId)) return s;
-          return { generatingRoomIds: { ...s.generatingRoomIds, [projectId]: [...existing, roomId] } };
+          const existing = s.generatingRoomIds[projectId] ?? {};
+          const count = (existing[roomId] ?? 0) + 1;
+          return {
+            generatingRoomIds: { ...s.generatingRoomIds, [projectId]: { ...existing, [roomId]: count } },
+          };
         }),
 
       stopGenerating: (projectId, roomId) =>
         set((s) => {
           const existing = s.generatingRoomIds[projectId];
-          if (!existing) return s;
+          if (!existing?.[roomId]) return s;
+          const count = existing[roomId] - 1;
+          if (count <= 0) {
+            // Drop the key entirely rather than leaving a `0` behind — keeps
+            // `Object.keys(generatingRoomIds[projectId])` a true "which rooms
+            // are generating right now" list for any future reader that
+            // enumerates it instead of indexing a known room id.
+            const { [roomId]: _done, ...rest } = existing;
+            return { generatingRoomIds: { ...s.generatingRoomIds, [projectId]: rest } };
+          }
           return {
-            generatingRoomIds: {
-              ...s.generatingRoomIds,
-              [projectId]: existing.filter((id) => id !== roomId),
-            },
+            generatingRoomIds: { ...s.generatingRoomIds, [projectId]: { ...existing, [roomId]: count } },
           };
         }),
     }),

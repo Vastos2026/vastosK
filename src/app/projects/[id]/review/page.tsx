@@ -325,6 +325,93 @@ export default function ReviewPage() {
   );
 }
 
+/**
+ * Number input with a local string buffer, so it can hold intermediate
+ * states ("", "-", a trailing-dot decimal like "0.") that don't parse to a
+ * number without instantly stomping them. The old direct-controlled pattern
+ * (`value={n}` with `onChange={(e) => onChange(Number(e.target.value) || 0)}`)
+ * meant `Number("")` is 0, so clearing the box snapped it straight back to
+ * "0" and select-all+retype landed on "01" instead of "1"; for decimals,
+ * `Number("0.")` is also 0, so the field snapped mid-keystroke and "0.5" was
+ * never reachable.
+ *
+ * `value` is the external, canonical number (or undefined for "not given
+ * yet" — DimensionInline's blank-means-unset dimensions). The buffer resyncs
+ * from it whenever it changes for a reason OTHER than this field's own edits
+ * (unit switch rewriting the display, another field like ft/inches changing
+ * the derived value) via React's documented "adjust state during render"
+ * pattern — comparing a stored previous `value` and updating state inline —
+ * rather than a useEffect, since a bare effect calling setState here would
+ * both trip this repo's react-hooks/set-state-in-effect rule and flash the
+ * stale buffer for one extra frame before the effect ran.
+ */
+function BufferedNumberInput({
+  value,
+  onCommit,
+  min,
+  max,
+  className,
+  ariaLabel,
+  placeholder = "—",
+}: {
+  value: number | undefined;
+  onCommit: (value: number) => void;
+  min?: number;
+  max?: number;
+  className?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+}) {
+  const [buffer, setBuffer] = useState(value === undefined ? "" : String(value));
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) {
+    setPrevValue(value);
+    setBuffer(value === undefined ? "" : String(value));
+  }
+
+  const clamp = (n: number) => {
+    let v = n;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    return v;
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      value={buffer}
+      placeholder={placeholder}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setBuffer(raw);
+        const n = Number(raw);
+        // Only push a value up once the buffer is a complete, valid number.
+        // "", "-", and partial decimals like "0." all fail Number.isFinite
+        // (or, for "", get skipped outright) and stay purely local so the
+        // user can keep typing instead of the field snapping mid-edit.
+        if (raw !== "" && Number.isFinite(n)) {
+          onCommit(clamp(n));
+        }
+      }}
+      onBlur={() => {
+        const n = Number(buffer);
+        // Empty or unparseable on blur: snap the display back to whatever
+        // the external value actually is, rather than leaving garbage
+        // on-screen or silently committing 0.
+        if (buffer === "" || !Number.isFinite(n)) {
+          setBuffer(value === undefined ? "" : String(value));
+        } else {
+          setBuffer(String(clamp(n)));
+        }
+      }}
+      className={className}
+      aria-label={ariaLabel}
+    />
+  );
+}
+
 /** A small labelled number input for door/window counts — editable, not just a read-out. */
 function OpeningCountField({
   label,
@@ -338,14 +425,14 @@ function OpeningCountField({
   return (
     <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
       {label}
-      <input
-        type="number"
+      <BufferedNumberInput
+        value={value}
         min={0}
         max={20}
-        value={value}
-        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+        onCommit={onChange}
         className="input w-14 text-center"
-        aria-label={label}
+        ariaLabel={label}
+        placeholder="0"
       />
     </span>
   );
@@ -538,24 +625,23 @@ function DimensionInline({
     return (
       <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
         {label}
-        <input
-          type="number"
-          value={ft ?? ""}
-          placeholder="—"
-          onChange={(e) => onChange(ftInToFeet(Number(e.target.value) || 0, inches ?? 0))}
+        <BufferedNumberInput
+          value={ft}
+          // inches ?? 0 reads the OTHER field's current value at commit time,
+          // same as the original directly-controlled version did — editing ft
+          // doesn't touch whatever's already in the inches box.
+          onCommit={(v) => onChange(ftInToFeet(v, inches ?? 0))}
           className="input w-20 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-          aria-label={`${label} feet`}
+          ariaLabel={`${label} feet`}
         />
         <span className="text-faint">ft</span>
-        <input
-          type="number"
+        <BufferedNumberInput
+          value={inches}
           min={0}
           max={11}
-          value={inches ?? ""}
-          placeholder="—"
-          onChange={(e) => onChange(ftInToFeet(ft ?? 0, Number(e.target.value) || 0))}
+          onCommit={(v) => onChange(ftInToFeet(ft ?? 0, v))}
           className="input w-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-          aria-label={`${label} inches`}
+          ariaLabel={`${label} inches`}
         />
         <span className="text-faint">in</span>
       </span>
@@ -564,13 +650,11 @@ function DimensionInline({
   return (
     <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
       {label}
-      <input
-        type="number"
-        value={fromFeet(feet, unit) ?? ""}
-        placeholder="—"
-        onChange={(e) => onChange(toFeet(Number(e.target.value) || 0, unit))}
+      <BufferedNumberInput
+        value={fromFeet(feet, unit)}
+        onCommit={(v) => onChange(toFeet(v, unit))}
         className="input w-16"
-        aria-label={label}
+        ariaLabel={label}
       />
       <span className="text-faint">{unit}</span>
     </span>

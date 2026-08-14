@@ -108,6 +108,25 @@ export interface DesignSpecification {
   negativeConstraints: string;
   /** Section 4.4's 240-char room brief: palette, key materials, light quality. */
   compactBrief: string;
+  /**
+   * The wall paint COLOUR alone, at most 40 chars ("warm sand", "soft
+   * off-white") — a colour name, never a finish or a technique.
+   *
+   * Exists because Design Planning used to fold wall treatment into
+   * compactBrief and would free-associate a finish noun onto the palette's
+   * colour: the Sage & Sand palette's own "warm sand base" (data.ts) came
+   * back as "warm sand lime-wash walls". That is the reported oily/waxy wall
+   * look — the model was being told a wall TREATMENT, and rendered one.
+   * Splitting the colour into its own field lets prompt-builder state the
+   * finish itself, as ordinary matte paint, so no wall treatment is ever
+   * named to the model at all.
+   *
+   * Optional, and read defensively: the local-first store persists whole
+   * DesignSpecifications to localStorage, so a project planned before this
+   * field existed has a cached spec without it. prompt-builder omits the
+   * colour phrase in that case rather than printing "undefined".
+   */
+  wallColour?: string;
   /** Interpolated into furniture material phrases (furniture-layout.ts). */
   materialTokens: MaterialTokens;
   roomGuidelines: RoomGuideline[];

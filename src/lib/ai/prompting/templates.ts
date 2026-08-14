@@ -26,11 +26,24 @@ export interface BuilderTemplateBody {
   negativePrefix: string;
 }
 
+/**
+ * Three phrases were removed here (2026-08-14) after a report that generated
+ * rooms read as "a very polished catalog image that isn't realistically
+ * possible" rather than as homes: "magazine photograph", "real-estate lens"
+ * and "tack-sharp focus". Each was asking for that outcome directly — a
+ * magazine shoot and real-estate photography are both the staged-showroom
+ * genre, and tack-sharp-everywhere is a CG tell, since a real lens falls off.
+ *
+ * This preamble no longer reaches the image prompt (see withSystemPreamble's
+ * doc comment below), but it still runs on the Design Planning call, so its
+ * language shapes every compactBrief the planner writes — which is how it
+ * reached the image path anyway, one step removed.
+ */
 const DEFAULT_SYSTEM: SystemTemplateBody = {
   rules:
-    "Photorealistic interior-design natural magazine photograph, shot on a full-frame camera with a wide-angle " +
-    "real-estate lens. Tack-sharp focus and fine surface detail (wood grain, fabric weave, stone texture) " +
-    "throughout, not smoothed or plastic-looking. Soft natural daylight spilling in through windows/openings " +
+    "Photorealistic photograph of a real, ordinary home interior, shot on a full-frame camera with " +
+    "a wide-angle lens. Natural depth of field and fine surface detail (wood grain, fabric weave, " +
+    "stone texture) throughout, not smoothed or plastic-looking. Soft natural daylight spilling in through windows/openings " +
     "as the dominant light source, with realistic falloff and gentle, physically plausible shadows rather " +
     "than flat studio lighting. Realistic materials, reflections and imperfections. Every piece of furniture " +
     "and fixture must be structurally real and buildable, no floating, warped or physically impossible " +

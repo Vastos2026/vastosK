@@ -9,7 +9,13 @@ import { furnitureForRoomType, catalogueEntry } from "@/lib/greybox/furniture-ca
 import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { ensureGreybox, type GreyboxResult } from "@/lib/greybox/ensure-greybox-key";
 import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
-import { MAX_FURNITURE, resolveOcclusion, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
+import {
+  MAX_FURNITURE,
+  resolveOcclusion,
+  resolvePlacement,
+  type BounceReason,
+  type OcclusionViolation,
+} from "@/lib/greybox/validate-furniture";
 import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { cameraCoverage, greyboxCamera } from "@/lib/greybox/camera";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
@@ -201,7 +207,35 @@ function FurnishContent({
   const initialFurnitureRef = useRef(furniture);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Live occlusion feed, unchanged in shape or purpose — still exactly what
+  // onOcclusionChange reports on every pointermove during a drag. It is no
+  // longer what the panel below the card renders directly (see
+  // latchedOcclusion), but the canvas's own in-viewport amber blocker tint is
+  // computed internally from this same stream regardless of what this page
+  // does with it, so nothing here needs to change to keep that working.
   const [occlusion, setOcclusion] = useState<OcclusionViolation[]>([]);
+  /**
+   * Latched, deduped mirror of `occlusion` for the persistent panel below the
+   * card. Rendering straight off `occlusion` is what made that panel flash on
+   * then off (reported 2026-08-14): `occlusion` empties the instant a dragged
+   * piece clears an opening, which is correct for the live in-viewport tint
+   * but wrong for a panel meant to tell the user afterward what happened.
+   * This list only ever grows, via handleOcclusionChange below, keyed by
+   * (openingId, blockerId) so the same violation reported on every
+   * pointermove of one drag lands as a single entry, not one per frame.
+   * Never cleared by anything but the user's own dismiss — same rule
+   * removedNotice already follows, see its comment below.
+   */
+  const [latchedOcclusion, setLatchedOcclusion] = useState<{ key: string; message: string }[]>([]);
+  /**
+   * Persistent log of WHY a drag/nudge got bounced back by resolvePlacement —
+   * room edge, camera exclusion zone, or another named piece — reported
+   * through onCommit's third argument (furniture-editor-canvas.tsx). The
+   * bounce itself was already correct before this; it just used to happen
+   * silently. Keyed so bumping into the same obstacle twice doesn't pile up
+   * duplicate lines, and — like latchedOcclusion — only clears on dismiss.
+   */
+  const [bounceNotices, setBounceNotices] = useState<{ key: string; message: string }[]>([]);
   const [notice, setNotice] = useState<string[]>([]);
   // Separate from `notice` on purpose. `resolveOcclusion`'s "drop" rung
   // DELETES furniture the user placed — that is destructive in a way
@@ -399,12 +433,16 @@ function FurnishContent({
 
   // Task 14's canvas reports every drag/nudge/rotate/delete through this one
   // callback rather than handing back a whole new furniture array — see
-  // FurnitureCommitPatch's doc comment. `null` means remove.
-  const handleFurnitureCommit = (itemId: string, patch: FurnitureCommitPatch) => {
+  // FurnitureCommitPatch's doc comment. `null` means remove. `bounce` is only
+  // ever present alongside a real patch (never alongside a delete), and only
+  // when resolvePlacement actually had to move the proposal — see
+  // furniture-editor-canvas.tsx's endDrag/onKeyDown for where it's derived.
+  const handleFurnitureCommit = (itemId: string, patch: FurnitureCommitPatch, bounce?: BounceReason) => {
     if (patch === null) {
       deleteItem(itemId);
       return;
     }
+    if (bounce) latchBounce(itemId, bounce);
     setFurniture((prev) => prev.map((f) => (f.id === itemId ? { ...f, ...patch } : f)));
   };
 
@@ -414,6 +452,48 @@ function FurnishContent({
     const blocker = furniture.find((f) => f.id === v.blockerId);
     const label = blocker ? (catalogueEntry(blocker.kind)?.label ?? blocker.kind) : "Something";
     return `${label} blocks the ${wallLabel}${v.openingType}. Move it or the generated room may show a wall there instead.`;
+  }
+
+  // Wraps the raw setOcclusion feed (unchanged, see its own comment above)
+  // with the latching step: any violation not already represented in
+  // latchedOcclusion by its (openingId, blockerId) key gets appended, in the
+  // exact wording occlusionMessage already uses elsewhere, so the settled and
+  // the live version of the same warning never read differently.
+  const handleOcclusionChange = (violations: OcclusionViolation[]) => {
+    setOcclusion(violations);
+    if (!violations.length) return;
+    setLatchedOcclusion((prev) => {
+      const seen = new Set(prev.map((n) => n.key));
+      const additions = violations
+        .filter((v) => !seen.has(`${v.openingId}:${v.blockerId ?? ""}`))
+        .map((v) => ({ key: `${v.openingId}:${v.blockerId ?? ""}`, message: occlusionMessage(v) }));
+      return additions.length ? [...prev, ...additions] : prev;
+    });
+  };
+
+  // Human explanation for a resolvePlacement bounce, in occlusionMessage's
+  // own voice (name the piece, name the consequence). Reads `furniture` as it
+  // stood BEFORE this commit's patch is applied, which is fine either way
+  // here: a bounce never changes `kind`, only x/z/rotation, so the labels
+  // this looks up are unaffected by whether the lookup runs before or after.
+  function bounceMessage(itemId: string, bounce: BounceReason): string {
+    const item = furniture.find((f) => f.id === itemId);
+    const label = item ? catalogueEntry(item.kind)?.label ?? item.kind : "That piece";
+    if (bounce.kind === "bounds") {
+      return `${label} was pulled back inside the room. Its footprint would have crossed the wall.`;
+    }
+    if (bounce.kind === "exclusion") {
+      return `${label} was moved away from the camera. It was sitting inside the camera's exclusion zone.`;
+    }
+    const blocker = furniture.find((f) => f.id === bounce.blockerId);
+    const blockerLabel = blocker ? catalogueEntry(blocker.kind)?.label ?? blocker.kind : "another piece";
+    return `${label} was moved back. It would have overlapped the ${blockerLabel.toLowerCase()}.`;
+  }
+
+  function latchBounce(itemId: string, bounce: BounceReason) {
+    const key = `${itemId}:${bounce.kind}:${bounce.kind === "overlap" ? (bounce.blockerId ?? "") : ""}`;
+    const message = bounceMessage(itemId, bounce);
+    setBounceNotices((prev) => (prev.some((n) => n.key === key) ? prev : [...prev, { key, message }]));
   }
 
   /**
@@ -678,7 +758,7 @@ function FurnishContent({
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onCommit={handleFurnitureCommit}
-                onOcclusionChange={setOcclusion}
+                onOcclusionChange={handleOcclusionChange}
               />
             </div>
 
@@ -723,12 +803,44 @@ function FurnishContent({
               </div>
             )}
 
-            {occlusion.length > 0 && (
+            {latchedOcclusion.length > 0 && (
               <div className="shrink-0 space-y-1.5 rounded-xl border border-warning/30 bg-warning/15 p-2.5">
-                {occlusion.map((v) => (
-                  <p key={v.openingId} className="flex items-start gap-2 text-xs text-warning">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs font-semibold text-warning">Blocking an opening</p>
+                  <button
+                    type="button"
+                    onClick={() => setLatchedOcclusion([])}
+                    className="shrink-0 text-warning/70 hover:text-warning cursor-pointer"
+                    aria-label="Dismiss"
+                  >
+                    <Icon name="X" className="size-3.5" />
+                  </button>
+                </div>
+                {latchedOcclusion.map((n) => (
+                  <p key={n.key} className="flex items-start gap-2 text-xs text-warning">
                     <Icon name="CircleAlert" className="mt-0.5 size-3.5 shrink-0" />
-                    <span>{occlusionMessage(v)}</span>
+                    <span>{n.message}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {bounceNotices.length > 0 && (
+              <div className="shrink-0 space-y-1.5 rounded-xl border border-border bg-surface-2 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs font-medium text-foreground">Adjusted while placing</p>
+                  <button
+                    type="button"
+                    onClick={() => setBounceNotices([])}
+                    className="shrink-0 text-faint hover:text-muted cursor-pointer"
+                    aria-label="Dismiss"
+                  >
+                    <Icon name="X" className="size-3.5" />
+                  </button>
+                </div>
+                {bounceNotices.map((n) => (
+                  <p key={n.key} className="text-xs text-muted">
+                    {n.message}
                   </p>
                 ))}
               </div>

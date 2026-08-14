@@ -7,7 +7,14 @@ import { greyboxCamera } from "@/lib/greybox/camera";
 import { catalogueEntry } from "@/lib/greybox/furniture-catalogue";
 import { toWorldFurniture, worldToLocal } from "@/lib/greybox/furniture-layout";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
-import { checkOcclusion, footprintAabb, resolvePlacement, type OcclusionViolation } from "@/lib/greybox/validate-furniture";
+import {
+  checkOcclusion,
+  explainPlacementBounce,
+  footprintAabb,
+  resolvePlacement,
+  type BounceReason,
+  type OcclusionViolation,
+} from "@/lib/greybox/validate-furniture";
 import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 import type { PlacedFurniture } from "@/lib/types";
 
@@ -160,12 +167,34 @@ function setGroupEmissive(group: THREE.Object3D, hex: number) {
  */
 export type FurnitureCommitPatch = Partial<Pick<PlacedFurniture, "x" | "z" | "rotation">> | null;
 
+/**
+ * Builds `explainPlacementBounce`'s `others` list for one item: the same
+ * furniture set `resolvePlacement` itself is given, but with each entry's id
+ * carried along so a bounce reason can name the specific piece it collided
+ * with. `resolvePlacement`'s own `others` param deliberately drops ids (it
+ * has no need to name anything), so this is assembled fresh at each call site
+ * rather than reused.
+ */
+function othersWithId(
+  all: PlacedFurniture[],
+  excludeId: string,
+  width: number,
+  depth: number,
+): { id: string; kind: string; x: number; z: number; rotation: number }[] {
+  return all
+    .filter((item) => item.id !== excludeId && !!catalogueEntry(item.kind))
+    .map((item) => {
+      const world = toWorldFurniture([item], width, depth)[0]!;
+      return { id: item.id, kind: item.kind, x: world.x, z: world.z, rotation: world.rotation };
+    });
+}
+
 interface FurnitureEditorState {
   spec: GreyboxRoomSpec;
   furniture: PlacedFurniture[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  onCommit: (id: string, patch: FurnitureCommitPatch) => void;
+  onCommit: (id: string, patch: FurnitureCommitPatch, bounce?: BounceReason) => void;
   onOcclusionChange: (violations: OcclusionViolation[]) => void;
 }
 
@@ -219,7 +248,7 @@ export interface FurnitureEditorCanvasProps {
   furniture: PlacedFurniture[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  onCommit: (id: string, patch: FurnitureCommitPatch) => void;
+  onCommit: (id: string, patch: FurnitureCommitPatch, bounce?: BounceReason) => void;
   onOcclusionChange: (violations: OcclusionViolation[]) => void;
 }
 
@@ -552,7 +581,15 @@ export function FurnitureEditorCanvas({
       const item = f.find((x) => x.id === finished.id);
       const camera = cameraRef.current;
       let finalPos = finished.from;
+      // Set only when finalPos ends up somewhere other than where the user
+      // actually released the pointer — i.e. resolvePlacement's fallback
+      // ladder had to intervene. `explainPlacementBounce` re-derives WHY from
+      // the same raw target, without changing what resolvePlacement itself
+      // returned above (see that function's own doc comment on why this is a
+      // separate call rather than resolvePlacement growing a reason code).
+      let bounce: BounceReason | null = null;
       if (item && camera) {
+        const cameraPos = { x: camera.position.x, z: camera.position.z };
         finalPos = resolvePlacement(
           {
             kind: item.kind,
@@ -564,8 +601,23 @@ export function FurnitureEditorCanvas({
           },
           toWorldFurniture(f.filter((x) => x.id !== finished.id), s.width, s.depth),
           { width: s.width, depth: s.depth },
-          { x: camera.position.x, z: camera.position.z },
+          cameraPos,
         );
+        if (finalPos.x !== finished.target.x || finalPos.z !== finished.target.z) {
+          bounce = explainPlacementBounce(
+            {
+              kind: item.kind,
+              rotation: item.rotation,
+              x: finished.target.x,
+              z: finished.target.z,
+              fromX: finished.from.x,
+              fromZ: finished.from.z,
+            },
+            othersWithId(f, finished.id, s.width, s.depth),
+            { width: s.width, depth: s.depth },
+            cameraPos,
+          );
+        }
       }
       finished.group.position.set(finalPos.x, 0, finalPos.z);
       // Clear the transient drag-invalid tint unconditionally — runOcclusionCheck
@@ -574,7 +626,7 @@ export function FurnitureEditorCanvas({
       // for the instant before that pass lands.
       if (finished.invalid) setGroupEmissive(finished.group, 0x000000);
 
-      commit(finished.id, worldToLocal(finalPos.x, finalPos.z, s.width, s.depth));
+      commit(finished.id, worldToLocal(finalPos.x, finalPos.z, s.width, s.depth), bounce ?? undefined);
       runOcclusionCheck();
     }
 
@@ -613,6 +665,13 @@ export function FurnitureEditorCanvas({
         // Re-run resolvePlacement at the CURRENT position (fromX/fromZ ===
         // x/z proposed) — a rotation alone can create an overlap the
         // position by itself did not have, and this is what catches it.
+        //
+        // No bounce reason is derived here: input.x/z === fromX/fromZ, so
+        // every one of resolvePlacement's four candidates evaluates the exact
+        // same point, and the position it returns is therefore always
+        // (world.x, world.z) whether or not the new rotation is actually
+        // legal there. There is never a "the position moved" case to explain
+        // for a pure in-place rotation.
         const { x, z } = resolvePlacement(
           { kind: item.kind, rotation, x: world.x, z: world.z, fromX: world.x, fromZ: world.z },
           others,
@@ -636,15 +695,26 @@ export function FurnitureEditorCanvas({
       if (e.key === "ArrowRight") dx = NUDGE_STEP_FT;
       if (e.key === "ArrowUp") dz = -NUDGE_STEP_FT;
       if (e.key === "ArrowDown") dz = NUDGE_STEP_FT;
+      const targetX = world.x + dx;
+      const targetZ = world.z + dz;
       const { x, z } = resolvePlacement(
-        { kind: item.kind, rotation: item.rotation, x: world.x + dx, z: world.z + dz, fromX: world.x, fromZ: world.z },
+        { kind: item.kind, rotation: item.rotation, x: targetX, z: targetZ, fromX: world.x, fromZ: world.z },
         others,
         { width: s.width, depth: s.depth },
         cameraPos,
       );
+      let bounce: BounceReason | null = null;
+      if (x !== targetX || z !== targetZ) {
+        bounce = explainPlacementBounce(
+          { kind: item.kind, rotation: item.rotation, x: targetX, z: targetZ, fromX: world.x, fromZ: world.z },
+          othersWithId(f, sel, s.width, s.depth),
+          { width: s.width, depth: s.depth },
+          cameraPos,
+        );
+      }
       const group = findFurnitureGroup(sel);
       if (group) group.position.set(x, 0, z);
-      commit(sel, worldToLocal(x, z, s.width, s.depth));
+      commit(sel, worldToLocal(x, z, s.width, s.depth), bounce ?? undefined);
       runOcclusionCheck();
     }
 

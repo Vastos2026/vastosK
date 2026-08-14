@@ -32,7 +32,7 @@ import * as THREE from "three";
 import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
 import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
 import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
-import { clamp } from "@/lib/ai/prompting/design-planning";
+import { clamp, stripWallFinishes } from "@/lib/ai/prompting/design-planning";
 import { buildRoomPrompt } from "@/lib/ai/prompting/prompt-builder";
 import type { DesignSpecification, UniversalInput, UniversalInputRoom } from "@/lib/ai/prompting/types";
 // Pure aspect-tolerance guard (Task 13, section 3.4) — no network call, safe
@@ -706,6 +706,7 @@ export async function GET() {
     cameraGuidelines: "x".repeat(400),
     negativeConstraints: "x".repeat(400),
     compactBrief: "Warm neutrals over walnut and honed limestone, soft morning light from one side.",
+    wallColour: "warm sand",
     materialTokens: { wood: "walnut", soft: "cream boucle", stone: "honed limestone" },
     roomGuidelines: [{ room: "Master Bedroom", guidance: "y".repeat(500), compactGuidance: "Keep the palette calm." }],
   };
@@ -807,28 +808,38 @@ export async function GET() {
     eq(pA, pB, "reordering furniture must not change the prompt");
   });
 
-  await checkAsync("an unbounded non-greybox style/subcategory cannot be trimmed into budget and throws, naming the room", async () => {
-    // The contract clause is never trimmed by the overflow ladder (by
-    // design — section 4.4 never trims the contract or the ledger), so for
-    // the non-greybox path (where the contract interpolates input.design.style
-    // and input.project.subcategory unbounded) a pathologically long value
-    // cannot be rescued by dropping accent/furniture/brief. buildRoomPrompt
-    // must reject rather than silently send an over-budget prompt.
+  await checkAsync("a pathological non-greybox style/subcategory is bounded, and the real sections survive", async () => {
+    // Replaces an older check that asserted buildRoomPrompt THREW here.
+    //
+    // The contract clause is never trimmed by the overflow ladder (section
+    // 4.4 never trims the contract or the ledger), and the no-greybox
+    // contract used to interpolate style and subcategory with no bound of
+    // their own. That gave two outcomes and no good one: a long enough value
+    // threw, and a merely large one "passed" the cap only by having starved
+    // the room brief and the furniture line down to nothing to make room for
+    // a multi-hundred-character business name — a prompt that is in budget
+    // and useless. Both are now impossible: LABEL_BUDGET bounds them, so the
+    // contract is a fixed cost like every other section.
+    //
+    // The assertions below are deliberately about CONTENT, not just length.
+    // "under 1800" was always satisfiable by deleting everything that
+    // mattered; what actually needs guaranteeing is that the room brief and
+    // the furniture line are still present after a hostile subcategory.
     const overlongInput: UniversalInput = {
       project: { category: "Custom", subcategory: "S".repeat(5000) },
       layout: { rooms: [] },
-      design: { style: "Modern", luxury_level: "Premium", colour_palette: "warm neutrals" },
+      design: { style: "M".repeat(5000), luxury_level: "Premium", colour_palette: "warm neutrals" },
     };
-    let threw = false;
-    let message = "";
-    try {
-      await buildRoomPrompt(overlongInput, uiRoom, dspec, { provider: "runware", hasGreybox: false });
-    } catch (e) {
-      threw = true;
-      message = (e as Error).message;
-    }
-    assert(threw, "expected buildRoomPrompt to throw for an unbounded non-greybox contract");
-    assert(message.includes(uiRoom.name), `error message should name the room, got: ${message}`);
+    const p = await buildRoomPrompt(overlongInput, uiRoom, dspec, {
+      provider: "runware",
+      hasGreybox: false,
+      furniture: [f("1", "bed")],
+    });
+    assert(p.length <= 1800, `prompt is ${p.length} chars`);
+    assert(!p.includes("S".repeat(81)), "subcategory exceeded its 80-char bound");
+    assert(!p.includes("M".repeat(61)), "style exceeded its 60-char bound");
+    assert(p.includes("Warm neutrals over walnut"), `the room brief was starved out: ${p}`);
+    assert(/walnut|boucle|limestone/.test(p), `the furniture line was starved out: ${p}`);
   });
 
   await checkAsync("the overflow ladder trims the brief but preserves the furniture line", async () => {
@@ -941,6 +952,118 @@ export async function GET() {
       assert(!p.toLowerCase().includes(shiny), `prompt still asks for "${shiny}", which reads as the oily wall look`);
     }
     assert(!/\bwax|oil paint/i.test(p), `positive phrasing only — must never name the artefact it's avoiding: ${p}`);
+    // Added after a repeat report of oily walls that survived the clauses
+    // above. The leak was never this line — it was the planner writing a
+    // FINISH onto the palette's colour ("warm sand" -> "warm sand lime-wash
+    // walls") and that landing in compactBrief. Naming a wall treatment at
+    // all is what produces one, so no wall treatment may appear anywhere in
+    // an assembled prompt, from either source. "chalky" is on the list
+    // because it was itself in this file's own boilerplate.
+    for (const finish of ["lime-wash", "limewash", "venetian plaster", "microcement", "tadelakt", "stucco", "chalky", "patina"]) {
+      assert(!p.toLowerCase().includes(finish), `a wall finish "${finish}" reached the prompt`);
+    }
+  });
+
+  await checkAsync("the wall COLOUR is named, and rides in the never-trimmed medium line", async () => {
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      // A worst-case room: max furniture and an accent, i.e. every trimmable
+      // section at full size. The colour must survive that, which is the
+      // point of carrying it in `medium` rather than in the brief.
+      furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
+    });
+    assert(p.includes("painted plaster in warm sand"), `expected the wall colour in the medium line, got: ${p}`);
+  });
+
+  await checkAsync("a design spec cached before wallColour existed omits the colour rather than printing undefined", async () => {
+    // The local-first store persists whole DesignSpecifications to
+    // localStorage, so a project planned before wallColour shipped has a
+    // cached spec without it. That must degrade to "no colour stated", never
+    // to the string "undefined" reaching an image model.
+    const legacy = { ...dspec, wallColour: undefined };
+    const p = await buildRoomPrompt(uiInput, uiRoom, legacy, { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    assert(!p.includes("undefined"), `"undefined" leaked into the prompt: ${p}`);
+    assert(p.includes("painted plaster, flat matte"), `expected the colourless form of the wall clause, got: ${p}`);
+    const g = await buildRoomPrompt(uiInput, uiRoom, legacy, { provider: "gemini", hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+    assert(!g.includes("undefined"), `"undefined" leaked into the gemini payload: ${g}`);
+  });
+
+  await checkAsync("no catalog-look phrasing survives in either flow", async () => {
+    // Reported: outputs read as "a very polished catalog image that isn't
+    // realistically possible" rather than as homes. A magazine shoot and
+    // real-estate photography are both literally the staged-showroom genre,
+    // and tack-sharp-everywhere is a CG tell.
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider, hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+      for (const banned of ["magazine", "real-estate", "tack-sharp", "showroom", "catalog"]) {
+        assert(!p.toLowerCase().includes(banned), `${provider}: catalog-look phrasing "${banned}" is in the prompt`);
+      }
+      assert(/real camera/i.test(p), `${provider}: expected the real-camera counter-signal, got: ${p}`);
+      assert(/ordinary home/i.test(p), `${provider}: expected the ordinary-home subject, got: ${p}`);
+    }
+  });
+
+  await checkAsync("windows are stated as glazed, and only when the ledger has windows", async () => {
+    // The greybox draws a window as a flat bright panel, and the prompt only
+    // ever said a bright panel IS a window — so a faithful reproduction was a
+    // bare hole in the wall (reported).
+    for (const provider of ["runware", "gemini"] as const) {
+      const withWindows = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider, hasGreybox: true, ledger: { doors: 1, windows: 2 } });
+      assert(/glazed/i.test(withWindows), `${provider}: expected the glazing clause, got: ${withWindows}`);
+      const noWindows = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider, hasGreybox: true, ledger: { doors: 1, windows: 0 } });
+      assert(!/glazed/i.test(noWindows), `${provider}: a windowless room must not be told about glazing, got: ${noWindows}`);
+    }
+  });
+
+  await checkAsync("the finish-the-job clause names the room type, and never reaches a service room", async () => {
+    // The furniture section is a CLOSED list by construction (naming a piece
+    // the camera cannot see tells the model to invent one), which reads as
+    // the room's complete contents — hence the under-furnishing report. But
+    // SERVICE_ROOM_CONTENTS rooms exist to STAY empty, and telling the model
+    // to furnish a bathroom "completely" would undo that guard in the same
+    // prompt.
+    for (const provider of ["runware", "gemini"] as const) {
+      const bedroom = await buildRoomPrompt(uiInput, uiRoom, dspec, { provider, hasGreybox: true, ledger: { doors: 1, windows: 1 } });
+      assert(/furnish this bedroom completely/i.test(bedroom), `${provider}: expected the finish-the-job clause, got: ${bedroom}`);
+
+      const bathroom = await buildRoomPrompt(uiInput, { name: "Bath", type: "Bathroom" }, dspec, {
+        provider,
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 0 },
+      });
+      assert(!/furnish this .* completely/i.test(bathroom), `${provider}: a service room must not be told to furnish itself, got: ${bathroom}`);
+      assert(/sanitary fixtures/i.test(bathroom), `${provider}: the service-room contents clause should still be there, got: ${bathroom}`);
+    }
+  });
+
+  await checkAsync("the finish-the-job clause survives the overflow ladder at full pressure", async () => {
+    // It is deliberately outside the ladder: it exists to fix a reported
+    // under-furnishing bug, so trimming it away under pressure would
+    // reintroduce that bug on exactly the longest prompts.
+    const p = await buildRoomPrompt(uiInput, { ...uiRoom, additional_notes: "z".repeat(2000) }, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 2, windows: 3 },
+      furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
+    });
+    assert(p.length <= 1800, `prompt is ${p.length} chars`);
+    assert(/furnish this bedroom completely/i.test(p), `the finish-the-job clause was trimmed away: ${p}`);
+  });
+
+  check("stripWallFinishes removes a finish without mangling the colour it was attached to", () => {
+    eq(stripWallFinishes("warm sand lime-wash walls"), "warm sand walls", "the reported real-world case");
+    eq(stripWallFinishes("venetian plaster over microcement"), "over", "every listed finish is removed");
+    eq(stripWallFinishes("chalky off-white, walnut floors"), "off-white, walnut floors", "punctuation is repaired, not left dangling");
+    eq(stripWallFinishes(undefined), "", "an absent field is empty, never the string undefined");
+    // Deliberately a fixed list of WALL finishes, not a general texture-word
+    // heuristic: a brief must still be free to name a floor or a worktop.
+    eq(
+      stripWallFinishes("honed limestone worktop and cane seating"),
+      "honed limestone worktop and cane seating",
+      "non-wall materials are untouched",
+    );
   });
 
   await checkAsync(
@@ -1736,7 +1859,7 @@ export async function GET() {
       furniture: [f("1", "sofa")],
     });
     assert(!p.trimStart().startsWith("{"), "FLUX must not be sent JSON");
-    assert(p.includes("Photorealistic interior photograph"), `expected the prose medium line, got: ${p.slice(0, 120)}`);
+    assert(p.includes("Photorealistic photograph of a real, ordinary home"), `expected the prose medium line, got: ${p.slice(0, 120)}`);
   });
 
   await checkAsync("the gemini flow emits parseable JSON carrying the same priorities", async () => {

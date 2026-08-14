@@ -82,6 +82,33 @@ const BUDGET = { brief: 240, furniture: 460, accent: 100 } as const;
  */
 const MAX_JSON_PROMPT_CHARS = 12_000;
 
+/**
+ * Bounds for the two free-text labels the no-greybox contract interpolates.
+ *
+ * Section 4.4's overflow ladder never trims the contract, so before this the
+ * only two unbounded values in it could eat the entire 1,800-char budget.
+ * That produced two bad outcomes and no good one: either buildRoomPrompt threw
+ * outright, or — worse, because it looked like success — the prompt came in
+ * under the cap having starved the room brief and the furniture line down to
+ * nothing to make room for a 1,400-character business name.
+ *
+ * Both are short labels by nature ("Dental Clinic", "2BHK Apartment",
+ * "Modern Indian"), so bounding them costs nothing real and makes the
+ * contract a fixed cost like every other section. Sized with room to spare
+ * for a wordy Custom subcategory ("Ayurvedic wellness centre with treatment
+ * rooms" is 46) and for the free-text style string a design-reference upload
+ * can produce.
+ */
+const LABEL_BUDGET = { style: 60, subcategory: 80 } as const;
+
+/** The design style and project subcategory, bounded — see LABEL_BUDGET. */
+function labelsFor(input: UniversalInput): { style: string; subcategory: string } {
+  return {
+    style: input.design.style.slice(0, LABEL_BUDGET.style).trim(),
+    subcategory: input.project.subcategory.slice(0, LABEL_BUDGET.subcategory).trim(),
+  };
+}
+
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
 /** Word-forms are single semantic tokens and are better represented in text-encoder space than digits. */
@@ -166,10 +193,19 @@ function openingCensus(ledger?: GreyboxLedger): string {
   if (doors > 0) parts.push(`${word(doors)} ${plural(doors, "door")}`);
   if (windows > 0) parts.push(`${word(windows)} ${plural(windows, "window")}`);
   const closed = doors > 0 ? " All doors are closed." : "";
+  // Reported: windows were rendering as a bare hole punched in the wall. The
+  // greybox draws a window as a flat bright panel (build-scene.ts) and the
+  // prompt, until now, only ever said that a bright panel IS a window — it
+  // never said the window is glazed, so a faithful reproduction of the
+  // reference is an unglazed opening. This states what a window is made of.
+  // Positive phrasing, same rule as the rest of this function: it describes
+  // the glass, frame and dressing that should be there, never the "hole" it
+  // is avoiding.
+  const glazed = windows > 0 ? " Each window is glazed and framed, with a sill and curtains or a blind." : "";
   return (
     `This room has exactly ${parts.join(" and ")}, only where Image 1 shows ${
       doors + windows === 1 ? "it" : "them"
-    }. Every other surface is unbroken solid wall.${closed} `
+    }. Every other surface is unbroken solid wall.${closed}${glazed} `
   );
 }
 
@@ -289,6 +325,36 @@ function serviceContentsFor(room: UniversalInputRoom): string | undefined {
 }
 
 /**
+ * The "the boxes are a floor, not a ceiling" clause. Shared by both flows.
+ *
+ * Reported: rooms come back under-furnished — the grey boxes get dressed and
+ * nothing else is added, so a bedroom arrives as a bed and a nightstand in an
+ * otherwise bare room. That is a direct consequence of how the furniture
+ * section above has to be written: it names EXACTLY the in-frame proxies and
+ * nothing more, because naming a piece the camera cannot see tells the model
+ * to invent one (the same failure the opening census avoids by counting from
+ * the mask). A closed, exhaustive list with no further instruction reads as
+ * the complete contents of the room, and the model obliges.
+ *
+ * So the permission to add more has to be stated explicitly, and separately
+ * from the list. Keyed off the room's TYPE — the semantic label — falling
+ * back to its name, because a detected name like "Ananya's Room" says
+ * nothing about what belongs in it while "Bedroom" says everything.
+ *
+ * Returns "" for any room with a SERVICE_ROOM_CONTENTS entry. Those rooms
+ * exist precisely to stay empty: that clause is the guard that stops a
+ * "luxury living space" brief free-associating a sofa into a bathroom, and
+ * telling the model to furnish a bathroom "completely" would undo it in the
+ * same prompt.
+ */
+function furnishFullyFor(room: UniversalInputRoom): string {
+  if (serviceContentsFor(room)) return "";
+  const label = (room.type?.trim() || room.name.trim()).toLowerCase();
+  if (!label) return "";
+  return `Beyond the pieces named above, furnish this ${label} completely, as a real finished ${label} would be.`;
+}
+
+/**
  * furniture-layout.ts's token interpolation (`{wood}`/`{soft}`/`{stone}` ->
  * the design spec's chosen materials) is a private, unexported helper there,
  * and this file's scope is prompt-builder.ts alone — it cannot be exported
@@ -355,11 +421,21 @@ function buildGeminiPrompt(
   const numbered = opts.numberedFurniture ?? false;
   const payload: Record<string, unknown> = {};
 
-  // Priority 0 (framing, not itself one of the five priority tiers — the
-  // FLUX flow's `medium` line plays the same unconditional, always-first
-  // role). Identifies what each reference image IS so the priority-ordered
-  // fields below can refer to "image 1"/"image 2" without redefining them
-  // every time.
+  // Priority 0, first half (framing, not itself one of the five priority
+  // tiers). States what KIND of picture this is, mirroring the first sentence
+  // of the FLUX flow's `medium` line and carrying the same anti-catalog
+  // reasoning: an unqualified "interior" with a luxury brief attached
+  // free-associates toward a showroom floor, and without naming a real camera
+  // there is no counter-signal at all to the CG look. Deliberately does not
+  // ask for clutter — the complaint was that outputs don't read as
+  // photographs, not that they're too tidy.
+  payload.output =
+    "A photorealistic photograph of a real, ordinary home, shot on a real camera: natural depth " +
+    "of field, uneven daylight, slight variation across surfaces.";
+
+  // Priority 0, second half. Identifies what each reference image IS so the
+  // priority-ordered fields below can refer to "image 1"/"image 2" without
+  // redefining them every time.
   if (opts.hasGreybox) {
     const referenceImages: Record<string, string> = {
       image1:
@@ -374,7 +450,11 @@ function buildGeminiPrompt(
     }
     payload.referenceImages = referenceImages;
   } else {
-    payload.scene = `A ${input.design.luxury_level.toLowerCase()} "${input.design.style}" ${input.project.subcategory}.`;
+    // Bounded through the same helper the FLUX contract uses. This flow has no
+    // 1,800-char cliff, but the two flows must not describe the same project
+    // differently, and MAX_JSON_PROMPT_CHARS is still a hard throw.
+    const labels = labelsFor(input);
+    payload.scene = `A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}.`;
   }
 
   // Priority 1: openings — exact counts, from the Pass B mask ledger via the
@@ -394,6 +474,13 @@ function buildGeminiPrompt(
           : "These are the only openings, positioned only where image 1 shows them; every other wall surface is unbroken solid wall.",
     };
     if (doors > 0) openings.doorsClosed = true;
+    // Same fix as the FLUX census's `glazed` clause: image 1 draws a window
+    // as a flat bright panel, and until now nothing said the window is made
+    // of anything, so a faithful reproduction of the reference was a bare
+    // hole in the wall (reported).
+    if (windows > 0) {
+      openings.windowsGlazed = "Each window is glazed and framed, with a sill and curtains or a blind.";
+    }
     payload.openings = openings;
   }
 
@@ -420,6 +507,13 @@ function buildGeminiPrompt(
     payload.furniture = { contents: serviceContents };
   }
 
+  // Priority 2b: the furniture list above is closed and exhaustive by
+  // construction, which reads as the room's complete contents — see
+  // furnishFullyFor. Empty for service rooms, so a bathroom's "contents"
+  // statement above is never contradicted in the same payload.
+  const furnishFully = furnishFullyFor(room);
+  if (furnishFully) payload.furnishRoomFully = furnishFully;
+
   // Priority 3: "nothing abnormal" — geometry lock and matte, non-reflective
   // wall surfaces. Always present regardless of hasGreybox, mirroring the
   // FLUX flow's `medium` wall-finish clause, which is likewise unconditional.
@@ -429,8 +523,13 @@ function buildGeminiPrompt(
     ? "Camera position, angle and field of view; room proportions; every wall position; and the position, " +
       "width and height of every opening match image 1 exactly, with no deviation."
     : "Straight walls, level camera, eye level.";
+  // "chalky" is gone, and the colour is named instead of a treatment — same
+  // change as the FLUX `medium` line, same reason: naming a wall FINISH is
+  // what produced the oily/waxy walls users reported, so neither this file
+  // nor the planner (see DesignSpecification.wallColour) names one any more.
   payload.wallSurfaces =
-    "Wall paint and plaster are flat matte, chalky and light-absorbing. Change only surfaces, materials, lighting and furnishing.";
+    `Walls are ordinary smooth painted plaster${spec.wallColour?.trim() ? ` in ${spec.wallColour.trim()}` : ""}, ` +
+    "flat matte and light-absorbing. Change only surfaces, materials, lighting and furnishing.";
 
   // Priority 4: colour/palette and lighting, bundled with the room's label
   // and per-room guidance — the same content the FLUX flow's "Room brief"
@@ -522,15 +621,38 @@ export async function buildRoomPrompt(
   //    still appended to `medium` because that is the one line the overflow
   //    ladder never touches, so it costs a constant number of characters and
   //    can neither starve nor be starved by the sections below.
+  //
+  //    Reworked again after a report that outputs read as "a very polished
+  //    catalog image that isn't realistically possible" rather than a home.
+  //    Two changes. The subject is now stated as a REAL, ORDINARY home rather
+  //    than a bare "interior" — an unqualified interior with a luxury brief
+  //    attached free-associates toward a showroom floor. And the camera is
+  //    described as a real camera with real behaviour (depth of field falls
+  //    off, daylight is uneven, surfaces vary), which is the counter-signal to
+  //    the CG look; there was previously none at all. Deliberately NOT asking
+  //    for clutter or mess: the complaint was that it doesn't read as a
+  //    photograph, not that it's too tidy, and "lived-in" reliably pulls these
+  //    models toward visible junk.
+  //
+  //    "chalky" is gone. It was itself a texture word, and this file's own
+  //    rule is that naming a wall treatment is what produces one — see
+  //    DesignSpecification.wallColour, where the same reasoning removed
+  //    "lime-wash" from the planner's side. What remains states the finish as
+  //    ordinary paint and names only a COLOUR, which is the whole point: the
+  //    model is never told a wall treatment by anyone.
+  const wallColour = spec.wallColour?.trim();
   const medium =
-    "Photorealistic interior photograph, wide angle, eye level. Wall paint and plaster are " +
-    "flat matte, chalky and light-absorbing.";
+    "Photorealistic photograph of a real, ordinary home, wide angle, eye level. Real camera: " +
+    "natural depth of field, uneven daylight, slight variation across surfaces. Walls are " +
+    `ordinary smooth painted plaster${wallColour ? ` in ${wallColour}` : ""}, flat matte and ` +
+    "light-absorbing.";
 
   // 2. Structural contract, or a one-line geometry statement when there is no
   //    reference image. One code path, one budget, one assert.
+  const labels = labelsFor(input);
   const contract = opts.hasGreybox
     ? structuralContract(furniture.length > 0, opts.ledger)
-    : `A ${input.design.luxury_level.toLowerCase()} "${input.design.style}" ${input.project.subcategory}. ` +
+    : `A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}. ` +
       "Straight walls, level camera, eye level.";
 
   // 3. The opening ledger used to be its own stanza here. It is now folded
@@ -570,7 +692,16 @@ export async function buildRoomPrompt(
     ? mapped || buildFurnitureMaterials(furniture, spec.materialTokens, BUDGET.furniture)
     : (serviceContents ?? "").slice(0, BUDGET.furniture);
 
-  // 6. Accent — optional, always last, engineered to be the thing that gets
+  // 6. Finish-the-job clause — see furnishFullyFor for why a closed furniture
+  //    list needs one. Sits directly after the furniture line because it only
+  //    means anything as a qualifier on it, and is deliberately NOT part of
+  //    the overflow ladder below: it is short, constant, and it exists to fix
+  //    a reported under-furnishing bug, so letting it be trimmed under
+  //    pressure would silently reintroduce that bug on exactly the longest
+  //    prompts. Empty for service rooms.
+  const furnishFully = furnishFullyFor(room);
+
+  // 7. Accent — optional, always last, engineered to be the thing that gets
   //    cut if anything gets cut.
   const accent = (room.additional_notes?.trim() ?? "").slice(0, BUDGET.accent);
 
@@ -581,7 +712,8 @@ export async function buildRoomPrompt(
   let briefOut = brief;
   let furnOut = furnitureLine;
   let accentOut = accent;
-  const assemble = () => [medium, contract, ledger, briefOut, furnOut, accentOut].filter(Boolean).join("\n\n");
+  const assemble = () =>
+    [medium, contract, ledger, briefOut, furnOut, furnishFully, accentOut].filter(Boolean).join("\n\n");
 
   let prompt = assemble();
   if (prompt.length > MAX_PROMPT_CHARS && accentOut) {
