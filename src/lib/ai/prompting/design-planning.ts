@@ -15,6 +15,7 @@ const DESIGN_SPEC_SCHEMA = {
     negativeConstraints: { type: "STRING" },
     compactBrief: { type: "STRING" },
     wallColour: { type: "STRING" },
+    accentColours: { type: "STRING" },
     materialTokens: {
       type: "OBJECT",
       properties: { wood: { type: "STRING" }, soft: { type: "STRING" }, stone: { type: "STRING" } },
@@ -43,10 +44,26 @@ const DESIGN_SPEC_SCHEMA = {
     "negativeConstraints",
     "compactBrief",
     "wallColour",
+    "accentColours",
     "materialTokens",
     "roomGuidelines",
   ],
 } as const;
+
+/**
+ * A/B WORKTREE (worktree-design-spec-ai-comparison): this is the LLM path,
+ * restored so it can be compared directly against the sibling worktree's
+ * table-driven `buildDesignSpec` (worktree-greybox-opening-placement,
+ * design-spec-tables.ts) on the same rooms and the same design selections.
+ * Everything downstream of whichever function runs — prompt-builder, both
+ * flows, every budget — is identical between the two worktrees; this
+ * function is the one thing that differs.
+ *
+ * `accentColours` was added here (alongside the pre-existing `wallColour`)
+ * so this path has the same fields prompt-builder now reads on the table
+ * side, rather than the comparison being handicapped by a missing field —
+ * see prompt-builder.ts's `medium`/`wallSurfaces` for where both land.
+ */
 
 /**
  * One Gemini call per project: turns a Universal Input into a Design
@@ -88,16 +105,25 @@ about any surface you describe as a wall. The walls in this project are ordinary
 plaster, exactly as in a normal home, and that is already stated elsewhere — your job is only the \
 colour they are painted.
 
+PALETTE SPLIT: the colour palette above lists several colours with no stated role. You must decide \
+which ONE of them is the wall colour and put ONLY that one in wallColour below; every other colour \
+in the palette goes in accentColours instead, describing where each is used (soft furnishing, \
+accents, trim). Never leave wallColour empty and never repeat the same colour in both fields.
+
 REALISM: you are specifying a real, ordinary, buildable home that a photographer would shoot \
 exactly as it stands. Never specify a showroom, a display set, a magazine shoot or a staged \
 arrangement.
 
 Additionally return, for a strict character budget in a downstream image prompt:
-- compactBrief: AT MOST 240 characters. One or two sentences naming the palette, the two or three \
-key materials, and the quality of light. No preamble, no room names, no furniture.
-- wallColour: AT MOST 40 characters. The colour the walls are painted, taken from the colour \
-palette above — for example "warm sand", "soft off-white", "muted sage green". A colour and \
-nothing else: no finish, no material, no sentence.
+- compactBrief: AT MOST 240 characters. One or two sentences naming the two or three key materials \
+and the quality of light. Do NOT name colours here — wallColour and accentColours below carry the \
+palette instead, so repeating it here only wastes the budget. No preamble, no room names, no furniture.
+- wallColour: AT MOST 40 characters. The ONE colour the walls are painted, per the PALETTE SPLIT \
+rule above — for example "warm sand", "soft off-white", "muted sage green". A colour and nothing \
+else: no finish, no material, no sentence.
+- accentColours: AT MOST 60 characters. Every OTHER colour from the palette, per the PALETTE SPLIT \
+rule above, as a short phrase — for example "muted sage green and deep olive brown". Colours only, \
+no finish, no sentence.
 - materialTokens: three short noun phrases, at most three words each, naming the specific dominant \
 wood ("walnut", "light oak"), the dominant soft/upholstery material ("cream boucle", "charcoal linen") \
 and the dominant stone ("carrara marble", "honed granite") for this project.
@@ -113,14 +139,15 @@ fixes those.`;
   //
   // stripWallFinishes is the same argument applied to the WALLS rule above:
   // an instruction is a request, and this one had already been ignored often
-  // enough to be reported as a bug. Applied to exactly the three fields that
-  // reach an image prompt (compactBrief, wallColour, compactGuidance) — the
-  // verbose fields are display-only and are allowed to read like a designer
-  // wrote them.
+  // enough to be reported as a bug. Applied to exactly the four fields that
+  // reach an image prompt (compactBrief, wallColour, accentColours,
+  // compactGuidance) — the verbose fields are display-only and are allowed to
+  // read like a designer wrote them.
   return {
     ...spec,
     compactBrief: clamp(stripWallFinishes(spec.compactBrief), 240),
     wallColour: clamp(stripWallFinishes(spec.wallColour), 40),
+    accentColours: clamp(stripWallFinishes(spec.accentColours), 60),
     roomGuidelines: spec.roomGuidelines.map((g) => ({
       ...g,
       compactGuidance: clamp(stripWallFinishes(g.compactGuidance), 120),
