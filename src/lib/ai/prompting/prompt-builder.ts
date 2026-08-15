@@ -62,7 +62,17 @@ const MAX_PROMPT_CHARS = 1800;
 // lost two pieces to the priority trim — observed in a real assembled prompt.
 // Furniture identity is the user's stated priority 2, and a full prompt still
 // lands near 1,200 of the 1,800 cap, so the headroom was simply unused.
-const BUDGET = { brief: 240, furniture: 460, accent: 100 } as const;
+// brief raised 240 -> 300 when the deterministic design spec landed. This
+// budget covers the room LABEL, the brief and the per-room guidance JOINED,
+// and the guidance is last in that join — so a 240-char compactBrief plus a
+// 120-char compactGuidance silently lost the guidance entirely, every time,
+// with no error. That was invisible while both came from a model whose
+// lengths varied; design-spec-tables.ts writes both to fixed budgets sized
+// against this number, so the section now holds a full label, a full brief
+// and a full guidance at once. The worst-case assembled prompt (every section
+// simultaneously at its cap, five furniture pieces) still lands near 1,720 of
+// the 1,800 ceiling.
+const BUDGET = { brief: 300, furniture: 460, accent: 100 } as const;
 
 /**
  * Gemini-flow sanity ceiling — NOT a truncation budget. `MAX_PROMPT_CHARS`
@@ -137,16 +147,23 @@ function cap(s: string): string {
  * darker reveal frame, and an unlit near-white panel that is the brightest
  * thing in frame by construction.
  */
-function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger): string {
+function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger, room?: UniversalInputRoom): string {
   const furnitureClause = hasFurniture
     ? " Darker grey volumes are furniture: keep their position, footprint and approximate size."
     : "";
+  // Names what kind of room the massing render IS, so the model reads the
+  // grey box as a bedroom rather than an anonymous volume from the very first
+  // sentence. Interpolated as "this exact bedroom", never "this exact bedroom
+  // room" — the type already carries the noun, and the literal template that
+  // reads well with a type has to still read well without one.
+  const roomType = room?.type?.trim().toLowerCase();
+  const subject = roomType ? `this exact ${roomType}` : "this exact room";
   // Collapsed at the END, over the whole assembled string. openingCensus and
   // furnitureClause each carry their own boundary space so they can be empty
   // without leaving a gap, which means the junction between them can hold two.
   // Collapsing inside either piece alone cannot see that junction.
   return (
-    "Image 1 is an untextured grey massing render of this exact room, from the exact camera the " +
+    `Image 1 is an untextured grey massing render of ${subject}, from the exact camera the ` +
     "output must use. Preserve without deviation: camera position, angle and field of view; room " +
     "proportions and all wall positions; the position, width and height of every opening. A framed " +
     `recessed panel is a closed door. A bright panel is a window. ${openingCensus(ledger)}` +
@@ -531,7 +548,11 @@ function buildGeminiPrompt(
   if (opts.hasGreybox) {
     const referenceImages: Record<string, string> = {
       image1:
-        "An untextured grey massing render of this exact room, from the exact camera the output must use. " +
+        // Same room-type naming as the FLUX contract's `subject`, so the two
+        // flows describe image 1 identically.
+        `An untextured grey massing render of ${
+          room.type?.trim() ? `this exact ${room.type.trim().toLowerCase()}` : "this exact room"
+        }, from the exact camera the output must use. ` +
         "A framed recessed panel is a closed door; a bright panel is a window.",
     };
     if (numbered) {
@@ -646,7 +667,9 @@ function buildGeminiPrompt(
   // nor the planner (see DesignSpecification.wallColour) names one any more.
   payload.wallSurfaces =
     `Walls are ordinary smooth painted plaster${spec.wallColour?.trim() ? ` in ${spec.wallColour.trim()}` : ""}, ` +
-    "flat matte and light-absorbing. Change only surfaces, materials, lighting and furnishing.";
+    `flat matte and light-absorbing.${
+      spec.accentColours?.trim() ? ` Accents throughout in ${spec.accentColours.trim()}.` : ""
+    } Change only surfaces, materials, lighting and furnishing.`;
 
   // Priority 4: colour/palette and lighting, bundled with the room's label
   // and per-room guidance — the same content the FLUX flow's "Room brief"
@@ -758,11 +781,23 @@ export async function buildRoomPrompt(
   //    ordinary paint and names only a COLOUR, which is the whole point: the
   //    model is never told a wall treatment by anyone.
   const wallColour = spec.wallColour?.trim();
+  // The other half of the same statement — see DesignSpecification.accentColours
+  // for why both live in this never-trimmed line rather than in the brief.
+  const accents = spec.accentColours?.trim();
+  // Declared before `medium` because the medium line now names the project
+  // type too, not just the contract below.
+  const labels = labelsFor(input);
+  // "home" was hardcoded, which is wrong for every Custom project: a dental
+  // clinic, a cafe and a temple were all being described to the model as an
+  // ordinary home before anything else in the prompt got a word in. The
+  // subcategory is the user's own label for what the space IS, so it is used
+  // verbatim rather than lowercased — "2BHK Apartment" survives, where
+  // lowercasing would have produced "2bhk apartment".
   const medium =
-    "Photorealistic photograph of a real, ordinary home, wide angle, eye level. Real camera: " +
-    "natural depth of field, uneven daylight, slight variation across surfaces. Walls are " +
-    `ordinary smooth painted plaster${wallColour ? ` in ${wallColour}` : ""}, flat matte and ` +
-    "light-absorbing.";
+    `Photorealistic photograph of a real, ordinary ${labels.subcategory || "home"}, wide angle, ` +
+    "eye level. Real camera: natural depth of field, uneven daylight, slight variation across " +
+    `surfaces. Walls are ordinary smooth painted plaster${wallColour ? ` in ${wallColour}` : ""}, ` +
+    `flat matte and light-absorbing.${accents ? ` Accents throughout in ${accents}.` : ""}`;
 
   // 2. Structural contract, or the geometry statement for a room with no
   //    reference image. One code path, one budget, one assert.
@@ -779,9 +814,8 @@ export async function buildRoomPrompt(
   //    render, no camera lock — because there is no second image to refer to
   //    and naming one that was never sent is how a model starts inventing
   //    what it must have contained.
-  const labels = labelsFor(input);
   const contract = opts.hasGreybox
-    ? structuralContract(furniture.length > 0, opts.ledger)
+    ? structuralContract(furniture.length > 0, opts.ledger, room)
     : [
         `A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}.`,
         "Straight walls, level camera, eye level.",

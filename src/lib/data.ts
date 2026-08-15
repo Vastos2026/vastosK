@@ -33,14 +33,35 @@ export const LUXURY_LEVELS: { id: import("./ai/prompting/types").LuxuryLevel; la
   { id: "Ultra Luxury", label: "Ultra Luxury", tagline: "Show-stopping materials, bespoke detailing" },
 ];
 
-/** Colour palette presets for the Design step's global colour picker. */
-export const COLOUR_PALETTES: { id: string; label: string; swatch: string[]; description: string }[] = [
-  { id: "Warm White", label: "Warm White", swatch: ["#f3ead3", "#c8a06a", "#7a5236"], description: "cream and warm white walls, honey oak tones, soft walnut brown accents" },
-  { id: "Cool Grey", label: "Cool Grey", swatch: ["#e9e6e1", "#9c8c7c", "#3a3a3d"], description: "soft greige and cool grey surfaces, warm taupe accents, charcoal detailing" },
-  { id: "Earthy Terracotta", label: "Earthy Terracotta", swatch: ["#e9d6b0", "#a8431f", "#3a1d12"], description: "sandy cream base, burnt terracotta orange accents, deep umber brown" },
-  { id: "Deep Jewel", label: "Deep Jewel", swatch: ["#caa64a", "#3a2f5e", "#14110d"], description: "brushed gold accents, deep indigo-purple, near-black charcoal base" },
-  { id: "Sage & Sand", label: "Sage & Sand", swatch: ["#e6e3d6", "#7fa08a", "#4f4a3a"], description: "warm sand base, muted sage green accents, deep olive-brown detailing" },
-  { id: "Charcoal & Brass", label: "Charcoal & Brass", swatch: ["#d4972a", "#4f4f52", "#161616"], description: "near-black charcoal base, warm brass gold accents, mid-grey surfaces" },
+/**
+ * Colour palette presets for the Design step's global colour picker.
+ *
+ * `wallColour` and `accentColours` split what `description` already said in
+ * prose. That split is load-bearing, not cosmetic: the palette used to reach
+ * the image model only after an LLM had read this description and decided for
+ * itself which surface each colour belonged to. Handed three magentas it would
+ * treat them as an accent scheme and paint the walls a safe neutral, which is
+ * the reported "I chose pink and got ivory walls" bug. Naming the wall colour
+ * as its own field means slot one IS the wall, with no interpretive step left
+ * to overrule the user. `description` is unchanged and still goes to the
+ * planner as the full palette statement.
+ */
+export const COLOUR_PALETTES: {
+  id: string;
+  label: string;
+  swatch: string[];
+  description: string;
+  /** The wall paint colour. A colour name only, never a finish or technique. */
+  wallColour: string;
+  /** Everything in the palette that is not the wall. */
+  accentColours: string;
+}[] = [
+  { id: "Warm White", label: "Warm White", swatch: ["#f3ead3", "#c8a06a", "#7a5236"], description: "cream and warm white walls, honey oak tones, soft walnut brown accents", wallColour: "warm cream white", accentColours: "honey oak and soft walnut brown" },
+  { id: "Cool Grey", label: "Cool Grey", swatch: ["#e9e6e1", "#9c8c7c", "#3a3a3d"], description: "soft greige and cool grey surfaces, warm taupe accents, charcoal detailing", wallColour: "soft cool greige", accentColours: "warm taupe and charcoal" },
+  { id: "Earthy Terracotta", label: "Earthy Terracotta", swatch: ["#e9d6b0", "#a8431f", "#3a1d12"], description: "sandy cream base, burnt terracotta orange accents, deep umber brown", wallColour: "sandy cream", accentColours: "burnt terracotta orange and deep umber brown" },
+  { id: "Deep Jewel", label: "Deep Jewel", swatch: ["#caa64a", "#3a2f5e", "#14110d"], description: "brushed gold accents, deep indigo-purple, near-black charcoal base", wallColour: "deep indigo purple", accentColours: "brushed gold and near-black charcoal" },
+  { id: "Sage & Sand", label: "Sage & Sand", swatch: ["#e6e3d6", "#7fa08a", "#4f4a3a"], description: "warm sand base, muted sage green accents, deep olive-brown detailing", wallColour: "warm sand", accentColours: "muted sage green and deep olive brown" },
+  { id: "Charcoal & Brass", label: "Charcoal & Brass", swatch: ["#d4972a", "#4f4f52", "#161616"], description: "near-black charcoal base, warm brass gold accents, mid-grey surfaces", wallColour: "near-black charcoal", accentColours: "warm brass gold and mid grey" },
 ];
 
 /** Unit systems for the dimension selector — ft/in is the default everywhere. */

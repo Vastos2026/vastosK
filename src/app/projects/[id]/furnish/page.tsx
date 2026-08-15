@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import type { FloorPlan, PlacedOpening, Room } from "@/lib/types";
+import type { FloorPlan, PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
+import type { GreyboxRoomSpec } from "@/lib/greybox/types";
 
 /** Stable reference — see furnish/[roomId]/page.tsx's identical constant. */
 const EMPTY_OPENINGS: PlacedOpening[] = [];
@@ -79,6 +80,7 @@ function FurnishGalleryContent({
   plan?: FloorPlan;
 }) {
   const setRoomGreybox = useVasto((s) => s.setRoomGreybox);
+  const updateRoom = useVasto((s) => s.updateRoom);
   const [status, setStatus] = useState<Record<string, FurnishCardStatus>>(() =>
     Object.fromEntries(rooms.map((r) => [r.id, "pending" as const])),
   );
@@ -100,9 +102,57 @@ function FurnishGalleryContent({
     // mount anyway. Started once here and awaited inside each queued job, so
     // the module is fetched a single time no matter how many rooms there are.
     const greybox = import("@/lib/greybox/ensure-greybox-key");
+    // Same "fetch once, await inside every queued job" shape as `greybox`
+    // above — these four are only needed to seed a never-furnished room (see
+    // below), which is the uncommon branch, but that seed has to be derived
+    // through the exact same helpers ensureGreybox itself uses, so they ride
+    // along rather than being hand-rolled here.
+    const roomSpecMod = import("@/lib/greybox/room-spec");
+    const cameraMod = import("@/lib/greybox/camera");
+    const dimsMod = import("@/lib/greybox/dimensions");
+    const slotMod = import("@/lib/greybox/first-free-slot");
     for (const room of rooms) {
-      enqueueGreyboxRender(async () =>
-        (await greybox).ensureGreybox(projectId, room).catch((e) => {
+      enqueueGreyboxRender(async () => {
+        // `room.furniture === undefined` means nobody has ever opened this
+        // room's 3D editor — the gallery used to hand such a room straight to
+        // ensureGreybox as-is, which rendered and CACHED an empty box (only
+        // door/window cutouts), so a room the user never opened came back
+        // under-furnished with no later trigger to fix it (reported bug).
+        // `[]` means the user opened the editor and removed every piece on
+        // purpose, which must be left alone — re-seeding it would silently
+        // override a deliberate choice. Seeding has to happen BEFORE the
+        // ensureGreybox call below, in this same queued job, or the cached
+        // greybox would still be the empty one until some unrelated later
+        // edit invalidated the hash.
+        let seededRoom = room;
+        if (room.furniture === undefined) {
+          const [{ roomSpecFor }, { greyboxCamera }, { GREYBOX_ASPECT }, { defaultArrangementFor }] =
+            await Promise.all([roomSpecMod, cameraMod, dimsMod, slotMod]);
+          // roomSpecFor + greyboxCamera is the SAME derivation ensureGreybox
+          // and the per-room editor both use — hand-building a spec here
+          // would risk seeding furniture framed by a different camera than
+          // the one the greybox actually renders from.
+          const payload = roomSpecFor(room);
+          const spec: GreyboxRoomSpec = {
+            width: payload.width,
+            depth: payload.depth,
+            openings: payload.openings,
+            cameraView: payload.cameraView,
+          };
+          const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+          const arrangement: PlacedFurniture[] = defaultArrangementFor(room.type, spec, camera);
+          // Service room types (Bathroom, Utility, Store Room...) legitimately
+          // seed nothing — defaultArrangementFor already returns [] for them
+          // via NO_FURNITURE_ROOM_TYPES. Only persist when there is actually
+          // something to add: writing an empty array here would be harmless
+          // (greyboxHashFor treats undefined and [] identically via its own
+          // `?? []`) but is pointless churn on every service room's card.
+          if (arrangement.length > 0) {
+            updateRoom(projectId, room.id, { furniture: arrangement });
+            seededRoom = { ...room, furniture: arrangement };
+          }
+        }
+        return (await greybox).ensureGreybox(projectId, seededRoom).catch((e) => {
           // Matches generate/page.tsx's own fallback posture: a render/upload
           // failure degrades to the same empty state as "no dimensions yet"
           // rather than surfacing a distinct error UI this task doesn't spec.
@@ -111,8 +161,8 @@ function FurnishGalleryContent({
             e instanceof Error ? e.message : e,
           );
           return undefined;
-        }),
-      ).then((gb) => {
+        });
+      }).then((gb) => {
         if (cancelled) return;
         // Never spread the whole ensureGreybox result into the store —
         // `projected` is derived fresh per call (see GreyboxResult's own doc
@@ -163,7 +213,9 @@ function FurnishGalleryContent({
                 </Badge>
               </div>
               <p className="mt-1 text-sm text-muted">
-                Furnish your rooms — place furniture where you want it. Skip any room to generate it empty.
+                Furnish your rooms — place furniture where you want it. Every room starts with a default
+                arrangement automatically, so skipping one still generates it furnished; open a room to
+                rearrange it instead.
               </p>
             </div>
             {/* Always enabled: an unfurnished room still generates fine from an

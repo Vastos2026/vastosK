@@ -10,7 +10,7 @@
  */
 
 import { buildUniversalInput, type DesignSelection, type RoomSelection } from "@/lib/ai/prompting/build-universal-input";
-import { runDesignPlanning } from "@/lib/ai/prompting/design-planning";
+import { buildDesignSpec } from "@/lib/ai/prompting/design-spec-tables";
 import { referenceDesignSelection } from "@/lib/ai/prompting/design-reference";
 import { toErrorResponse } from "@/lib/ai/errors";
 import { assertAllowed } from "@/lib/api-guard";
@@ -32,6 +32,17 @@ interface Body {
    * hides in that case). Overrides `design` below — see the call site.
    */
   designReference?: DesignReferenceAttributes;
+  /**
+   * The colour palette as STRUCTURED data, alongside `design.colourPalette`'s
+   * formatted prose. `buildDesignSpec` needs to know which slot is the wall,
+   * and the prose form cannot say: "Custom (#c520af, #e363d2, #760585)" is
+   * three colours with no stated roles, which is precisely how the old
+   * planning call ended up assigning them itself and painting the walls a
+   * neutral the user never picked. Absent for a design-reference upload, where
+   * the palette is free text and slot one is read off the text instead.
+   */
+  paletteId?: string;
+  customHexes?: string[];
 }
 
 export async function POST(request: Request) {
@@ -49,7 +60,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { projectId, category, subcategory, rooms, design, designReference } = body;
+  const { projectId, category, subcategory, rooms, design, designReference, paletteId, customHexes } = body;
   if (!projectId) {
     return Response.json({ error: "projectId is required" }, { status: 400 });
   }
@@ -72,7 +83,19 @@ export async function POST(request: Request) {
       rooms ?? [],
       selection,
     );
-    const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id });
+    // Table lookup, not an AI call. Every input to the four fields that
+    // actually reach an image model (compactBrief, wallColour,
+    // compactGuidance, materialTokens) is a value the user picked from a fixed
+    // list, so a model was being paid — and waited on for ~50 seconds — to
+    // read a table. See design-spec-tables.ts's header for the full argument,
+    // including why the old call was not just slow but LOSSY: the palette
+    // never reached prompt-builder at all, so a chosen colour had no
+    // guaranteed path to the model.
+    //
+    // `runDesignPlanning` and its Gemini schema are intentionally left in the
+    // tree, unreferenced by this route, so the previous behaviour can be
+    // restored by swapping this one line back.
+    const designSpec = buildDesignSpec(universalInput, { paletteId, customHexes });
     return Response.json({ universalInput, designSpec });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Design planning");

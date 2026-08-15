@@ -33,6 +33,8 @@ import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furnitu
 import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/first-free-slot";
 import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
 import { clamp, stripWallFinishes } from "@/lib/ai/prompting/design-planning";
+import { buildDesignSpec, nameHexColour, styleBriefCoverage, wallColourFor } from "@/lib/ai/prompting/design-spec-tables";
+import { COLOUR_PALETTES, STYLES } from "@/lib/data";
 import { buildRoomPrompt, LABEL_BUDGET } from "@/lib/ai/prompting/prompt-builder";
 import { referenceDesignSelection, sanitiseReferenceAttributes } from "@/lib/ai/prompting/design-reference";
 import { buildUniversalInput, COLOUR_PALETTE_MAX_LEN } from "@/lib/ai/prompting/build-universal-input";
@@ -1054,7 +1056,11 @@ export async function GET() {
         assert(!p.toLowerCase().includes(banned), `${provider}: catalog-look phrasing "${banned}" is in the prompt`);
       }
       assert(/real camera/i.test(p), `${provider}: expected the real-camera counter-signal, got: ${p}`);
-      assert(/ordinary home/i.test(p), `${provider}: expected the ordinary-home subject, got: ${p}`);
+      // "ordinary home" was hardcoded until the project type replaced it, so
+      // this asserts the SHAPE ("a real, ordinary <whatever this project is>")
+      // rather than the word "home", which is now wrong for every Custom
+      // project and right only by coincidence for a house.
+      assert(/a real, ordinary \S/i.test(p), `${provider}: expected the ordinary-<project type> subject, got: ${p}`);
     }
   });
 
@@ -1089,6 +1095,140 @@ export async function GET() {
       assert(!/furnish this .* completely/i.test(bathroom), `${provider}: a service room must not be told to furnish itself, got: ${bathroom}`);
       assert(/sanitary fixtures/i.test(bathroom), `${provider}: the service-room contents clause should still be there, got: ${bathroom}`);
     }
+  });
+
+  // ---- design-spec-tables.ts: the deterministic replacement for the
+  // Design Planning AI call ----
+  check("every style in data.ts has all three luxury tiers, in briefs AND tokens", () => {
+    // The single thing that breaks silently when a style is added to data.ts
+    // and not to the tables: buildDesignSpec falls through to the generic
+    // fallback, which still produces a valid prompt, so nothing errors and
+    // the style's whole identity is quietly gone.
+    const gaps = styleBriefCoverage();
+    eq(gaps, [], `styles missing a brief or token set: ${JSON.stringify(gaps)}`);
+  });
+
+  check("a preset palette's wall colour is the palette's own, not a model's opinion", () => {
+    for (const p of COLOUR_PALETTES) {
+      const wall = wallColourFor({ paletteId: p.id, colourPaletteText: p.description });
+      eq(wall, p.wallColour, `palette "${p.id}" must yield its declared wall colour`);
+      assert(wall.length > 0 && wall.length <= 40, `"${p.id}" wall colour out of bounds: ${wall.length}`);
+    }
+  });
+
+  check("a custom palette's FIRST hex is the wall colour, named as well as hexed", () => {
+    // The reported bug in one assertion: three magentas used to come back as
+    // ivory walls because an LLM read them as an accent scheme. Slot one is
+    // now the wall by construction. The NAME matters as much as the hex — a
+    // bare hex is a weak signal to a text encoder, so both are emitted.
+    const wall = wallColourFor({ customHexes: ["#c520af", "#e363d2", "#760585"], colourPaletteText: "" });
+    assert(wall.includes("#c520af"), `expected the first hex, got: ${wall}`);
+    assert(/magenta|purple|pink/.test(wall), `expected a colour NAME alongside the hex, got: ${wall}`);
+  });
+
+  check("nameHexColour maps to a sensible anchor and rejects junk", () => {
+    assert(nameHexColour("#ffffff").startsWith("white"), nameHexColour("#ffffff"));
+    assert(nameHexColour("#141416").startsWith("black"), nameHexColour("#141416"));
+    eq(nameHexColour("not a hex"), "", "an unparseable value yields nothing, never a guess");
+  });
+
+  check("buildDesignSpec fills every field prompt-builder actually reads", () => {
+    const spec = buildDesignSpec(
+      {
+        project: { category: "Residential", subcategory: "Independent House" },
+        layout: { rooms: [{ name: "Master Bedroom", type: "Bedroom" }] },
+        design: { style: "Modern Indian", luxury_level: "Premium", colour_palette: "Sage & Sand (warm sand base)" },
+      },
+      { paletteId: "Sage & Sand" },
+    );
+    eq(spec.wallColour, "warm sand", "wall colour comes from the palette table");
+    assert(spec.compactBrief.length > 40, `brief too thin: ${spec.compactBrief}`);
+    assert(spec.materialTokens.wood === "teak", `Modern Indian Premium wood: ${spec.materialTokens.wood}`);
+    eq(spec.roomGuidelines.length, 1, "one guidance entry per room");
+    assert(spec.roomGuidelines[0].compactGuidance.length > 0, "the bedroom must get guidance");
+  });
+
+  check("buildDesignSpec never emits a wall finish, from any table", () => {
+    // Three of these briefs originally said "lime-washed", "lime-plaster-free"
+    // and "patina-free" and would have been mangled by stripWallFinishes into
+    // "-free painted surfaces". The tables are hand-written, so the ban has to
+    // be asserted against them, not just against a model's output.
+    for (const style of STYLES) {
+      for (const luxury of ["Standard", "Premium", "Ultra Luxury"] as const) {
+        const spec = buildDesignSpec({
+          project: { category: "Residential", subcategory: "Independent House" },
+          layout: { rooms: [] },
+          design: { style: style.name, luxury_level: luxury, colour_palette: "" },
+        });
+        for (const banned of ["lime-wash", "limewash", "venetian plaster", "microcement", "tadelakt", "stucco", "chalky", "patina"]) {
+          assert(
+            !spec.compactBrief.toLowerCase().includes(banned),
+            `"${style.name}" / ${luxury} brief contains the wall finish "${banned}": ${spec.compactBrief}`,
+          );
+        }
+        // A mangled brief is the other failure mode: stripWallFinishes leaves
+        // a dangling fragment where it cut, so assert the text still reads.
+        assert(!/(^|\s)-/.test(spec.compactBrief), `"${style.name}" / ${luxury} brief was mangled: ${spec.compactBrief}`);
+      }
+    }
+  });
+
+  await checkAsync("a table-built spec produces an in-budget prompt on both flows, with 5 furniture pieces", async () => {
+    // The worst realistic case: MAX_FURNITURE pieces, a full accent, and every
+    // section at its cap. This is the assertion behind the claim that the
+    // budget holds by construction rather than by luck.
+    const spec = buildDesignSpec(
+      {
+        project: { category: "Residential", subcategory: "Independent House" },
+        layout: { rooms: [{ name: "Master Bedroom", type: "Bedroom" }] },
+        design: { style: "Luxury Indian", luxury_level: "Ultra Luxury", colour_palette: "Deep Jewel" },
+      },
+      { paletteId: "Deep Jewel" },
+    );
+    const loaded = { ...uiRoom, additional_notes: "z".repeat(300) };
+    const flux = await buildRoomPrompt(uiInput, loaded, spec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 2, windows: 3 },
+      furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe"), f("4", "dresser"), f("5", "rug")],
+    });
+    assert(flux.length <= 1800, `prompt is ${flux.length} chars`);
+    assert(flux.includes("deep indigo purple"), `expected the palette's wall colour, got: ${flux}`);
+    // Both halves of the palette ride in the never-trimmed medium line, so a
+    // fully-loaded prompt cannot drop the user's colour choice. This fixture
+    // is deliberately the worst case (5 pieces, 300-char accent), which is
+    // exactly when a trimmable palette WOULD have been dropped.
+    assert(flux.includes("Accents throughout in"), `expected the accent clause to survive the ladder: ${flux}`);
+    // The whole brief section (label + brief + guidance) must fit its budget
+    // with the guidance intact, which is what moving the palette out bought.
+    assert(/Calm and low-contrast/.test(flux), `the per-room guidance was cut from the brief section: ${flux}`);
+
+    const gemini = await buildRoomPrompt(uiInput, loaded, spec, {
+      provider: "gemini",
+      hasGreybox: true,
+      ledger: { doors: 2, windows: 3 },
+      furniture: [f("1", "bed")],
+    });
+    assert(gemini.includes("deep indigo purple"), `gemini: expected the palette's wall colour`);
+  });
+
+  await checkAsync("the prompt names the project type and the room type, not a hardcoded home", async () => {
+    // "home" was hardcoded in the medium line, so a dental clinic was
+    // described to the model as an ordinary home before anything else got a
+    // word in.
+    const clinic: UniversalInput = {
+      project: { category: "Custom", subcategory: "Dental Clinic" },
+      layout: { rooms: [] },
+      design: { style: "Contemporary Indian", luxury_level: "Premium", colour_palette: "Cool Grey" },
+    };
+    const p = await buildRoomPrompt(clinic, { name: "Surgery", type: "Study" }, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+    });
+    assert(p.includes("ordinary Dental Clinic"), `expected the project type, got: ${p.slice(0, 160)}`);
+    assert(p.includes("massing render of this exact study"), `expected the room type, got: ${p}`);
+    assert(!p.includes("exact study room"), `must not double the noun: ${p}`);
   });
 
   await checkAsync("the finish-the-job clause keeps its back-reference when pieces WERE named", async () => {
@@ -2260,6 +2400,67 @@ export async function GET() {
     }
   });
 
+  // ---- Furnish gallery seeding ----
+  // furnish/page.tsx seeds `defaultArrangementFor` for any room whose
+  // `furniture` is `undefined` (never opened in the 3D editor) BEFORE calling
+  // ensureGreybox, so the greybox it renders and caches is not an empty box
+  // (reported bug: a room the user never opened generated under-furnished
+  // with nothing to later trigger a re-render). These checks run the exact
+  // roomSpecFor -> greyboxCamera -> defaultArrangementFor chain the gallery
+  // runs, against a real Room, rather than the hand-built `slotSpec`/
+  // `slotCamera` fixture the checks above already cover defaultArrangementFor
+  // with in isolation.
+  function galleryChain(room: Room) {
+    const payload = roomSpecFor(room);
+    const spec: GreyboxRoomSpec = {
+      width: payload.width,
+      depth: payload.depth,
+      openings: payload.openings,
+      cameraView: payload.cameraView,
+    };
+    return defaultArrangementFor(room.type, spec, greyboxCamera(spec, GREYBOX_ASPECT));
+  }
+
+  check("furnish gallery seeding: a never-furnished furnishable room seeds a non-empty arrangement", () => {
+    const seeded = galleryChain({ ...baseRoom, furniture: undefined });
+    assert(
+      seeded.length > 0,
+      `expected "${baseRoom.type}" to seed at least one piece through the gallery's own derivation chain, got none`,
+    );
+  });
+
+  check("furnish gallery seeding: a service room type seeds nothing through the same chain", () => {
+    // Bathroom is in NO_FURNITURE_ROOM_TYPES. Must stay empty here too, not
+    // just against the hand-built slotSpec fixture above — otherwise the
+    // gallery would persist furniture into a room type that must stay empty.
+    eq(galleryChain({ ...baseRoom, type: "Bathroom", furniture: undefined }), [], "a service room must not be seeded");
+  });
+
+  check("furnish gallery seeding: seeding the same never-furnished room twice is deterministic", () => {
+    const strip = (list: PlacedFurniture[]) => list.map(({ kind, x, z, rotation }) => ({ kind, x, z, rotation }));
+    const room = { ...baseRoom, furniture: undefined };
+    eq(
+      strip(galleryChain(room)),
+      strip(galleryChain(room)),
+      "seeding the gallery's own derivation twice must not rearrange the room",
+    );
+  });
+
+  check(
+    "greyboxHashFor: a never-furnished room (furniture undefined) hashes identically to one explicitly emptied ([])",
+    () => {
+      // Load-bearing for the gallery's own choice to skip persisting `[]` for
+      // a service room it declines to seed: if this ever stopped being true,
+      // that room would look permanently stale (hash never matching a cached
+      // greyboxHash) even though nothing about its render output changed.
+      eq(
+        greyboxHashFor({ ...baseRoom, furniture: undefined }),
+        greyboxHashFor({ ...baseRoom, furniture: [] }),
+        "undefined and [] must hash the same",
+      );
+    },
+  );
+
   // ---- The two prompt flows ----
   // FLUX.2's encoder is Mistral-Small-3.2-24B-Instruct, an instruction-tuned
   // LLM trained on PROSE; structured input reads to it as poorly-formed
@@ -2276,7 +2477,7 @@ export async function GET() {
       furniture: [f("1", "sofa")],
     });
     assert(!p.trimStart().startsWith("{"), "FLUX must not be sent JSON");
-    assert(p.includes("Photorealistic photograph of a real, ordinary home"), `expected the prose medium line, got: ${p.slice(0, 120)}`);
+    assert(p.includes("Photorealistic photograph of a real, ordinary "), `expected the prose medium line, got: ${p.slice(0, 120)}`);
   });
 
   await checkAsync("the gemini flow emits parseable JSON carrying the same priorities", async () => {

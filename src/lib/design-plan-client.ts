@@ -48,6 +48,15 @@ export function runDesignPlan(input: {
    * older/other caller keeps working unchanged.
    */
   designReference?: DesignReferenceAttributes;
+  /**
+   * The colour palette as structured data, alongside `design.colourPalette`'s
+   * formatted prose. The server needs to know which slot is the WALL, and the
+   * prose form cannot say — "Custom (#c520af, #e363d2, #760585)" is three
+   * colours with no roles attached. Omitted when a design reference is active,
+   * since that palette is free text with no preset behind it.
+   */
+  paletteId?: string;
+  customHexes?: string[];
 }): Promise<{ universalInput: UniversalInput; designSpec: DesignSpecification }> {
   return postJson("/api/design-plan", input);
 }

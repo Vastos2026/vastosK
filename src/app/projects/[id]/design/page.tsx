@@ -215,6 +215,18 @@ export default function DesignPage() {
         // as the derived attributes, never the image: the analysis already
         // ran once, at upload.
         designReference: reference?.attributes,
+        // The palette's STRUCTURE, not just its prose. buildDesignSpec reads
+        // slot one as the wall colour, and `colourPaletteText` above cannot
+        // convey that — it flattens the three custom hexes into a list with
+        // no roles, which is how a pink palette used to come back with ivory
+        // walls. Omitted while a reference is active, since that palette is
+        // free text with no preset or slots behind it.
+        ...(reference
+          ? {}
+          : {
+              paletteId: isCustomPalette ? undefined : colourPalette,
+              customHexes: isCustomPalette ? customColors : undefined,
+            }),
       });
       setDesignPlan(id, {
         subcategory,

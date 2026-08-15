@@ -163,6 +163,21 @@ export interface DesignSpecification {
    * colour phrase in that case rather than printing "undefined".
    */
   wallColour?: string;
+  /**
+   * Everything in the palette that is NOT the wall, e.g. "muted sage green and
+   * deep olive brown". Rides in the same never-trimmed line as `wallColour`
+   * rather than inside `compactBrief`, for two reasons. It is the other half
+   * of one statement — which colour goes on the walls and which do not — and
+   * splitting that across a fixed line and a trimmable one meant a long brief
+   * could leave the model told the wall colour with no idea what the rest of
+   * the palette was for. And the brief section slices label + brief + guidance
+   * as a whole, so anything added there costs the per-room guidance first.
+   *
+   * Optional for the same reason as `wallColour`: specs cached before this
+   * field existed have no value, and the clause is omitted rather than
+   * printing "undefined".
+   */
+  accentColours?: string;
   /** Interpolated into furniture material phrases (furniture-layout.ts). */
   materialTokens: MaterialTokens;
   roomGuidelines: RoomGuideline[];
