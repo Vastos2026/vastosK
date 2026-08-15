@@ -399,6 +399,21 @@ export interface Project {
    * handled where `computeDoneMap` reads it, not here.
    */
   roomsConfirmedAt?: string;
+  /**
+   * The user chose to skip the Plan step from the blank-canvas path — no
+   * floor-plan image, no rooms drawn, no openings placed. Set only by the
+   * Plan Editor's own confirmed skip (never inferred from "this project has
+   * no shapes yet"), and cleared again when the user answers Yes to the
+   * "you skipped this page, plan again?" prompt on returning there.
+   *
+   * It means one thing everywhere it is read: this project has no greybox.
+   * The Furnish phase disappears from the stepper, "Adjust with 3D" is not
+   * offered, Room Confirmation continues straight to Design, the furnish
+   * routes are closed, and every generation skips ensureGreybox and sends no
+   * greybox fields — which routes prompt-builder.ts to its `hasGreybox:
+   * false` path. Already-generated images are untouched either way.
+   */
+  planSkipped?: boolean;
   styleId?: string;
   units?: Unit;
   /**

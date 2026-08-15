@@ -1091,6 +1091,19 @@ export async function GET() {
     }
   });
 
+  await checkAsync("the finish-the-job clause keeps its back-reference when pieces WERE named", async () => {
+    // The mirror of the no-greybox assertion above: with real placed furniture
+    // the prompt does list pieces, so the clause must still point back at them
+    // rather than reading as a standalone instruction that ignores the list.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed"), f("2", "nightstand")],
+    });
+    assert(p.includes("Beyond the pieces named above"), `expected the back-reference, got: ${p}`);
+  });
+
   await checkAsync("the finish-the-job clause survives the overflow ladder at full pressure", async () => {
     // It is deliberately outside the ladder: it exists to fix a reported
     // under-furnishing bug, so trimming it away under pressure would
@@ -1135,6 +1148,146 @@ export async function GET() {
       assert(p.length <= 1800, `prompt is ${p.length} chars, over the cap even with the texture clause`);
     },
   );
+
+  // ---- buildRoomPrompt: the NO-GREYBOX path (Project.planSkipped — the user
+  // skipped the Plan step from the blank canvas, so there is no reference
+  // image, no room geometry and no furniture anywhere on the project). This
+  // path used to collapse to a single "straight walls, level camera" line and
+  // dropped the opening census entirely, so a skipped room told the model
+  // nothing whatsoever about its doors and windows. ----
+  const skippedRoom: UniversalInputRoom = {
+    name: "Master Bedroom",
+    type: "Bedroom",
+    size: "13 x 15 ft",
+    // Every side is "north" deliberately: store.ts's setOpeningCount stamps
+    // that placeholder onto every opening added by hand in Room Confirmation,
+    // which is precisely why this path may never name a wall.
+    openings: [
+      { type: "door", side: "north", connectsTo: null },
+      { type: "window", side: "north", connectsTo: null },
+      { type: "window", side: "north", connectsTo: null },
+    ],
+  };
+
+  await checkAsync(
+    "no-greybox: both flows carry the opening counts, the room dimensions and the furnish clause",
+    async () => {
+      const flux = await buildRoomPrompt(uiInput, skippedRoom, dspec, { provider: "runware", hasGreybox: false });
+      assert(flux.includes("exactly one door and two windows"), `runware: expected the counts, got: ${flux}`);
+      assert(
+        flux.includes("Every other surface is unbroken solid wall."),
+        `runware: expected the solid-wall closure, got: ${flux}`,
+      );
+      assert(flux.includes("All doors are closed."), `runware: expected the doors-closed clause, got: ${flux}`);
+      assert(/glazed/i.test(flux), `runware: expected the glazing clause, got: ${flux}`);
+      // Section 2.4 deleted dimensions because the greybox encodes proportion
+      // better. With no greybox nothing else conveys the room's shape at all.
+      assert(flux.includes("13 x 15 ft"), `runware: expected the room dimensions, got: ${flux}`);
+      assert(/furnish this bedroom completely/i.test(flux), `runware: expected the furnish clause, got: ${flux}`);
+      // The clause's "Beyond the pieces named above" opening is only true when
+      // pieces WERE named. Nothing is ever placed on this path, so referring
+      // the model back to a list it was never given is an instruction it
+      // cannot follow — and a phantom antecedent invites it to invent one.
+      assert(
+        !flux.includes("Beyond the pieces named above"),
+        `runware: the furnish clause refers to a furniture list this path never emits: ${flux}`,
+      );
+
+      const gemini = await buildRoomPrompt(uiInput, skippedRoom, dspec, { provider: "gemini", hasGreybox: false });
+      const payload = JSON.parse(gemini) as {
+        openings?: { doors?: number; windows?: number; rule?: string; doorsClosed?: boolean; windowsGlazed?: string };
+        roomDimensions?: string;
+        furnishRoomFully?: string;
+      };
+      eq(payload.openings?.doors, 1, "gemini: door count");
+      eq(payload.openings?.windows, 2, "gemini: window count");
+      assert(payload.openings?.doorsClosed === true, `gemini: expected doorsClosed, got: ${gemini}`);
+      assert(/glazed/i.test(payload.openings?.windowsGlazed ?? ""), `gemini: expected the glazing clause, got: ${gemini}`);
+      assert(
+        (payload.openings?.rule ?? "").includes("unbroken solid wall"),
+        `gemini: expected the solid-wall closure, got: ${gemini}`,
+      );
+      eq(payload.roomDimensions, "13 x 15 ft", "gemini: room dimensions");
+      assert(
+        /furnish this bedroom completely/i.test(payload.furnishRoomFully ?? ""),
+        `gemini: expected the furnish clause, got: ${gemini}`,
+      );
+    },
+  );
+
+  await checkAsync("no-greybox: neither flow mentions a reference image that was never sent", async () => {
+    // Naming an image the model was not given is how it starts inventing what
+    // that image must have contained — the exact opposite of what the census
+    // above is for.
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, skippedRoom, dspec, { provider, hasGreybox: false });
+      for (const banned of ["Image 1", "image1", "massing", "grey volumes", "grey massing"]) {
+        assert(
+          !p.toLowerCase().includes(banned.toLowerCase()),
+          `${provider}: reference-image language "${banned}" reached a prompt with no reference image: ${p}`,
+        );
+      }
+    }
+  });
+
+  await checkAsync("no-greybox: the opening statement names no wall and no side", async () => {
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, skippedRoom, dspec, { provider, hasGreybox: false });
+      assert(
+        !/\b(north|south|east|west)\b/i.test(p),
+        `${provider}: a compass side is a placeholder for most hand-entered openings, so naming one is fabricated: ${p}`,
+      );
+    }
+  });
+
+  await checkAsync("no-greybox: the FLUX flow stays under the 1800-char cap at full pressure", async () => {
+    // A real skipped project sends no furniture (nothing was ever placed),
+    // but the ladder still has to hold if a caller ever did, and the census
+    // and the dimensions sit in the contract, which the ladder never trims.
+    const p = await buildRoomPrompt(uiInput, { ...skippedRoom, additional_notes: "z".repeat(2000) }, dspec, {
+      provider: "runware",
+      hasGreybox: false,
+      furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
+    });
+    assert(p.length <= 1800, `prompt is ${p.length} chars`);
+    assert(p.includes("exactly one door and two windows"), `the census must never be trimmed away: ${p}`);
+    assert(p.includes("13 x 15 ft"), `the dimensions must never be trimmed away: ${p}`);
+  });
+
+  await checkAsync("no-greybox: a service room still gets no furnish clause, and keeps its contents clause", async () => {
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, { ...skippedRoom, name: "Bathroom", type: "Bathroom" }, dspec, {
+        provider,
+        hasGreybox: false,
+      });
+      assert(
+        !/furnish this .* completely/i.test(p),
+        `${provider}: a service room must not be told to furnish itself, got: ${p}`,
+      );
+      assert(/sanitary fixtures/i.test(p), `${provider}: expected the service-room contents clause, got: ${p}`);
+    }
+  });
+
+  await checkAsync("no-greybox: a room with no recorded openings claims nothing about them", async () => {
+    // UniversalInputRoom.openings is best-effort — an empty array means "none
+    // detected or entered", never "this room has none". The greybox path can
+    // say "every wall is solid" because the Pass B mask backs it; here there
+    // is no mask, so silence is the only honest option.
+    const flux = await buildRoomPrompt(uiInput, { ...skippedRoom, openings: [] }, dspec, {
+      provider: "runware",
+      hasGreybox: false,
+    });
+    assert(!/unbroken solid wall/i.test(flux), `runware: an unbacked solid-wall claim was made, got: ${flux}`);
+    assert(!/\bdoors?\b/i.test(flux), `runware: doors were mentioned with nothing backing the claim, got: ${flux}`);
+    const gemini = await buildRoomPrompt(uiInput, { ...skippedRoom, openings: [] }, dspec, {
+      provider: "gemini",
+      hasGreybox: false,
+    });
+    assert(
+      (JSON.parse(gemini) as { openings?: unknown }).openings === undefined,
+      `gemini: an openings field was emitted for a room with none recorded, got: ${gemini}`,
+    );
+  });
 
   // ---- clamp (design-planning.ts) ----
   check("clamp: a string already under the limit is trimmed but otherwise unchanged", () => {

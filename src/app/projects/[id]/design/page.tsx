@@ -248,7 +248,18 @@ export default function DesignPage() {
       // to here keeps three.js out of this route's initial bundle. Hoisted
       // above the loop (rather than inside each per-room IIFE below) so the
       // dynamic import only resolves once per confirm(), not once per room.
-      const { ensureGreybox } = await import("@/lib/greybox/ensure-greybox-key");
+      //
+      // Not imported AT ALL on a plan-skipped project: skipping the Plan step
+      // means there is no room geometry to render a greybox from, so the
+      // whole three.js module (and every render/upload it would do) is dead
+      // weight. `planSkipped` also has to gate the FIELDS sent below, not
+      // just this call — the server keys `hasGreybox` off greyboxKey, and a
+      // stale key persisted on a room from before the skip would otherwise
+      // still route the prompt down the greybox path.
+      const skipGreybox = !!project.planSkipped;
+      const ensureGreybox = skipGreybox
+        ? undefined
+        : (await import("@/lib/greybox/ensure-greybox-key")).ensureGreybox;
       for (const room of rooms) {
         const existingCard = project.roomCards.find((c) => c.roomId === room.id);
         if (signatureUnchanged && (existingCard?.generations.length ?? 0) > 0) continue;
@@ -271,13 +282,15 @@ export default function DesignPage() {
         // a route that skipped Furnish entirely (e.g. a stale bookmark).
         (async () => {
           try {
-            const gb = await ensureGreybox(id, room).catch((e) => {
-              console.warn(
-                `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
-                e instanceof Error ? e.message : e,
-              );
-              return undefined;
-            });
+            const gb = ensureGreybox
+              ? await ensureGreybox(id, room).catch((e) => {
+                  console.warn(
+                    `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
+                    e instanceof Error ? e.message : e,
+                  );
+                  return undefined;
+                })
+              : undefined;
             // Never spread the whole ensureGreybox result into the store —
             // `projected` is derived fresh on every call (see GreyboxResult's
             // own doc comment) and is not one of Room's persisted fields.
@@ -306,12 +319,17 @@ export default function DesignPage() {
               greyboxKey: gb?.greyboxKey,
               greyboxMaskKey: gb?.greyboxMaskKey,
               projected: gb?.projected,
-              furniture: room.furniture,
+              // Both omitted on a plan-skipped project: there is no reference
+              // image, so there is no grey box for a piece to be mapped to,
+              // and sending a roomSpec would have the prompt describe
+              // positions ("the long low box at centre-left") against an
+              // image the model was never given.
+              furniture: skipGreybox ? undefined : room.furniture,
               // Lets the server rebuild this room's locked camera and name
               // which grey box each furniture piece is. Derived through the
               // shared roomSpecFor so it cannot drift from the spec
               // ensureGreybox actually rendered.
-              roomSpec: roomSpecFor(room),
+              roomSpec: skipGreybox ? undefined : roomSpecFor(room),
               greyboxAnnotatedKey: gb?.greyboxAnnotatedKey,
             });
             useVasto.getState().addGeneration(id, room.id, {

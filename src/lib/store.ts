@@ -64,6 +64,16 @@ interface VastoState {
    * confirmed. `computeDoneMap` in workspace-frame.tsx is the reader.
    */
   confirmRooms: (id: string) => void;
+  /**
+   * Sets/clears `Project.planSkipped` — the Plan Editor's confirmed skip on
+   * the blank-canvas path, and the Yes answer to "you skipped this page, do
+   * you want to plan again?" that clears it again. Its own setter rather
+   * than a `patchProject` call at each site because both call sites are
+   * about the SAME flag and every downstream reader (the stepper's Furnish
+   * pill, Review's Continue target, both generation paths' greybox calls)
+   * keys off it — a single named entry point is what makes that greppable.
+   */
+  setPlanSkipped: (id: string, skipped: boolean) => void;
   setStatus: (id: string, status: ProjectStatus) => void;
   setStyle: (id: string, styleId: string) => void;
   /** Persists a Design Planning run's result (revamp Workstream 8): the global
@@ -410,6 +420,18 @@ export const useVasto = create<VastoState>()(
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === id ? touch({ ...p, roomsConfirmedAt: new Date().toISOString() }) : p,
+          ),
+        })),
+
+      setPlanSkipped: (id, skipped) =>
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            // Written as `undefined` rather than `false` when cleared so a
+            // project that never skipped and one that un-skipped serialise
+            // identically — nothing reads this as a tri-state, and leaving a
+            // literal `false` behind would be the only difference between
+            // them in the persisted snapshot.
+            p.id === id ? touch({ ...p, planSkipped: skipped || undefined }) : p,
           ),
         })),
 

@@ -59,6 +59,26 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
   };
 }
 
+/**
+ * The phase list this project actually has. Identical to PHASES except on a
+ * project whose Plan step was skipped (`Project.planSkipped`): there is no
+ * greybox for any room, so the Furnish phase has nothing to show and no way
+ * to produce anything the rest of the flow reads.
+ *
+ * Returned as a list rather than handled at the render site because the
+ * stepper is not the only consumer of phase ORDER — `backHref` below walks
+ * the same list to find the previous step, so dropping Furnish from the pills
+ * alone would leave the back arrow on Design pointing at a route that now
+ * refuses to render (see furnish/page.tsx's own guard). `phaseFor` and
+ * `pathFallbackPhase` deliberately keep using the FULL list: they answer
+ * "what phase is this URL", which is a fact about the route, not about this
+ * project's flow, and a furnish URL must still resolve to "furnish" for the
+ * pill-highlighting logic even while the pill itself is hidden.
+ */
+function phasesFor(project?: Project): typeof PHASES {
+  return project?.planSkipped ? PHASES.filter((p) => p.id !== "furnish") : PHASES;
+}
+
 export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
@@ -88,6 +108,7 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   // The phase this path belongs to, ignoring the ?from entry-point override
   // that only furnish/[roomId] needs (see phaseFor / StepperSlot below).
   const pathPhase = pathFallbackPhase(pathname);
+  const phases = phasesFor(project);
 
   const backHref = (() => {
     if (step === "floor-plan") return "/";
@@ -99,8 +120,11 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
     // renders for them. Kept correct anyway rather than left stale.
     if (step === "generate" && subSegment) return `/projects/${params.id}/generate`;
     if (step === "furnish" && subSegment) return `/projects/${params.id}/furnish`;
-    const idx = PHASES.findIndex((p) => p.id === step);
-    return idx > 0 ? `/projects/${params.id}/${PHASES[idx - 1].id}` : "/";
+    // `phases`, not PHASES: on a plan-skipped project the step before Design
+    // is Review, and walking the full list would send the back arrow into
+    // Furnish, which that project can no longer open.
+    const idx = phases.findIndex((p) => p.id === step);
+    return idx > 0 ? `/projects/${params.id}/${phases[idx - 1].id}` : "/";
   })();
 
   const onBackClick = () => {
@@ -172,6 +196,7 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
               <PhaseStepper
                 projectId={params.id}
                 current={pathPhase}
+                phases={phases}
                 disabled={!project?.floorPlan}
                 hasRoomsToLose={hasRoomsToLose}
                 doneMap={computeDoneMap(project)}
@@ -184,6 +209,7 @@ export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
               pathname={pathname}
               step={step}
               subSegment={subSegment}
+              phases={phases}
               disabled={!project?.floorPlan}
               hasRoomsToLose={hasRoomsToLose}
               doneMap={computeDoneMap(project)}
@@ -275,6 +301,7 @@ function StepperSlot({
   pathname,
   step,
   subSegment,
+  phases,
   disabled,
   hasRoomsToLose,
   doneMap,
@@ -284,6 +311,7 @@ function StepperSlot({
   pathname: string;
   step: string | undefined;
   subSegment: string | undefined;
+  phases: typeof PHASES;
   disabled?: boolean;
   hasRoomsToLose: boolean;
   doneMap: Record<Phase, boolean>;
@@ -294,6 +322,7 @@ function StepperSlot({
     <PhaseStepper
       projectId={projectId}
       current={phaseFor(pathname, step, subSegment, from)}
+      phases={phases}
       disabled={disabled}
       hasRoomsToLose={hasRoomsToLose}
       doneMap={doneMap}
@@ -305,6 +334,7 @@ function StepperSlot({
 function PhaseStepper({
   projectId,
   current,
+  phases,
   disabled,
   hasRoomsToLose,
   doneMap,
@@ -312,6 +342,8 @@ function PhaseStepper({
 }: {
   projectId: string;
   current: Phase;
+  /** This project's phases — PHASES, minus Furnish when the Plan step was skipped. See phasesFor. */
+  phases: typeof PHASES;
   disabled?: boolean;
   hasRoomsToLose: boolean;
   doneMap: Record<Phase, boolean>;
@@ -319,7 +351,7 @@ function PhaseStepper({
 }) {
   return (
     <nav className="flex items-center gap-1 rounded-xl border border-border bg-surface p-1">
-      {PHASES.map((phase, i) => {
+      {phases.map((phase, i) => {
         const active = phase.id === current;
         const done = !active && doneMap[phase.id];
         // Upload is always reachable; later phases need a parsed plan.
@@ -366,7 +398,7 @@ function PhaseStepper({
             ) : (
               <Link href={`/projects/${projectId}/${phase.id}`}>{content}</Link>
             )}
-            {i < PHASES.length - 1 && (
+            {i < phases.length - 1 && (
               <Icon name="ChevronRight" className="size-3.5 text-faint" />
             )}
           </div>

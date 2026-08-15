@@ -66,9 +66,15 @@ export default function ReviewPage() {
   // The real "user confirmed their rooms" signal (see Project.roomsConfirmedAt
   // and computeDoneMap in workspace-frame.tsx) — set here, on Continue, not on
   // mount, so just opening this page without proceeding doesn't count.
-  const goToFurnish = () => {
+  //
+  // A plan-skipped project has no greybox for any room, so Furnish has
+  // nothing to arrange and its routes refuse to open (see furnish/page.tsx's
+  // guard); Design is the next real step. confirmRooms still runs either way
+  // — it records that the user confirmed their rooms, which is unrelated to
+  // which step follows.
+  const goForward = () => {
     confirmRooms(id);
-    router.push(`/projects/${id}/furnish`);
+    router.push(`/projects/${id}/${project.planSkipped ? "design" : "furnish"}`);
   };
 
   const confirmDelete = (roomId: string) => {
@@ -316,8 +322,8 @@ export default function ReviewPage() {
         </div>
 
         <div className="mt-8 flex justify-end">
-          <Button iconRight="ArrowRight" disabled={rooms.length === 0} onClick={goToFurnish}>
-            Continue to Furnish
+          <Button iconRight="ArrowRight" disabled={rooms.length === 0} onClick={goForward}>
+            {project.planSkipped ? "Continue to Design" : "Continue to Furnish"}
           </Button>
         </div>
       </div>

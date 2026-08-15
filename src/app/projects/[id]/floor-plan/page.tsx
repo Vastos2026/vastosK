@@ -33,16 +33,19 @@ export default function FloorPlanPage() {
 
   if (!project) return null;
 
-  // Restored the original pre-sketch-tool flow (2026-07-30): straight to
-  // Room Confirmation's manual "Add room" form, same as Upload page's own
-  // "enter rooms manually" fallback (`goManual` there) — see that page for
-  // the identical pattern. The sketch tool (`/projects/[id]/sketch`) is left
-  // in place but unlinked, per an explicit product decision to keep it
-  // dormant rather than delete it.
+  // "No, not yet" now lands on the Plan Editor's blank-canvas mode rather
+  // than jumping straight to Room Confirmation's manual "Add room" form. The
+  // form only ever produced a name/type/width/height — no shape and no
+  // opening positions — so a hand-entered project could never get a real
+  // greybox, only evenly-spaced guesses. Drawing the rooms on an empty grid
+  // gives the same downstream geometry an uploaded plan does. The empty plan
+  // is still seeded here so the Plan page has a floorPlan to write rooms
+  // back into. The sketch tool (`/projects/[id]/sketch`) is left in place but
+  // unlinked, per an explicit product decision to keep it dormant.
   const goManual = () => {
     setFloorPlan(id, emptyPlan());
     setStatus(id, "parsed");
-    router.push(`/projects/${id}/review`);
+    router.push(`/projects/${id}/plan`);
   };
 
   return (
@@ -98,8 +101,8 @@ export default function FloorPlanPage() {
         </div>
 
         {choice === "no" && (
-          <Button className="mt-6" icon="ListPlus" onClick={goManual}>
-            Enter rooms manually
+          <Button className="mt-6" icon="Pencil" onClick={goManual}>
+            Draw your rooms
           </Button>
         )}
 

@@ -168,6 +168,84 @@ function openingCounts(ledger?: GreyboxLedger): { doors: number; windows: number
 }
 
 /**
+ * The same two numbers for the NO-GREYBOX path, off the room's own
+ * `openings` array — the only source that exists there. Without a greybox
+ * there is no Pass B mask, so `openingCounts` above has no ledger to read and
+ * would report zero for every skipped room, which is how that path came to
+ * say nothing at all about doors and windows.
+ *
+ * Counted by `type`, never `openings.length`, and shared by both flows for
+ * exactly the reason `openingCounts` is: two call sites each writing their
+ * own `.filter(o => o.type === "door").length` is how the flows drift.
+ */
+function roomOpeningCounts(room: UniversalInputRoom): { doors: number; windows: number } {
+  const openings = room.openings ?? [];
+  return {
+    doors: openings.filter((o) => o.type === "door").length,
+    windows: openings.filter((o) => o.type === "window").length,
+  };
+}
+
+/**
+ * The doors-closed and window-glazing clauses, shared by the greybox census
+ * and the no-greybox one so a wording change lands in both. Both are pure
+ * functions of the counts and carry their own leading space, so either can be
+ * empty without leaving a gap.
+ */
+function doorsClosedClause(doors: number): string {
+  return doors > 0 ? " All doors are closed." : "";
+}
+function glazingClause(windows: number): string {
+  return windows > 0 ? " Each window is glazed and framed, with a sill and curtains or a blind." : "";
+}
+
+/**
+ * The opening census for the NO-GREYBOX path — COUNTS ONLY.
+ *
+ * Deliberately names no wall and no side. `setOpeningCount` (store.ts) stamps
+ * every opening a user adds by hand in Room Confirmation with
+ * `side: "north"` as a placeholder, so for most openings on this path a wall
+ * name would be pure fabrication — and a fabricated wall is worse than no
+ * wall, because the model will honour it. The greybox path can talk about
+ * position because a reference image is carrying it; here nothing is.
+ *
+ * Same positive closure, doors-closed clause and glazing clause the greybox
+ * census uses (see `openingCensus`), for the same reasons documented there:
+ * "one door" is not a claim of "exactly one door", and a bright panel with no
+ * statement of what it is made of renders as a bare hole.
+ *
+ * Returns "" when the room has no recorded openings at all. That is NOT the
+ * greybox path's "every wall is solid" statement, and must not become it:
+ * `UniversalInputRoom.openings` is best-effort, so an empty array means "none
+ * were detected or entered", never "this room has none" — the Pass B mask is
+ * what makes that claim safe on the other path, and there is no mask here.
+ */
+function noGreyboxOpeningCensus(room: UniversalInputRoom): string {
+  const { doors, windows } = roomOpeningCounts(room);
+  if (doors === 0 && windows === 0) return "";
+  const parts: string[] = [];
+  if (doors > 0) parts.push(`${word(doors)} ${plural(doors, "door")}`);
+  if (windows > 0) parts.push(`${word(windows)} ${plural(windows, "window")}`);
+  return (
+    `This room has exactly ${parts.join(" and ")}. Every other surface is unbroken solid wall.` +
+    `${doorsClosedClause(doors)}${glazingClause(windows)}`
+  );
+}
+
+/**
+ * The room's size in feet, stated in prose — NO-GREYBOX PATH ONLY.
+ *
+ * Section 2.4 deleted dimensions from the prompt because the greybox encodes
+ * proportion far more precisely than a number in prose can. With no greybox
+ * that reasoning does not apply and nothing else conveys the room's shape at
+ * all, so the sentence comes back on this path and only on this path.
+ */
+function roomSizeClause(room: UniversalInputRoom): string {
+  const size = room.size?.trim();
+  return size ? `The room measures ${size}.` : "";
+}
+
+/**
  * The exact opening count, stated INSIDE the structural contract rather than
  * as its own later stanza.
  *
@@ -198,7 +276,7 @@ function openingCensus(ledger?: GreyboxLedger): string {
   const parts: string[] = [];
   if (doors > 0) parts.push(`${word(doors)} ${plural(doors, "door")}`);
   if (windows > 0) parts.push(`${word(windows)} ${plural(windows, "window")}`);
-  const closed = doors > 0 ? " All doors are closed." : "";
+  const closed = doorsClosedClause(doors);
   // Reported: windows were rendering as a bare hole punched in the wall. The
   // greybox draws a window as a flat bright panel (build-scene.ts) and the
   // prompt, until now, only ever said that a bright panel IS a window — it
@@ -206,8 +284,9 @@ function openingCensus(ledger?: GreyboxLedger): string {
   // reference is an unglazed opening. This states what a window is made of.
   // Positive phrasing, same rule as the rest of this function: it describes
   // the glass, frame and dressing that should be there, never the "hole" it
-  // is avoiding.
-  const glazed = windows > 0 ? " Each window is glazed and framed, with a sill and curtains or a blind." : "";
+  // is avoiding. Shared with the no-greybox census (glazingClause above) so
+  // the two paths cannot describe a window differently.
+  const glazed = glazingClause(windows);
   return (
     `This room has exactly ${parts.join(" and ")}, only where Image 1 shows ${
       doors + windows === 1 ? "it" : "them"
@@ -353,11 +432,18 @@ function serviceContentsFor(room: UniversalInputRoom): string | undefined {
  * telling the model to furnish a bathroom "completely" would undo it in the
  * same prompt.
  */
-function furnishFullyFor(room: UniversalInputRoom): string {
+function furnishFullyFor(room: UniversalInputRoom, hasNamedPieces: boolean): string {
   if (serviceContentsFor(room)) return "";
   const label = (room.type?.trim() || room.name.trim()).toLowerCase();
   if (!label) return "";
-  return `Beyond the pieces named above, furnish this ${label} completely, as a real finished ${label} would be.`;
+  // "Beyond the pieces named above" is only true when pieces WERE named above.
+  // On the no-greybox path nothing is ever placed, so the furniture section
+  // does not exist and that opening would refer the model back to a list it
+  // was never given — an instruction that cannot be followed is worse than a
+  // shorter one, and inventing a phantom antecedent is exactly the kind of
+  // thing that makes a model hallucinate the missing content.
+  const opening = hasNamedPieces ? `Beyond the pieces named above, furnish` : `Furnish`;
+  return `${opening} this ${label} completely, as a real finished ${label} would be.`;
 }
 
 /**
@@ -483,11 +569,33 @@ function buildGeminiPrompt(
     // Same fix as the FLUX census's `glazed` clause: image 1 draws a window
     // as a flat bright panel, and until now nothing said the window is made
     // of anything, so a faithful reproduction of the reference was a bare
-    // hole in the wall (reported).
-    if (windows > 0) {
-      openings.windowsGlazed = "Each window is glazed and framed, with a sill and curtains or a blind.";
-    }
+    // hole in the wall (reported). Read off the shared glazingClause (its
+    // leading space is prose-only) so this and the FLUX census cannot drift.
+    if (windows > 0) openings.windowsGlazed = glazingClause(windows).trim();
     payload.openings = openings;
+  } else {
+    // No greybox: the counts come off the room itself, through the same
+    // roomOpeningCounts() the FLUX census uses, and they are COUNTS ONLY —
+    // no `side`/`wall` field exists here on purpose, see
+    // noGreyboxOpeningCensus for why naming one would be fabricated. `rule`
+    // is the greybox rule minus its "where image 1 shows them" half, since
+    // there is no image 1 on this path to point at.
+    const { doors, windows } = roomOpeningCounts(room);
+    if (doors + windows > 0) {
+      const openings: Record<string, unknown> = {
+        doors,
+        windows,
+        rule: "These are the only openings; every other wall surface is unbroken solid wall.",
+      };
+      if (doors > 0) openings.doorsClosed = true;
+      if (windows > 0) openings.windowsGlazed = glazingClause(windows).trim();
+      payload.openings = openings;
+    }
+    // Geometry, so it sits with the openings rather than down in roomBrief.
+    // Only ever emitted on this path — see roomSizeClause's doc comment for
+    // why the greybox path deliberately states no dimensions.
+    const size = room.size?.trim();
+    if (size) payload.roomDimensions = size;
   }
 
   // Priority 2: furniture — which grey box (or, once numbered, which number)
@@ -517,7 +625,10 @@ function buildGeminiPrompt(
   // construction, which reads as the room's complete contents — see
   // furnishFullyFor. Empty for service rooms, so a bathroom's "contents"
   // statement above is never contradicted in the same payload.
-  const furnishFully = furnishFullyFor(room);
+  // `payload.furniture` is only set when something was actually placed (its
+  // service-room `contents` branch doesn't count — furnishFullyFor returns ""
+  // for those rooms anyway), so this is exactly "were pieces named above".
+  const furnishFully = furnishFullyFor(room, furniture.length > 0 && !!payload.furniture);
   if (furnishFully) payload.furnishRoomFully = furnishFully;
 
   // Priority 3: "nothing abnormal" — geometry lock and matte, non-reflective
@@ -653,13 +764,32 @@ export async function buildRoomPrompt(
     `ordinary smooth painted plaster${wallColour ? ` in ${wallColour}` : ""}, flat matte and ` +
     "light-absorbing.";
 
-  // 2. Structural contract, or a one-line geometry statement when there is no
+  // 2. Structural contract, or the geometry statement for a room with no
   //    reference image. One code path, one budget, one assert.
+  //
+  //    The no-greybox branch used to be that one "straight walls, level
+  //    camera" line and nothing else: it dropped the opening census entirely,
+  //    so a room whose Plan step was skipped told the model NOTHING about its
+  //    doors and windows and got whatever the style brief free-associated.
+  //    It now carries counts (never walls — see noGreyboxOpeningCensus) and
+  //    the room's size, both of which live HERE rather than in the trimmable
+  //    brief below: geometry is priority 1 and the contract is the one
+  //    section section 4.4's overflow ladder never touches. It still carries
+  //    no reference-image language of any kind — no "Image 1", no massing
+  //    render, no camera lock — because there is no second image to refer to
+  //    and naming one that was never sent is how a model starts inventing
+  //    what it must have contained.
   const labels = labelsFor(input);
   const contract = opts.hasGreybox
     ? structuralContract(furniture.length > 0, opts.ledger)
-    : `A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}. ` +
-      "Straight walls, level camera, eye level.";
+    : [
+        `A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}.`,
+        "Straight walls, level camera, eye level.",
+        noGreyboxOpeningCensus(room),
+        roomSizeClause(room),
+      ]
+        .filter(Boolean)
+        .join(" ");
 
   // 3. The opening ledger used to be its own stanza here. It is now folded
   //    into the contract above (openingCensus), so that the definition of
@@ -705,7 +835,11 @@ export async function buildRoomPrompt(
   //    a reported under-furnishing bug, so letting it be trimmed under
   //    pressure would silently reintroduce that bug on exactly the longest
   //    prompts. Empty for service rooms.
-  const furnishFully = furnishFullyFor(room);
+  //
+  //    `furnitureLine` is non-empty for a service room too (its contents
+  //    clause lives in that slot), but furnishFullyFor returns "" for those,
+  //    so gating on real placed furniture is exactly "were pieces named".
+  const furnishFully = furnishFullyFor(room, furniture.length > 0 && !!furnitureLine);
 
   // 7. Accent — optional, always last, engineered to be the thing that gets
   //    cut if anything gets cut.

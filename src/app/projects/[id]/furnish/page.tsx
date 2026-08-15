@@ -37,6 +37,22 @@ export default function FurnishGalleryPage() {
 
   if (!hydrated || !project) return null;
 
+  // The Plan step was skipped, so no room has geometry and no greybox exists
+  // to arrange furniture in. Rendered as a message with a way out rather than
+  // a router.replace: a redirect fired from an effect flashes this page's
+  // layout first and buries WHY the route closed, and the user can still land
+  // here from a bookmark or the browser's history at any time.
+  if (project.planSkipped) {
+    return (
+      <EmptyState
+        icon="Sofa"
+        text="This project skipped the 3D step, so there is nothing to furnish. You can plan it again from the Plan step to bring this back."
+        href={`/projects/${id}/generate`}
+        cta="Go to Generate"
+      />
+    );
+  }
+
   const rooms = project.floorPlan?.rooms ?? [];
 
   if (!project.floorPlan || rooms.length === 0) {

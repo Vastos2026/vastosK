@@ -77,6 +77,12 @@ export default function GeneratePage() {
   const allHaveImages = rooms.every((r) => (cardOf(r.id)?.generations.length ?? 0) > 0);
   const generatedCount = rooms.filter((r) => (cardOf(r.id)?.generations.length ?? 0) > 0).length;
 
+  // No greybox anywhere on this project — see Project.planSkipped. Drives
+  // both the missing "Adjust with 3D" button and the text-only generation
+  // path below, off the one flag, so the button can't offer an editor the
+  // generation never uses.
+  const planSkipped = !!project.planSkipped;
+
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
     try {
@@ -97,14 +103,23 @@ export default function GeneratePage() {
       // user-triggered "Generate More" click, never during initial render, so
       // deferring the import to here keeps three.js out of this route's
       // initial bundle without changing when or how ensureGreybox runs.
-      const { ensureGreybox } = await import("@/lib/greybox/ensure-greybox-key");
-      const gb = await ensureGreybox(id, room).catch((e) => {
-        console.warn(
-          `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
-          e instanceof Error ? e.message : e,
-        );
-        return undefined;
-      });
+      //
+      // Skipped entirely on a plan-skipped project (same rule as
+      // design/page.tsx's auto-fire loop): no room geometry was ever placed,
+      // so there is nothing to render, and the three.js module never even
+      // loads. The greybox FIELDS below are gated on the same flag rather
+      // than just on `gb` being undefined, because a room can still carry a
+      // greyboxKey persisted before the skip, and the server keys
+      // `hasGreybox` off that key.
+      const gb = planSkipped
+        ? undefined
+        : await (await import("@/lib/greybox/ensure-greybox-key")).ensureGreybox(id, room).catch((e) => {
+            console.warn(
+              `[generate] greybox render/upload failed for "${room.name}", falling back to text-only:`,
+              e instanceof Error ? e.message : e,
+            );
+            return undefined;
+          });
       // Never spread the whole ensureGreybox result into the store —
       // `projected` is derived fresh on every call (see GreyboxResult's own
       // doc comment) and is not one of Room's persisted fields. Only the
@@ -142,9 +157,9 @@ export default function GeneratePage() {
         greyboxKey: gb?.greyboxKey,
         greyboxMaskKey: gb?.greyboxMaskKey,
         projected: gb?.projected,
-        furniture: room.furniture,
+        furniture: planSkipped ? undefined : room.furniture,
         // See design/page.tsx: identifies each grey box in the prompt.
-        roomSpec: roomSpecFor(room),
+        roomSpec: planSkipped ? undefined : roomSpecFor(room),
         greyboxAnnotatedKey: gb?.greyboxAnnotatedKey,
       });
       addGeneration(id, room.id, {
@@ -207,7 +222,9 @@ export default function GeneratePage() {
                 onView={(genId) =>
                   router.push(`/projects/${id}/generate/${room.id}${genId ? `?v=${genId}` : ""}`)
                 }
-                onFurnish={() => router.push(`/projects/${id}/furnish/${room.id}?from=generate`)}
+                onFurnish={
+                  planSkipped ? undefined : () => router.push(`/projects/${id}/furnish/${room.id}?from=generate`)
+                }
               />
             ))}
           </div>
@@ -233,7 +250,8 @@ function RoomSection({
   onGenerateMore: (note?: string) => Promise<void>;
   onRetryFirst: () => Promise<void>;
   onView: (genId?: string) => void;
-  onFurnish: () => void;
+  /** Absent on a plan-skipped project, where there is no 3D editor to adjust — see Project.planSkipped. */
+  onFurnish?: () => void;
 }) {
   const generations = card?.generations ?? [];
   const failed = generations.length === 0 && generatingCount === 0;
@@ -255,10 +273,15 @@ function RoomSection({
           <h3 className="text-base font-semibold tracking-tight">{room.name}</h3>
           {/* No longer disabled while a generation is in flight — rooms can
               now run several generations at once (see generatingRoomIds'
-              doc comment in store.ts), so there's nothing left to wait for. */}
-          <Button size="sm" icon="Sofa" onClick={onFurnish}>
-            Adjust with 3D
-          </Button>
+              doc comment in store.ts), so there's nothing left to wait for.
+              Not rendered at all on a plan-skipped project: the 3D editor it
+              opens refuses to load there, and a button that leads to a dead
+              end is worse than no button. */}
+          {onFurnish && (
+            <Button size="sm" icon="Sofa" onClick={onFurnish}>
+              Adjust with 3D
+            </Button>
+          )}
         </div>
         <p className="text-xs text-muted">{formatDimensionsRounded(room.width, room.height)}</p>
       </div>

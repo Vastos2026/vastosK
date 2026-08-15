@@ -78,6 +78,29 @@ function FurnishPageInner() {
   // useState runs for the first time with the real room already in hand.
   if (!hydrated || !project) return null;
 
+  // Same guard, same reasoning as the Furnish gallery's (furnish/page.tsx):
+  // a plan-skipped project has no greybox, so this editor has nothing to
+  // render and its Save would write furniture nothing downstream reads.
+  // Deliberately BEFORE the room lookup — "this project skipped the 3D step"
+  // is the true answer whether or not the room id resolves.
+  if (project.planSkipped) {
+    return (
+      <div className="grid h-full place-items-center text-center">
+        <div>
+          <Icon name="Sofa" className="mx-auto size-7 text-muted" />
+          <p className="mt-3 max-w-xs text-sm text-muted">
+            This project skipped the 3D step, so there is nothing to furnish here.
+          </p>
+          <Link href={`/projects/${id}/generate`}>
+            <Button className="mt-4" variant="outline" iconRight="ArrowRight">
+              Go to Generate
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const room = project.floorPlan?.rooms.find((r) => r.id === roomId);
 
   if (!room) {
