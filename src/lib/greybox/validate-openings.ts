@@ -93,13 +93,16 @@ export function validateOpenings(
         out.push({
           openingIds: [prev.o.id, cur.o.id],
           wall,
-          message: `A ${prev.o.type} and a ${cur.o.type} overlap on the ${wall} wall.`,
+          // Type-agnostic on purpose: naming both types read as "A window and
+          // a window overlap" for two same-typed openings, which users flagged
+          // as confusing. The types don't matter to the violation anyway.
+          message: `Two openings overlap on the ${wall} wall.`,
         });
       } else if ((cur.lo - prev.hi) * L < MIN_SEPARATION_FT) {
         out.push({
           openingIds: [prev.o.id, cur.o.id],
           wall,
-          message: `Only ${((cur.lo - prev.hi) * L).toFixed(2)}ft of solid wall between a ${prev.o.type} and a ${cur.o.type} on the ${wall} wall — at least ${MIN_SEPARATION_FT}ft is required.`,
+          message: `Only ${((cur.lo - prev.hi) * L).toFixed(2)}ft of solid wall between two openings on the ${wall} wall — at least ${MIN_SEPARATION_FT}ft is required.`,
         });
       }
     }

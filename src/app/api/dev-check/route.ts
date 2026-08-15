@@ -52,6 +52,9 @@ import { ProviderError } from "@/lib/ai/errors";
 // Pure prefix check (Fix round 1 — B5 critical regression fix), no DB call — see its
 // own doc comment (supabase/projects.ts) for why this replaced requireOwnedKey here.
 import { isOwnedGreyboxKey } from "@/lib/supabase/projects";
+// Pure JSON-config lookup (config/project-types/*.json via config.ts), no
+// network/DB call — used only to assert "Work Room" landed in roomTypes.
+import { getProjectTypeConfig } from "@/lib/project-types/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -514,6 +517,49 @@ export async function GET() {
     // 1.0ft on a 40ft-wide / 4ft-deep room's east wall (== 0.25 * depth(4)) -> too narrow.
     const v = validateOpenings([op("a", "east", 0.5, 1.0)], 40, 4);
     assert(v.some((x) => x.message.includes("niche")), `east wall must use depth, got ${JSON.stringify(v)}`);
+  });
+
+  // Overlap/separation messages used to name both openings' types
+  // ("A window and a window overlap"), which read as confusing (and
+  // faintly broken-looking) whenever the two openings shared a type —
+  // the common case, since a wall is more likely to have two windows
+  // than one of each. The message is now type-agnostic; only openingIds
+  // still distinguishes which openings tripped it.
+  check("two overlapping windows get the type-agnostic overlap message, not \"A window and a window\"", () => {
+    const v = validateOpenings(
+      [op("a", "north", 0.4, 3.6, "window"), op("b", "north", 0.55, 3.6, "window")],
+      12,
+      10,
+    );
+    const overlap = v.find((x) => x.message.includes("overlap"));
+    assert(!!overlap, `expected an overlap violation, got ${JSON.stringify(v)}`);
+    eq(overlap!.message, "Two openings overlap on the north wall.", "type-agnostic overlap wording");
+    assert(!overlap!.message.includes("window and a window"), "old type-naming wording leaked back in");
+  });
+
+  check("two overlapping doors get the same type-agnostic overlap message as mixed types", () => {
+    const v = validateOpenings(
+      [op("a", "north", 0.4, 3.6, "door"), op("b", "north", 0.55, 3.6, "door")],
+      12,
+      10,
+    );
+    const overlap = v.find((x) => x.message.includes("overlap"));
+    assert(!!overlap, `expected an overlap violation, got ${JSON.stringify(v)}`);
+    eq(overlap!.message, "Two openings overlap on the north wall.", "same wording regardless of which type repeats");
+  });
+
+  check('two under-separated windows get "solid wall between two openings", not "a window and a window"', () => {
+    // Same geometry as the pre-existing separation fixture above, but both
+    // openings are windows so the old code would have said "a window and a window".
+    const v = validateOpenings(
+      [op("a", "north", 0.25, 3.6, "window"), op("b", "north", 0.5667, 3.6, "window")],
+      12,
+      10,
+    );
+    const sep = v.find((x) => x.message.includes("solid wall"));
+    assert(!!sep, `expected a separation violation, got ${JSON.stringify(v)}`);
+    assert(sep!.message.includes("between two openings on the north wall"), `expected type-agnostic wording, got: ${sep!.message}`);
+    assert(!sep!.message.includes("window and a window"), "old type-naming wording leaked back in");
   });
 
   // ---- resolvePlacement / footprintAabb (section 6) ----
@@ -1874,6 +1920,43 @@ export async function GET() {
     // The alias table must not have broken the Custom-category path.
     const odd = furnitureForRoomType("Meditation Nook").map((e) => e.kind);
     eq(odd, ["rug", "plant", "side-table"], "an unrecognised room type must still fall back");
+  });
+
+  // ---- "Work Room" (work-from-home room type, sharing the Study catalogue) ----
+  check('furnitureForRoomType("Work Room") offers the same set as Study, and it is non-empty', () => {
+    const workRoom = furnitureForRoomType("Work Room").map((e) => e.kind);
+    const study = furnitureForRoomType("Study").map((e) => e.kind);
+    assert(workRoom.length > 0, "Work Room must not be empty (it would silently fall through to the universal fallback or NO_FURNITURE)");
+    eq(workRoom, study, "Work Room must offer exactly the Study set (desk, office chair, bookshelf)");
+  });
+
+  check('room-type aliases: "work from home", "wfh" and "work area" resolve to Work Room', () => {
+    for (const label of ["work from home", "wfh", "work area", "Work From Home", "WFH"]) {
+      const kinds = furnitureForRoomType(label).map((e) => e.kind);
+      const workRoom = furnitureForRoomType("Work Room").map((e) => e.kind);
+      eq(kinds, workRoom, `"${label}" must resolve to the Work Room set`);
+    }
+  });
+
+  check('room-type aliases: "home office" and "office" still resolve to Study, unmoved by the Work Room addition', () => {
+    // The whole point of adding Work Room as its own alias target rather than
+    // repointing these: repointing "home office"/"office" would silently
+    // re-type every existing user's room the next time they load it.
+    const study = furnitureForRoomType("Study").map((e) => e.kind);
+    for (const label of ["home office", "office"]) {
+      eq(furnitureForRoomType(label).map((e) => e.kind), study, `"${label}" must still resolve to Study`);
+    }
+  });
+
+  check('"Work Room" is present in both residential.json and apartment.json roomTypes', () => {
+    for (const category of ["Residential", "Apartment"]) {
+      const config = getProjectTypeConfig(category);
+      assert(!!config, `no project-type config for "${category}"`);
+      assert(
+        config!.roomTypes.includes("Work Room"),
+        `"Work Room" missing from ${category}'s roomTypes: ${JSON.stringify(config!.roomTypes)}`,
+      );
+    }
   });
 
   // ---- checkOcclusion: only real furniture blockers count ----

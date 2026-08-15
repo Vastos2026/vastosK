@@ -53,6 +53,13 @@ export default function DesignPage() {
   const [reference, setReference] = useState<DesignReference | undefined>(project?.designReference);
   const [referenceBusy, setReferenceBusy] = useState(false);
   const [referenceError, setReferenceError] = useState<string | null>(null);
+  // A picked-but-not-yet-analysed file: chat-attachment staging so the paid
+  // Gemini vision call only fires on an explicit "Send reference" click, not
+  // on pick. `url` is a local createObjectURL preview, good only for the
+  // life of this staged pick, revoked the moment it's cancelled, replaced by
+  // a second pick, or superseded by the API's own (durable, data-URI)
+  // thumbnail once analysis succeeds.
+  const [stagedReference, setStagedReference] = useState<{ file: File; name: string; url: string } | null>(null);
   const referenceInput = useRef<HTMLInputElement>(null);
 
   const rooms = useMemo(() => project?.floorPlan?.rooms ?? [], [project?.floorPlan?.rooms]);
@@ -96,12 +103,15 @@ export default function DesignPage() {
     );
   }
 
-  const analyseReference = async (file: File | undefined) => {
-    if (!file || referenceBusy) return;
+  // Runs the paid call on whatever is currently staged. Only reachable from
+  // the "Send reference" button, never from the file input's onChange, so a
+  // pick alone never spends a call.
+  const analyseReference = async () => {
+    if (!stagedReference || referenceBusy) return;
     setReferenceError(null);
     setReferenceBusy(true);
     try {
-      const result = await analyseDesignReferenceViaApi(file, id);
+      const result = await analyseDesignReferenceViaApi(stagedReference.file, id);
       const next: DesignReference = {
         attributes: result.attributes,
         thumbnail: result.thumbnail,
@@ -114,11 +124,26 @@ export default function DesignPage() {
       // (or a hop to Review and back) between upload and Confirm must not
       // quietly buy it a second time.
       useVasto.getState().patchProject(id, { designReference: next });
+      // The API response carries its own thumbnail (a data URI, durable
+      // across a reload) which the analysed-state UI reads from `reference`
+      // from here on, so the blob preview that got the user through staging
+      // has no reader left.
+      URL.revokeObjectURL(stagedReference.url);
+      setStagedReference(null);
     } catch (e) {
+      // Deliberately keep stagedReference set on failure: the chip and its
+      // preview stay on screen so Send can be retried without re-picking.
       setReferenceError(e instanceof Error ? e.message : "Could not read that reference image");
     } finally {
       setReferenceBusy(false);
     }
+  };
+
+  const cancelStagedReference = () => {
+    if (!stagedReference) return;
+    URL.revokeObjectURL(stagedReference.url);
+    setStagedReference(null);
+    setReferenceError(null);
   };
 
   const removeReference = () => {
@@ -353,7 +378,36 @@ export default function DesignPage() {
         )}
 
         <Section title="Design reference">
-          {reference ? (
+          {stagedReference ? (
+            // Staged, not yet sent: a chat-attachment-style chip (thumbnail
+            // + filename + cancel) plus the button that actually spends the
+            // paid call. Shown for a fresh pick AND for "Replace image" on
+            // an already-analysed reference alike — `reference` itself is
+            // untouched underneath until Send succeeds, so Cancel here just
+            // drops back to whatever was on screen before this pick.
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-border bg-surface p-3.5">
+              <div className="flex items-center gap-2.5 rounded-xl border border-border-strong bg-bg py-1.5 pl-1.5 pr-2.5">
+                {/* eslint-disable-next-line @next/next/no-img-element -- a blob: URL from createObjectURL, next/image's loader can't take it */}
+                <img
+                  src={stagedReference.url}
+                  alt=""
+                  className="size-10 shrink-0 rounded-lg border border-border object-cover"
+                />
+                <span className="max-w-[12rem] truncate text-xs font-medium">{stagedReference.name}</span>
+                <button
+                  type="button"
+                  onClick={cancelStagedReference}
+                  className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger/10 hover:text-danger"
+                  aria-label="Cancel this upload"
+                >
+                  <Icon name="X" className="size-3.5" />
+                </button>
+              </div>
+              <Button size="sm" icon="Upload" onClick={analyseReference} loading={referenceBusy} disabled={referenceBusy}>
+                {referenceBusy ? "Reading your reference…" : "Send reference"}
+              </Button>
+            </div>
+          ) : reference ? (
             <div className="rounded-2xl border border-accent/40 bg-accent/5 p-3.5">
               <div className="flex items-start gap-4">
                 {reference.thumbnail && (
@@ -380,17 +434,10 @@ export default function DesignPage() {
                 </div>
               </div>
               <div className="mt-3.5 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  icon="ImagePlus"
-                  onClick={() => referenceInput.current?.click()}
-                  loading={referenceBusy}
-                  disabled={referenceBusy}
-                >
-                  {referenceBusy ? "Reading your reference…" : "Replace image"}
+                <Button size="sm" variant="outline" icon="ImagePlus" onClick={() => referenceInput.current?.click()}>
+                  Replace image
                 </Button>
-                <Button size="sm" variant="ghost" icon="Trash2" onClick={removeReference} disabled={referenceBusy}>
+                <Button size="sm" variant="ghost" icon="Trash2" onClick={removeReference}>
                   Remove and pick manually
                 </Button>
               </div>
@@ -408,10 +455,8 @@ export default function DesignPage() {
                 className="mt-3"
                 icon="ImagePlus"
                 onClick={() => referenceInput.current?.click()}
-                loading={referenceBusy}
-                disabled={referenceBusy}
               >
-                {referenceBusy ? "Reading your reference…" : "Upload design reference"}
+                Upload design reference
               </Button>
             </div>
           )}
@@ -424,10 +469,17 @@ export default function DesignPage() {
             onChange={(e) => {
               const file = e.target.files?.[0];
               // Cleared so re-picking the SAME file still fires a change
-              // event — otherwise a failed analysis can't be retried without
-              // choosing a different image first.
+              // event — otherwise a cancelled or failed pick can't be
+              // restaged without choosing a different image first.
               e.target.value = "";
-              void analyseReference(file);
+              if (!file) return;
+              // Only reachable if a previous staged pick was cancelled or
+              // sent (both clear stagedReference and revoke its url before
+              // this can fire again from the same chip), but revoke
+              // defensively rather than assume that invariant holds forever.
+              if (stagedReference) URL.revokeObjectURL(stagedReference.url);
+              setReferenceError(null);
+              setStagedReference({ file, name: file.name, url: URL.createObjectURL(file) });
             }}
           />
 
