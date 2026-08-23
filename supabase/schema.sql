@@ -577,19 +577,27 @@ drop trigger if exists project_snapshots_updated_at on project_snapshots;
 create trigger project_snapshots_updated_at before update on project_snapshots
   for each row execute function set_updated_at();
 
--- Anon SELECT stays open so the browser's Realtime subscription can work:
--- `src/lib/supabase/browser.ts`'s client is a bare anon client with no
--- session/cookies, so `auth.uid()` is never available to scope this policy
--- by user identity — writes are the actual security boundary (server-side,
--- ownership-checked, see above), reachable only server-side. This IS a real
--- residual gap: a client that talks to Supabase's Realtime API directly
--- (bypassing this app's own JS) could read any user's project data. Closing
--- it fully needs `browser.ts` switched to a cookie-aware client
--- (`@supabase/ssr`'s `createBrowserClient`) so this policy can require
--- `anon_owner = auth.uid()::text` — flagged, not done in this pass.
+-- SELECT is scoped to the owning user (fixed 2026-08-20 — previously
+-- `using (true)`, open to ANY holder of the publishable key, not just this
+-- app's own Realtime subscription: since `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+-- ships in the client bundle by design, a direct PostgREST GET against
+-- `project_snapshots` with that key could SELECT every user's full project
+-- JSON — floor plans, design references, generated-image storage keys,
+-- prompts, walkthrough share tokens. Writes were already ownership-checked
+-- server-side (see above); this closes the matching read-side hole.
+--
+-- This only works because `src/lib/supabase/browser.ts` is now a
+-- cookie-aware client (`@supabase/ssr`'s `createBrowserClient`, same
+-- pattern as `server-client.ts`) instead of a bare anon client — so the
+-- signed-in user's session travels with it and `auth.uid()` resolves.
+-- Before that change this policy would have silently broken Realtime
+-- (`auth.uid()` NULL → deny) rather than merely under-scoping it, which is
+-- why both changes shipped together.
 alter table project_snapshots enable row level security;
 drop policy if exists "anon read snapshots" on project_snapshots;
-create policy "anon read snapshots" on project_snapshots for select using (true);
+drop policy if exists "own snapshots select" on project_snapshots;
+create policy "own snapshots select" on project_snapshots
+  for select using (anon_owner = auth.uid()::text);
 
 do $$ begin
   alter publication supabase_realtime add table project_snapshots;
@@ -655,6 +663,13 @@ create table if not exists ai_usage_logs (
 );
 create index if not exists ai_usage_logs_user_idx on ai_usage_logs (user_id, created_at desc);
 create index if not exists ai_usage_logs_project_idx on ai_usage_logs (project_id, created_at desc);
+-- Console Analytics (`fetchConsoleUsageLogRows`, src/lib/console/usage-analytics.ts)
+-- runs an admin-wide `created_at >= X` scan with no user_id/project_id
+-- predicate — neither composite index above (both lead with a different
+-- column) can serve that filter, so Postgres falls back to a sequential
+-- scan. Harmless at today's row count, but this table grows on every AI
+-- call, so add a plain index on the column that scan actually filters on.
+create index if not exists ai_usage_logs_created_at_idx on ai_usage_logs (created_at);
 
 -- Migration for a database created before this fix: project_id was
 -- uuid+FK-to-projects, which no real insert could ever satisfy. No-op on a
@@ -718,6 +733,15 @@ select 'system', null, 1,
   '{"rules":"Photorealistic photograph of a real, ordinary home interior. Realistic materials, lighting, shadows and reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and fixtures implied by the brief below - do not invent unrelated objects."}'::jsonb,
   true
 where not exists (select 1 from prompt_templates where type = 'system');
+
+-- Same staleness gap as the 'Custom' persona update below: the insert above
+-- is a no-op once a 'system' row already exists, so re-running this file
+-- never applied the 2026-08-14 "magazine photograph" -> "real, ordinary
+-- home interior" wording change (see the 742a66c commit that introduced it)
+-- to a database seeded before that date. Direct UPDATE brings it in line.
+update prompt_templates
+set body = '{"rules":"Photorealistic photograph of a real, ordinary home interior. Realistic materials, lighting, shadows and reflections. No people, no text or watermarks, no visible logos. Render exactly the furniture and fixtures implied by the brief below - do not invent unrelated objects."}'::jsonb
+where type = 'system' and published = true;
 
 insert into prompt_templates (type, category, version, body, published)
 select 'planning', c.category, 1, c.persona::jsonb, true

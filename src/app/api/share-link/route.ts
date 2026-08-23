@@ -5,8 +5,19 @@
  * `/api/render?key=...` storage URL — meant to be reshared by the builder
  * with their client over time, not treated as a signed/expiring URL.
  *
- *   POST /api/share-link  { projectId }
+ *   POST   /api/share-link  { projectId }
  *     → { token: string | null, persisted: boolean }
+ *   DELETE /api/share-link  { projectId, regenerate?: boolean }
+ *     → { token: string | null, revoked: boolean }
+ *
+ * REVOCATION (DELETE) exists because a share token is otherwise permanent.
+ * Before it, `POST` reused any existing token forever and nothing anywhere
+ * could clear one, so a link forwarded to the wrong person — or handed to a
+ * client whose engagement has ended — stayed live for good and could only be
+ * killed by editing the database by hand. `regenerate: true` mints a fresh
+ * token in the same call, which is what "the old link is compromised but I
+ * still want to share this project" needs; without it the project simply
+ * stops being shared until the owner mints a new link.
  *
  * `projectId` must be owned by the caller (`requireOwnedProject`, checked
  * before any `project_snapshots` read or write below) — without that, any
@@ -43,6 +54,12 @@ import { assertAllowed } from "@/lib/api-guard";
 
 interface Body {
   projectId?: string;
+}
+
+interface RevokeBody {
+  projectId?: string;
+  /** Mint a replacement in the same call, so a compromised link can be rotated rather than merely killed. */
+  regenerate?: boolean;
 }
 
 function generateToken(): string {
@@ -155,5 +172,84 @@ export async function POST(request: Request) {
     console.warn("[share-link] unexpected failure (non-fatal):", (e as Error).message);
     const token = generateToken();
     return Response.json({ token, persisted: false });
+  }
+}
+
+/**
+ * Revoke this project's share link, optionally replacing it.
+ *
+ * Deliberately NOT best-effort, unlike POST above. POST can hand back an
+ * unpersisted token and degrade gracefully because the worst case is a link
+ * that doesn't resolve elsewhere. Revocation is the opposite: reporting
+ * success when the token is still in the database would tell the owner a
+ * leaked link is dead while it keeps working, which is worse than an honest
+ * error. So every failure path here returns a non-2xx and `revoked: false`.
+ *
+ * Same ownership gate as POST, for the same reason and then some — without
+ * it any authenticated caller could revoke or rotate a stranger's share
+ * link, which is a denial-of-service on someone else's client presentation.
+ */
+export async function DELETE(request: Request) {
+  const guard = await assertAllowed(request, { rateLimit: { key: "share-link-revoke", limit: 20, windowMs: 60_000 } });
+  if (guard instanceof Response) return guard;
+
+  let body: RevokeBody;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { projectId, regenerate } = body;
+  if (!projectId) {
+    return Response.json({ error: "projectId is required" }, { status: 400 });
+  }
+
+  const owned = await requireOwnedProject(guard.id, projectId);
+  if (owned instanceof Response) return owned;
+
+  const db = supabaseAdmin();
+  if (!db) {
+    // Nothing is persisted, so there is nothing to revoke — and we must not
+    // claim otherwise. A token minted while Supabase was unconfigured only
+    // ever lived in the caller's own local state; clearing that is the
+    // client's job, and it can treat this 503 as "drop your cached token".
+    return Response.json(
+      { error: "Sharing is not configured on this deployment; nothing to revoke.", revoked: false },
+      { status: 503 },
+    );
+  }
+
+  const replacement = regenerate ? generateToken() : null;
+
+  try {
+    // Unconditional write, unlike POST's `.is("share_token", null)` guard:
+    // there is no race to lose here. Two concurrent revocations both want
+    // the old token gone, and whichever lands last decides the replacement —
+    // both outcomes are correct, because neither leaves the revoked token
+    // live. `.select()` tells us whether a row actually existed.
+    const { data: updated, error } = await db
+      .from("project_snapshots")
+      .update({ share_token: replacement })
+      .eq("app_id", projectId)
+      .select("share_token")
+      .maybeSingle();
+
+    if (error) {
+      console.warn("[share-link] revoke failed:", error.message);
+      return Response.json({ error: "Could not revoke the share link.", revoked: false }, { status: 502 });
+    }
+
+    if (!updated) {
+      // No snapshot row for this project — so no token was ever persisted
+      // against it. Nothing is live, which is the state the caller asked
+      // for, so this is a success rather than an error.
+      return Response.json({ token: null, revoked: true, note: "no persisted share link for this project" });
+    }
+
+    return Response.json({ token: updated.share_token ?? null, revoked: true });
+  } catch (e) {
+    console.warn("[share-link] revoke threw:", (e as Error).message);
+    return Response.json({ error: "Could not revoke the share link.", revoked: false }, { status: 502 });
   }
 }
