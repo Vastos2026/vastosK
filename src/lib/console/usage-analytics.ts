@@ -96,18 +96,20 @@ function aggregate(rows: UsageLogRow[], keys: string[], keySliceLength: number, 
  * window (last 12 months) so the page's Day/Month toggle is a pure client-
  * side switch between two already-fetched datasets, no second round-trip.
  *
+ * Split into a fetch half and a pure-JS aggregate half (below) so the caller
+ * can kick this query off in the same `Promise.all` as its other independent
+ * reads (profiles, auth users, provider settings) instead of waiting on them
+ * first purely to get a `profiles` array this query itself never touches —
+ * `profiles` is only needed for the aggregation step, not the round-trip.
+ *
  * Admin-scoped: takes the service-role client the Analytics page already
  * builds (cross-user by design, same rationale the old console/render-stats.ts
  * used — RLS on ai_usage_logs otherwise scopes reads to "your own rows").
  * Returns null on query failure, matching this app's degrade-gracefully
  * contract for every other Supabase read.
  */
-export async function getConsoleUsageAnalytics(
-  admin: SupabaseClient,
-  profiles: ProfileLite[],
-): Promise<ConsoleUsageAnalytics | null> {
+export async function fetchConsoleUsageLogRows(admin: SupabaseClient): Promise<UsageLogRow[] | null> {
   const monthWindow = buildTimeWindow(12, "month");
-  const dayWindow = buildTimeWindow(30, "day");
 
   const { data, error } = await admin
     .from("ai_usage_logs")
@@ -116,8 +118,17 @@ export async function getConsoleUsageAnalytics(
     .order("created_at", { ascending: true });
 
   if (error || !data) return null;
+  return data as UsageLogRow[];
+}
 
-  const rows = data as UsageLogRow[];
+/** Pure JS aggregation half of the above — no I/O, safe to call once both the rows and `profiles` are ready. */
+export function buildConsoleUsageAnalytics(
+  rows: UsageLogRow[],
+  profiles: ProfileLite[],
+): ConsoleUsageAnalytics {
+  const monthWindow = buildTimeWindow(12, "month");
+  const dayWindow = buildTimeWindow(30, "day");
+
   const profileById = new Map(profiles.map((p) => [p.id, p]));
   const dayRows = rows.filter((r) => r.created_at >= dayWindow.since.toISOString());
 
@@ -125,4 +136,14 @@ export async function getConsoleUsageAnalytics(
     day: aggregate(dayRows, dayWindow.keys, 10, profileById),
     month: aggregate(rows, monthWindow.keys, 7, profileById),
   };
+}
+
+/** Convenience wrapper preserving the old combined signature/behavior, kept in case anything still wants a one-call form. */
+export async function getConsoleUsageAnalytics(
+  admin: SupabaseClient,
+  profiles: ProfileLite[],
+): Promise<ConsoleUsageAnalytics | null> {
+  const rows = await fetchConsoleUsageLogRows(admin);
+  if (!rows) return null;
+  return buildConsoleUsageAnalytics(rows, profiles);
 }

@@ -2,7 +2,7 @@ import { requireRole } from "@/lib/auth/session";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { Icon } from "@/components/ui/icon";
 import { listAllAuthUsers } from "@/lib/console/auth-users";
-import { getConsoleUsageAnalytics } from "@/lib/console/usage-analytics";
+import { fetchConsoleUsageLogRows, buildConsoleUsageAnalytics } from "@/lib/console/usage-analytics";
 import { getProviderPrimary } from "@/lib/settings/provider-settings";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
 import { AnalyticsDashboard } from "./analytics-dashboard-lazy";
@@ -25,11 +25,15 @@ export default async function ConsoleAnalyticsPage() {
     );
   }
 
-  const [{ data: profileRows }, authUsers, imageGenPrimary, imageEditPrimary] = await Promise.all([
+  // `usageLogRows` doesn't depend on any of the other reads below (it only needs
+  // `profiles` for the aggregation step, done after), so it's kicked off in the
+  // same Promise.all instead of being awaited afterward as its own round-trip.
+  const [{ data: profileRows }, authUsers, imageGenPrimary, imageEditPrimary, usageLogRows] = await Promise.all([
     admin.from("profiles").select("id, display_name"),
     listAllAuthUsers(admin),
     getProviderPrimary("image_gen"),
     getProviderPrimary("image_edit"),
+    fetchConsoleUsageLogRows(admin),
   ]);
 
   const emailById = new Map(authUsers.map((u) => [u.id, u.email ?? null]));
@@ -39,7 +43,7 @@ export default async function ConsoleAnalyticsPage() {
     email: emailById.get(p.id as string) ?? null,
   }));
 
-  const analytics = await getConsoleUsageAnalytics(admin, profiles);
+  const analytics = usageLogRows ? buildConsoleUsageAnalytics(usageLogRows, profiles) : null;
   const slugs = currentModelSlugs();
 
   return (
