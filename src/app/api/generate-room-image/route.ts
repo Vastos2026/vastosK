@@ -217,7 +217,15 @@ export async function POST(request: Request) {
     // to load). recordGeneration itself never throws (best-effort insert),
     // so awaiting it only adds one DB round-trip, no new failure mode.
     await recordGeneration({ projectId, userId: guard.id, roomKey: room.name, type: "image", storageUrl: imageUrl });
-    return Response.json({ imageUrl, key, prompt });
+    // The assembled prompt is deliberately NOT returned. It used to be, which
+    // put the one genuinely proprietary part of this product — the whole
+    // prompt layer — in the browser's Network tab on every generation, and
+    // from there into localStorage and Supabase. Nothing client-side ever
+    // read it; it was only carried onto the next RoomGeneration.
+    // Traceability is server-side: prompt-builder.ts logs this prompt's
+    // length and hash, and recordGeneration above rows the render. See
+    // RoomGeneration.prompt in types.ts.
+    return Response.json({ imageUrl, key });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Room image generation");
     return Response.json(body, { status });

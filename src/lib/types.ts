@@ -315,8 +315,27 @@ export interface RoomGeneration {
   imageUrl: string;
   /** storage key — base for a later lasso edit */
   imageKey: string;
-  /** the assembled prompt that produced it, kept for traceability, never shown to the user */
-  prompt: string;
+  /**
+   * DEPRECATED — no longer written, deliberately.
+   *
+   * This once held the full assembled prompt, returned by
+   * /api/generate-room-image "for traceability". But "never shown to the
+   * user" is not "never sent to the user": it travelled in the JSON
+   * response, so the whole prompt — structural contract, opening census,
+   * furniture descriptors, design brief — was readable in the browser's
+   * Network tab on every generation, then persisted to localStorage and
+   * mirrored to Supabase. For a licensed product whose prompt layer IS the
+   * product, that handed the one thing worth protecting to anyone who opened
+   * DevTools.
+   *
+   * Traceability lives server-side instead: prompt-builder.ts logs each
+   * prompt's length and FNV-1a hash, and the `generations` table records the
+   * model and version columns per render. Neither reaches the client.
+   *
+   * Kept OPTIONAL rather than removed so generations already in a user's
+   * localStorage still parse. Nothing reads it — do not reintroduce a writer.
+   */
+  prompt?: string;
   /** "Other requirements" note for this one generation (Generate More), if any */
   note?: string;
   /** true when this version came from a lasso edit of an earlier version, not a fresh generation */
@@ -355,6 +374,23 @@ export interface Walkthrough {
   videoKey?: string;
   /** stable unguessable token for the public share link */
   shareToken?: string;
+  /**
+   * Whether `shareToken` is actually saved on the server, or only here.
+   *
+   * `POST /api/share-link` can mint a token it cannot persist — the project
+   * may not have synced to `project_snapshots` yet. Such a token resolves
+   * for nobody: `/s/<token>` looks it up in that table and 404s. Before this
+   * field, the token was cached locally and every later click reported
+   * `persisted: true` from the cache, so the honest "saved on this device
+   * for now" warning appeared once and then never again, while the link
+   * stayed dead for the recipient.
+   *
+   * Recording it lets `useShareToken` retry against the server until it
+   * genuinely lands, which it will once the snapshot syncs. Absent means
+   * unknown — treated as not persisted, so an older project retries once
+   * rather than inheriting a false guarantee.
+   */
+  shareTokenPersisted?: boolean;
   /** room ids in the confirmed order the clips were concatenated in */
   roomOrder: string[];
   error?: string;

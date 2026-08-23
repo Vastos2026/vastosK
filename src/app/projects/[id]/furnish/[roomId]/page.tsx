@@ -648,7 +648,6 @@ function FurnishContent({
         createdAt,
         imageUrl: gen.imageUrl,
         imageKey: gen.key,
-        prompt: gen.prompt,
       });
       setGeneratedOnce(true);
     } catch (e) {

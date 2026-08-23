@@ -135,6 +135,6 @@ export function generateRoomImage(input: {
    * route's own note on why FLUX must never see numerals.
    */
   greyboxAnnotatedKey?: string;
-}): Promise<{ imageUrl: string; key: string; prompt: string }> {
+}): Promise<{ imageUrl: string; key: string }> {
   return postJson("/api/generate-room-image", input);
 }

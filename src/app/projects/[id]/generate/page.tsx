@@ -167,7 +167,6 @@ export default function GeneratePage() {
         createdAt: new Date().toISOString(),
         imageUrl: gen.imageUrl,
         imageKey: gen.key,
-        prompt: gen.prompt,
         note,
       });
     } finally {

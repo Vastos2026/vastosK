@@ -392,7 +392,6 @@ function DesignPageContent() {
               createdAt: new Date().toISOString(),
               imageUrl: gen.imageUrl,
               imageKey: gen.key,
-              prompt: gen.prompt,
             });
           } catch (e) {
             console.warn(`[generate] room "${room.name}" failed:`, e instanceof Error ? e.message : e);

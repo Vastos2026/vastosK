@@ -241,7 +241,6 @@ export default function ViewEditPage() {
         createdAt: new Date().toISOString(),
         imageUrl: result.imageUrl,
         imageKey: result.key,
-        prompt: current.prompt,
         edited: true,
       });
       lassoRef.current?.clear();
@@ -272,7 +271,6 @@ export default function ViewEditPage() {
         createdAt: new Date().toISOString(),
         imageUrl: result.imageUrl,
         imageKey: result.key,
-        prompt: current.prompt,
         enhanced: true,
       });
       setViewedId(null);

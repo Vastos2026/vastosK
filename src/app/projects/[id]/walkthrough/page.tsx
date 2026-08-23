@@ -32,7 +32,8 @@ export default function WalkthroughPage() {
   const [error, setError] = useState<string | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
   const share = useAsyncFeedback();
-  const { ensureShareToken } = useShareToken(project);
+  const revoke = useAsyncFeedback();
+  const { ensureShareToken, revokeToken } = useShareToken(project);
   const pdfExport = useExportProjectPdf(project);
 
   const rooms = project?.floorPlan?.rooms ?? [];
@@ -141,8 +142,12 @@ export default function WalkthroughPage() {
     // any write that omits it would silently drop an already-shared token
     // even on a transient "processing"/"failed" state, not just on success.
     const shareToken = project.walkthrough?.shareToken;
+    // Carried alongside shareToken for the same reason: setWalkthrough fully
+    // replaces the object, so omitting this would reset a known-persisted
+    // token to "unknown" and force a needless re-mint on the next share.
+    const shareTokenPersisted = project.walkthrough?.shareTokenPersisted;
     const roomOrder = effectiveOrder.map((r) => r.id);
-    setWalkthrough(id, { status: "processing", createdAt: new Date().toISOString(), shareToken, roomOrder });
+    setWalkthrough(id, { status: "processing", createdAt: new Date().toISOString(), shareToken, shareTokenPersisted, roomOrder });
     try {
       const payload = effectiveOrder.map((r) => {
         const card = project.roomCards.find((c) => c.roomId === r.id)!;
@@ -156,12 +161,13 @@ export default function WalkthroughPage() {
         videoUrl: result.videoUrl,
         videoKey: result.key,
         shareToken,
+        shareTokenPersisted,
         roomOrder,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Walkthrough generation failed";
       setError(msg);
-      setWalkthrough(id, { status: "failed", createdAt: new Date().toISOString(), shareToken, roomOrder, error: msg });
+      setWalkthrough(id, { status: "failed", createdAt: new Date().toISOString(), shareToken, shareTokenPersisted, roomOrder, error: msg });
     } finally {
       setBusy(false);
     }
@@ -177,6 +183,20 @@ export default function WalkthroughPage() {
 
       await navigator.clipboard.writeText(`${window.location.origin}/s/${token}`);
       return persisted ? "Link copied" : "Link copied (saved on this device for now)";
+    });
+
+  // A share link is otherwise permanent: once sent to a client it stays live
+  // for good. Rotating rather than only killing it is what a leaked link
+  // actually needs — the old URL dies and the owner still has something to
+  // share. The new link is copied straight to the clipboard so revoking
+  // never leaves them without one.
+  const rotateShareLink = () =>
+    revoke.run(async () => {
+      if (!wt) return;
+      const { token } = await revokeToken(wt, { regenerate: true });
+      if (!token) return "Old link revoked";
+      await navigator.clipboard.writeText(`${window.location.origin}/s/${token}`);
+      return "Old link revoked, new link copied";
     });
 
   // One Veo clip per room is the dominant cost — a flat floor plus a per-room
@@ -265,6 +285,18 @@ export default function WalkthroughPage() {
               <Button variant="outline" icon="Copy" onClick={getShareLink} loading={share.busy} disabled={busy}>
                 Get shareable link
               </Button>
+              {wt.shareToken && (
+                <Button
+                  variant="ghost"
+                  icon="EyeOff"
+                  onClick={rotateShareLink}
+                  loading={revoke.busy}
+                  disabled={busy}
+                  title="Kills the existing link and copies a replacement"
+                >
+                  Revoke link
+                </Button>
+              )}
               <Button variant="outline" icon="FileUp" onClick={pdfExport.exportPdf} loading={pdfExport.busy} disabled={busy}>
                 Export PDF
               </Button>
