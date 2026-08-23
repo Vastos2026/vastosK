@@ -20,7 +20,7 @@ function envDefault(): ProviderChoice {
  * Analytics page). Falls back to `envDefault()` when Supabase isn't
  * configured, the `provider_settings` row doesn't exist yet, or the query
  * errors — a DB hiccup must never break a generation call, matching this
- * app's degrade-gracefully contract elsewhere (feature-flags.ts, same
+ * app's degrade-gracefully contract elsewhere (same
  * pattern). Video is intentionally not covered here — it stays governed by
  * the VIDEO_PROVIDER env var, see provider.ts.
  */

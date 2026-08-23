@@ -34,7 +34,7 @@ export function formatLength(feet: number | undefined, unit: Unit): string {
  * Whole-number "W × H ft" display string, or "Size not available" when
  * either dimension is missing — the compact on-screen label used where a
  * unit selector isn't in scope (Generate page's per-room heading,
- * plan-blueprint.tsx's dimension label). Deliberately NOT `formatDimensions`
+ * plan-thumb.tsx's dimension label). Deliberately NOT `formatDimensions`
  * below: that one is unit-aware (m/cm/ft-in) and rounds to 1-2 decimals,
  * a different display convention for a different context (Room
  * Confirmation, where a unit selector IS in scope) — reusing it here would

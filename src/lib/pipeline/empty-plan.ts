@@ -34,7 +34,7 @@ export function emptyPlan(fileName = ""): FloorPlan {
 
 /**
  * Width/height for pure layout math only — grid packing (extract-plan.ts) and
- * SVG box sizing (plan-thumb.tsx/plan-blueprint.tsx) all need SOME number to
+ * SVG box sizing (plan-thumb.tsx) all need SOME number to
  * position/size a box on screen, even for a room whose real dimensions are
  * still unknown. Never use this to display a size as fact or to build an AI
  * prompt — those call sites must handle the missing case honestly instead.
