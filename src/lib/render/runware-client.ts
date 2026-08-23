@@ -36,6 +36,15 @@
  *                          (see provider.ts's chained fallback); a third tier,
  *                          the direct Google Gemini API key path, is provider.ts's
  *                          own responsibility, not this file's.
+ *   RUNWARE_ENHANCE_MODEL — default `google:4@3` (Nano Banana 2) — the primary
+ *                          model for the Approve → Enhance whole-image
+ *                          image-to-image call (`enhanceImageWithRunware`
+ *                          below, driven by `provider.ts`'s `enhanceImage`).
+ *                          Same fallback chain shape as generate/edit: this
+ *                          model first, then RUNWARE_FALLBACK_IMAGE_MODEL,
+ *                          then the direct Google Gemini API as a last
+ *                          resort — two independent env knobs that happen to
+ *                          share a default, not one model called twice.
  *
  * Nano Banana via Runware (google:4@2 "Pro", google:4@3 "2") — confirmed via
  * live schema lookups (2026-07-30) to be REFERENCE-IMAGE editors, same as
@@ -109,6 +118,8 @@ const EDIT_MODEL = process.env.RUNWARE_EDIT_MODEL?.trim() || "google:4@2";
 const VIDEO_MODEL = process.env.RUNWARE_VIDEO_MODEL?.trim() || "alibaba:wan@2.7";
 /** Nano Banana 2 — second-tier fallback, used for both generation and editing. */
 const FALLBACK_IMAGE_MODEL = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
+/** Nano Banana 2 — primary model for the whole-image Enhance call, see header comment. */
+const ENHANCE_MODEL = process.env.RUNWARE_ENHANCE_MODEL?.trim() || "google:4@3";
 /** FLUX Fill [dev] — no longer the default edit model (see header comment),
  * kept only so `RUNWARE_EDIT_MODEL` can still be pointed back at it. */
 const FLUX_FILL_MODEL = "runware:102@1";
@@ -363,7 +374,7 @@ export async function generateImageWithRunware(
 
 /**
  * DISABLED — kept aside, not deleted, per this repo's convention for retired
- * models (matches `src/lib/pipeline/opencv.ts`'s style). No longer called
+ * models . No longer called
  * from `provider.ts` as of 2026-07-30 — replaced by `editImageWithRunwareGemini`
  * below (Nano Banana Pro/2), per the user's explicit "the output from lasso
  * is still not good, change it" after the steps/CFGScale tuning below was
@@ -446,6 +457,12 @@ export async function editImageWithRunwareFluxFill(
  * documented-but-unverified per-tier dimension ranges. `compositeCrop`
  * already resizes whatever comes back to the exact crop size regardless, so
  * the returned image's exact pixel dimensions don't need to match anything.
+ *
+ * `reference` (optional) is a user-uploaded guide image for the change —
+ * `planCropEdit` already downscales it and builds the "IMAGE 2" clause
+ * describing it (see gemini-image.ts). When present, it rides as a SECOND
+ * entry in `inputs.referenceImages`, after the crop — order matters because
+ * the prompt calls the crop IMAGE 1 and the reference IMAGE 2.
  */
 export async function editImageWithRunwareGemini(
   baseDataUri: string,
@@ -453,10 +470,13 @@ export async function editImageWithRunwareGemini(
   instruction: string,
   style: DesignStyle,
   tier: "primary" | "fallback" = "primary",
+  reference?: string,
 ): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
-  const plan = await planCropEdit(baseDataUri, maskDataUri, instruction, style);
+  const plan = await planCropEdit(baseDataUri, maskDataUri, instruction, style, reference);
   if (!plan) throw new ProviderError("ValidationError", "lasso selection is empty");
   const crop = parseDataUri(plan.cropDataUri);
+  const referenceImages = [`data:${crop.mime};base64,${crop.data}`];
+  if (plan.refDataUri) referenceImages.push(plan.refDataUri);
 
   const [result] = await submit([
     {
@@ -464,7 +484,7 @@ export async function editImageWithRunwareGemini(
       taskUUID: randomUUID(),
       model: tier === "primary" ? EDIT_MODEL : FALLBACK_IMAGE_MODEL,
       positivePrompt: plan.prompt,
-      inputs: { referenceImages: [`data:${crop.mime};base64,${crop.data}`] },
+      inputs: { referenceImages },
       resolution: "1K",
       outputType: "URL",
       outputFormat: "PNG",
@@ -475,6 +495,42 @@ export async function editImageWithRunwareGemini(
   const edited = await download(result.imageURL);
   const composited = await compositeCrop(plan.baseBuf, edited.bytes, plan.bx, plan.by, plan.bw, plan.bh);
   return { ...composited, costUsd: result.cost };
+}
+
+/**
+ * Whole-image "Enhance" via Nano Banana (Runware) — an image-to-image call on
+ * a FINISHED room photo, not a masked/cropped edit like
+ * `editImageWithRunwareGemini` above. The entire photograph is sent as a
+ * single reference image (matching the prompt's "IMAGE 1 is a finished
+ * photograph" framing built by `provider.ts`'s `buildEnhancePrompt`) — no
+ * crop/composite step, since nothing here is meant to be pixel-identical
+ * OUTSIDE a region; the KEEP/ENHANCE split is enforced by the prompt itself.
+ * `tier` picks the model exactly like `editImageWithRunwareGemini`: "primary"
+ * uses `ENHANCE_MODEL` (RUNWARE_ENHANCE_MODEL, default `google:4@3`),
+ * "fallback" uses `FALLBACK_IMAGE_MODEL` (RUNWARE_FALLBACK_IMAGE_MODEL, also
+ * `google:4@3` by default) — two independent env knobs, not one model called
+ * twice, so overriding either alone still gets a real second attempt.
+ */
+export async function enhanceImageWithRunware(
+  baseDataUri: string,
+  prompt: string,
+  tier: "primary" | "fallback" = "primary",
+): Promise<{ bytes: Buffer; contentType: string; costUsd?: number }> {
+  const [result] = await submit([
+    {
+      taskType: "imageInference",
+      taskUUID: randomUUID(),
+      model: tier === "primary" ? ENHANCE_MODEL : FALLBACK_IMAGE_MODEL,
+      positivePrompt: prompt,
+      inputs: { referenceImages: [baseDataUri] },
+      resolution: "1K",
+      outputType: "URL",
+      outputFormat: "PNG",
+      includeCost: true,
+    },
+  ]);
+  if (!result?.imageURL) throw new Error("Runware Nano Banana enhance returned no imageURL");
+  return finishDownload(result.imageURL, "image/", "image/png", result.cost);
 }
 
 /**

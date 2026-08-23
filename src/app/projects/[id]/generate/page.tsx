@@ -359,8 +359,15 @@ function GenerationTile({
             alt={isLatest ? room.name : `${room.name} version ${version}`}
             className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
           />
-          <span className="absolute left-2 top-2 z-10 rounded-md border border-white/10 bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-foreground/90 backdrop-blur-sm">
-            {isLatest ? "Latest" : `v${version}`}
+          <span className="absolute left-2 top-2 z-10 flex items-center gap-1">
+            <span className="rounded-md border border-white/10 bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-foreground/90 backdrop-blur-sm">
+              {isLatest ? "Latest" : `v${version}`}
+            </span>
+            {(gen.edited || gen.enhanced) && (
+              <span className="rounded-md border border-white/10 bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-foreground/90 backdrop-blur-sm">
+                {gen.enhanced ? "Enhanced" : "Edited"}
+              </span>
+            )}
           </span>
           <a
             href={gen.imageUrl}

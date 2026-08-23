@@ -33,6 +33,7 @@ import {
   generateImageWithRunware,
   generateImageWithRunwareGemini,
   editImageWithRunwareGemini,
+  enhanceImageWithRunware,
   generateVideoWithRunware,
 } from "@/lib/render/runware-client";
 import { getProviderPrimary, type ProviderCapability } from "@/lib/settings/provider-settings";
@@ -797,6 +798,12 @@ export async function generateImage(
  * (`gemini-image.ts`'s `planCropEdit`/`compositeCrop`, reused by
  * `runware-client.ts`'s `editImageWithRunwareGemini`) since none of these
  * models has a native mask parameter.
+ *
+ * `reference` (optional, added LAST so every existing call site keeps
+ * working unchanged) is a user-uploaded guide image (data URI) for the
+ * change — threaded through every tier: `planCropEdit` (called by both
+ * `editImageWithRunwareGemini` and `editImageWithGemini`) already accepts it
+ * and builds the "IMAGE 2" clause describing it.
  */
 export async function editImage(
   baseDataUri: string,
@@ -804,6 +811,7 @@ export async function editImage(
   instruction: string,
   style: DesignStyle,
   ctx?: CallContext,
+  reference?: string,
 ): Promise<GeneratedImage> {
   if (!instruction.trim()) throw new ProviderError("ValidationError", "instruction is empty");
   const primary = await resolveProvider("image_edit", process.env.IMAGE_PROVIDER);
@@ -821,7 +829,9 @@ export async function editImage(
         : runwareAvailable
           ? `Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
           : `Gemini ${IMAGE_MODEL} (direct)`,
-    referenceImages: ["the cropped+padded region of the current room image (base + mask)"],
+    referenceImages: reference
+      ? ["the cropped+padded region of the current room image (base + mask)", "the user-uploaded reference image"]
+      : ["the cropped+padded region of the current room image (base + mask)"],
   });
 
   return instrumented(
@@ -834,7 +844,14 @@ export async function editImage(
         model: fallbackModel,
         provider: "runware",
         run: async () => {
-          const out = await editImageWithRunwareGemini(baseDataUri, maskDataUri, instruction, style, "fallback");
+          const out = await editImageWithRunwareGemini(
+            baseDataUri,
+            maskDataUri,
+            instruction,
+            style,
+            "fallback",
+            reference,
+          );
           setCost(out.costUsd);
           return out;
         },
@@ -844,7 +861,14 @@ export async function editImage(
           model: slugs.imageEdit.runware,
           provider: "runware",
           run: async () => {
-            const out = await editImageWithRunwareGemini(baseDataUri, maskDataUri, instruction, style, "primary");
+            const out = await editImageWithRunwareGemini(
+              baseDataUri,
+              maskDataUri,
+              instruction,
+              style,
+              "primary",
+              reference,
+            );
             setCost(out.costUsd);
             return out;
           },
@@ -859,7 +883,7 @@ export async function editImage(
         model: IMAGE_MODEL,
         provider: "google",
         run: async () => {
-          const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style);
+          const out = await editImageWithGemini(baseDataUri, maskDataUri, instruction, style, reference);
           if (!out) throw new ProviderError("AiProviderError", "edit produced no image");
           return out;
         },
@@ -867,6 +891,100 @@ export async function editImage(
       return runChain(steps, setUsed);
     },
     primary === "runware" || runwareAvailable ? "runware" : "google",
+  );
+}
+
+/**
+ * Fixed KEEP/ENHANCE template for the Approve → Enhance whole-image call —
+ * the user specified this exact wording (holds camera, proportions,
+ * openings, wall colour and every existing furniture piece identical; raises
+ * material/lighting quality and adds the finishing layer a real room has).
+ * Kept as its own constant, NOT inlined into `enhanceImage`, so
+ * `buildEnhancePrompt` stays a pure, exported function `dev-check` can assert
+ * against without a network call.
+ */
+const ENHANCE_PROMPT = `IMAGE 1 is a finished photorealistic interior photograph. Produce an ENHANCED version of this exact photograph.
+
+KEEP EXACTLY AS THEY ARE: the camera position, angle, framing and field of view; the room's proportions and every wall position; every door and window, at the same position, width and height; the wall colour; and every piece of furniture already present — same type, same position, same footprint, same orientation. Do not move, resize, replace, remove or duplicate any of them.
+
+ENHANCE EVERYTHING ELSE. Raise material and finish quality: richer wood grain, fabric weave, stone veining, metal sheen. Improve the lighting: more natural falloff, softer and more physically plausible shadows, better contrast between lit and shaded areas. Add the finishing layer a real, complete room has — a rug, cushions, throws, table styling, books, plants, art and soft furnishings — placed in the floor and surface space that is currently bare. Do not place anything new in front of a door or window, and do not obscure any furniture already present.
+
+The result must read as the SAME room in the SAME shot, better finished and more completely furnished. Photorealistic. No people, no text, no watermarks, no logos.`;
+
+/**
+ * Appends the interior style, matching how every other provider-layer call
+ * carries style, ONLY when one is actually resolved — a caller with no
+ * `styleId` (or an unknown one) gets the bare KEEP/ENHANCE template rather
+ * than a dangling clause naming no style.
+ */
+export function buildEnhancePrompt(style?: DesignStyle): string {
+  return style ? `${ENHANCE_PROMPT}\n\nInterior style: "${style.name}".` : ENHANCE_PROMPT;
+}
+
+/**
+ * Approve → Enhance: a whole-image image-to-image call on a FINISHED room
+ * photo (NOT a masked/cropped edit like `editImage` — the entire photograph
+ * is sent as a single reference image). Same fallback-chain discipline as
+ * `generateImage`/`editImage`: Runware primary (`RUNWARE_ENHANCE_MODEL`,
+ * default Nano Banana 2) → Runware fallback (`RUNWARE_FALLBACK_IMAGE_MODEL`,
+ * also Nano Banana 2 by default — two independent knobs, not one model
+ * called twice) → direct Google Gemini API as a true last resort. Logged
+ * under the "edit" usage-log feature (no dedicated "enhance" value exists in
+ * `ai/usage-log.ts`, and this is the same edit-shaped operation family).
+ */
+export async function enhanceImage(
+  baseDataUri: string,
+  style?: DesignStyle,
+  ctx?: CallContext,
+): Promise<GeneratedImage> {
+  const prompt = buildEnhancePrompt(style);
+  const runwareAvailable = runwareConfigured();
+  const enhanceModel = process.env.RUNWARE_ENHANCE_MODEL?.trim() || "google:4@3";
+  const fallbackModel = process.env.RUNWARE_FALLBACK_IMAGE_MODEL?.trim() || "google:4@3";
+  const defaultModel = runwareAvailable ? enhanceModel : IMAGE_MODEL;
+
+  debugLogPrompt("6. Approve → Enhance (enhanceImage, whole-image image-to-image)", {
+    prompt,
+    chain: runwareAvailable
+      ? `Runware ${enhanceModel} → Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
+      : `Gemini ${IMAGE_MODEL} (direct)`,
+    referenceImages: ["the finished room photograph being enhanced (whole image, not a crop)"],
+  });
+
+  return instrumented(
+    "edit",
+    defaultModel,
+    ctx,
+    async (setCost, setUsed) => {
+      const steps: ChainStep<GeneratedImage>[] = [];
+      if (runwareAvailable) {
+        steps.push({
+          model: enhanceModel,
+          provider: "runware",
+          run: async () => {
+            const out = await enhanceImageWithRunware(baseDataUri, prompt, "primary");
+            setCost(out.costUsd);
+            return out;
+          },
+        });
+        steps.push({
+          model: fallbackModel,
+          provider: "runware",
+          run: async () => {
+            const out = await enhanceImageWithRunware(baseDataUri, prompt, "fallback");
+            setCost(out.costUsd);
+            return out;
+          },
+        });
+      }
+      steps.push({
+        model: IMAGE_MODEL,
+        provider: "google",
+        run: () => generateImageWithGemini(prompt, [baseDataUri]),
+      });
+      return runChain(steps, setUsed);
+    },
+    runwareAvailable ? "runware" : "google",
   );
 }
 

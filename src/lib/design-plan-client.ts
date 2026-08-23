@@ -101,6 +101,14 @@ export async function analyseDesignReferenceViaApi(
   return (await res.json()) as DesignReferenceResult;
 }
 
+// editRoomImage / enhanceRoomImage / EditRegionInput deliberately do NOT live
+// here. They were briefly duplicated into this file while the reference-photo
+// and Enhance work was in flight, which left two same-named clients for the
+// same endpoint differing only in whether they forward `reference` — importing
+// the wrong one would drop the user's reference photo with no type error and
+// no failed request. Both now live in generation-client.ts, beside the other
+// generation-flow clients.
+
 export function generateRoomImage(input: {
   projectId: string;
   universalInput: UniversalInput;

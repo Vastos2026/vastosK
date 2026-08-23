@@ -26,10 +26,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
 
+/** ~8MB of base64 text — matches the cap this route enforces on `reference`. */
+const MAX_REFERENCE_BASE64_CHARS = 8 * 1024 * 1024;
+const DATA_IMAGE_URI = /^data:image\/[^;]+;base64,/;
+
 interface Region {
   /** PNG mask data URI — white = edit this region, black = leave untouched */
   mask?: string;
   prompt?: string;
+  /** optional user-uploaded guide image (data URI) for this region's change */
+  reference?: string;
 }
 
 interface Body {
@@ -58,12 +64,26 @@ export async function POST(request: Request) {
   if (!projectId || !baseImageKey) {
     return Response.json({ error: "projectId and baseImageKey are required" }, { status: 400 });
   }
-  const validRegions = (regions ?? []).filter((r): r is Required<Region> => !!r.mask && !!r.prompt?.trim());
+  // Not `Required<Region>` — that would also force `reference` non-optional,
+  // which it genuinely isn't (only mask + prompt are required per region).
+  const validRegions = (regions ?? []).filter(
+    (r): r is Region & { mask: string; prompt: string } => !!r.mask && !!r.prompt?.trim(),
+  );
   if (validRegions.length === 0) {
     return Response.json({ error: "at least one region (mask + prompt) is required" }, { status: 400 });
   }
   if (validRegions.length > MAX_LASSO_REGIONS) {
     return Response.json({ error: `at most ${MAX_LASSO_REGIONS} regions per edit` }, { status: 400 });
+  }
+  for (const region of validRegions) {
+    if (region.reference === undefined) continue;
+    if (!DATA_IMAGE_URI.test(region.reference)) {
+      return Response.json({ error: "reference must be a data:image/... URI" }, { status: 400 });
+    }
+    const base64Len = region.reference.length - (region.reference.indexOf(",") + 1);
+    if (base64Len > MAX_REFERENCE_BASE64_CHARS) {
+      return Response.json({ error: "reference image is too large" }, { status: 400 });
+    }
   }
   if (!baseImageKey.startsWith("renders/")) {
     return Response.json({ error: "Invalid baseImageKey" }, { status: 400 });
@@ -82,7 +102,14 @@ export async function POST(request: Request) {
     let current = `data:image/png;base64,${baseBytes.toString("base64")}`;
 
     for (const region of validRegions) {
-      const edited = await editImage(current, region.mask, region.prompt, style, { projectId, userId: guard.id });
+      const edited = await editImage(
+        current,
+        region.mask,
+        region.prompt,
+        style,
+        { projectId, userId: guard.id },
+        region.reference,
+      );
       current = `data:${edited.contentType};base64,${edited.bytes.toString("base64")}`;
     }
 
