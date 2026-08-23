@@ -156,7 +156,9 @@ function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger, room?
   // sentence. Interpolated as "this exact bedroom", never "this exact bedroom
   // room" — the type already carries the noun, and the literal template that
   // reads well with a type has to still read well without one.
-  const roomType = room?.type?.trim().toLowerCase();
+  // Prose — see prosaicRoomType. This is the fourth and last slot the room
+  // type reaches as a sentence rather than as a label.
+  const roomType = room?.type?.trim() ? prosaicRoomType(room.type) : "";
   const subject = roomType ? `this exact ${roomType}` : "this exact room";
   // Collapsed at the END, over the whole assembled string. openingCensus and
   // furnitureClause each carry their own boundary space so they can be empty
@@ -339,16 +341,30 @@ const SERVICE_ROOM_CONTENTS: Record<string, string> = {
   storage: "This room contains shelving and closed storage cabinetry only.",
   garage: "This room contains a parking surface and wall-mounted storage only.",
   "pooja room": "This room contains the pooja mandir and simple shelving only.",
+  // A balcony is OUTDOOR, and the greybox has no way to say so: it renders
+  // every room as an enclosed box, so without this a balcony arrived as a
+  // small interior room and got furnished like one. Stated as contents in the
+  // same positive form as the rest of this table — an open floor, a railing,
+  // sky and a view — rather than as "not an indoor room", because negative
+  // phrasing summons what it forbids. Paired with Balcony in
+  // NO_FURNITURE_ROOM_TYPES, so nothing is placed and no finishing clause is
+  // added on top of this.
+  balcony:
+    "This room contains an open-air balcony floor with a railing at its edge, open sky and an outdoor view beyond.",
 };
 
 /**
- * Note on templates: this no longer reads getBuilderTemplate(). Its three
- * fields are all deleted content under section 2.4 — `intro` is replaced by
- * the medium line, `cameraPrefix` restates a camera the reference image
- * already fixes, and `negativePrefix` introduces exclusions into a prompt
- * with no negation channel. getBuilderTemplate stays exported from
- * templates.ts because the prompt_templates row and its admin UI still
- * exist; it simply has no consumer in the image path any more.
+ * Note on templates: no part of the image prompt is template-driven, and that
+ * is deliberate. A previous `builder` template supplied an intro, a camera
+ * prefix and a negative prefix; all three were removed because the medium
+ * line replaces the intro, the reference image already fixes the camera far
+ * more precisely than prose can, and a negative prefix introduces exclusions
+ * into a prompt with no negation channel — naming what you don't want is how
+ * you summon it (see docs/PROMPTING-RULES.md, rule 6).
+ *
+ * `templates.ts` still serves the SYSTEM preamble and the per-category
+ * PLANNING persona, both of which feed the design-planning call, not this
+ * file. Everything below is assembled here in code.
  */
 /** Shared shape for the room geometry a camera can be rebuilt from — the same subset of GreyboxRoomSpec both mappedFurnitureItems and the caller's opts.roomSpec already use. */
 type CameraRoomSpec = { width: number; depth: number; openings: GreyboxOpening[]; cameraView?: GreyboxCameraView };
@@ -412,13 +428,60 @@ function mappedFurnitureFor(
  */
 function roomLabelFor(room: UniversalInputRoom): string {
   return room.type && room.type.trim() && room.type.trim().toLowerCase() !== room.name.trim().toLowerCase()
-    ? `${room.name}, a ${room.type.toLowerCase()}`
+    ? // "a ${type}" is prose too — see prosaicRoomType. A raw lowercase here
+      // produced "Hall, a living + dining".
+      `${room.name}, a ${prosaicRoomType(room.type)}`
     : room.name;
 }
 
 /** This room's slice of the Design Planning Layer's per-room guidance, or "" when none was produced. Shared by both flows. */
 function guidanceFor(spec: DesignSpecification, room: UniversalInputRoom): string {
   return spec.roomGuidelines.find((g) => g.room === room.name)?.compactGuidance ?? "";
+}
+
+/**
+ * This room's dressing list — the small loose objects furnishFullyFor asks
+ * for. See RoomGuideline.dressing.
+ *
+ * The fallback is the list this clause used to hardcode for every room type
+ * in the app. It is kept, and kept generic, for exactly two cases: a
+ * DesignSpecification cached on a project before `dressing` existed, and a
+ * planner response where the field came back empty. Neither should stop a
+ * project generating, and an empty dressing list would leave the clause
+ * reading "add the finishing layer — — so the bedroom looks complete."
+ */
+const FALLBACK_DRESSING = "a rug, lamps, cushions, art, plants";
+
+/**
+ * A room type rendered as ENGLISH, for the two places it is interpolated into
+ * a sentence rather than used as a label.
+ *
+ * Room types are UI strings, and one of them — "Living + Dining", present in
+ * both the residential and apartment configs — is not a noun phrase. Lowercased
+ * and dropped into prose it produced "a real, ordinary living + dining in a
+ * 3BHK Apartment" and "so the living + dining looks complete": a literal
+ * arithmetic operator reaching a text encoder, in the one section that is
+ * never trimmed, for a very common room. FLUX.2's encoder is an
+ * instruction-tuned LLM trained on prose; "+" mid-sentence is exactly the
+ * input it reads worst.
+ *
+ * Handled as a general rule rather than a lookup for "Living + Dining"
+ * specifically, so a future combined type ("Kitchen & Utility") is right the
+ * day it is added rather than the day someone notices. " area" is appended
+ * only for combined types, because "the living and dining looks complete" is
+ * missing a noun where "the living and dining area looks complete" is not.
+ *
+ * Everything else passes through lowercased and unchanged — this must be a
+ * no-op for the ~20 room types that are already ordinary nouns.
+ */
+function prosaicRoomType(raw: string): string {
+  const lower = raw.trim().toLowerCase();
+  const joined = lower.replace(/\s*[+&/]\s*/g, " and ").replace(/\s{2,}/g, " ").trim();
+  return joined === lower ? joined : `${joined} area`;
+}
+
+function dressingFor(spec: DesignSpecification, room: UniversalInputRoom): string {
+  return spec.roomGuidelines.find((g) => g.room === room.name)?.dressing?.trim() || FALLBACK_DRESSING;
 }
 
 /** SERVICE_ROOM_CONTENTS lookup by this room's type, or undefined for a room with no matching entry. Shared by both flows. */
@@ -448,19 +511,81 @@ function serviceContentsFor(room: UniversalInputRoom): string | undefined {
  * "luxury living space" brief free-associating a sofa into a bathroom, and
  * telling the model to furnish a bathroom "completely" would undo it in the
  * same prompt.
+ *
+ * WHAT it asks for now depends on whether the greybox already named pieces,
+ * and the two cases want opposite things.
+ *
+ * With pieces named, this used to say "furnish this bedroom completely, as a
+ * real finished bedroom would be". That fixed the bareness and bought a new
+ * problem: "furnish completely" asks for ARCHITECTURE, so the model was free
+ * to invent another wardrobe — and an invented wardrobe lands wherever it
+ * likes, including in front of the window the structural contract just spent
+ * 700 characters pinning down. What the room actually lacks is the DRESSING
+ * layer: rug, lamps, cushions, art, plants. Naming that layer explicitly is
+ * what adds fullness without adding mass, because every item on the list is
+ * small, floor- or wall-hugging, and cannot contradict the massing render.
+ *
+ * With NO pieces named (the no-greybox path — plan skipped, nothing placed)
+ * the room genuinely has no furniture at all, so asking only for cushions and
+ * plants would leave it empty. That branch still asks for full furnishing.
+ * Its opening also can't be "beyond the pieces named above", because no list
+ * was given: an instruction referring to a phantom antecedent is exactly the
+ * kind of thing that makes a model hallucinate the missing content.
+ *
+ * Both branches carry the clearance rule, but ONLY when the room actually has
+ * openings — `openingCount` is the census's own total, from the Pass B mask
+ * on the greybox path and from the room's recorded openings on the other, so
+ * this sentence can never mention a door the rest of the prompt hasn't
+ * already accounted for. Telling a windowless store room to keep its windows
+ * clear is not merely noise: on a room whose openings were never recorded it
+ * asserts openings exist, which is precisely the fabrication
+ * `noGreyboxOpeningCensus` refuses to commit. /api/dev-check asserts it.
+ *
+ * The rule is phrased as a positive requirement about the openings ("keep
+ * doors and windows clear") rather than a negative about furniture ("do not
+ * block the door"), on the same principle the opening census follows: naming
+ * the thing you don't want reliably summons it.
+ *
+ * Kept deliberately terse. This section is never trimmed by the overflow
+ * ladder, so every character it spends is a character the accent note and the
+ * furniture line can lose under pressure — see the length assertion in
+ * /api/dev-check.
  */
-function furnishFullyFor(room: UniversalInputRoom, hasNamedPieces: boolean): string {
+function furnishFullyFor(
+  room: UniversalInputRoom,
+  hasNamedPieces: boolean,
+  openingCount: number,
+  dressing: string,
+): string {
   if (serviceContentsFor(room)) return "";
-  const label = (room.type?.trim() || room.name.trim()).toLowerCase();
+  // Prose, not a label — this string sits inside two full sentences. See
+  // prosaicRoomType for why a raw lowercase is not enough.
+  const label = prosaicRoomType(room.type?.trim() || room.name.trim());
   if (!label) return "";
-  // "Beyond the pieces named above" is only true when pieces WERE named above.
-  // On the no-greybox path nothing is ever placed, so the furniture section
-  // does not exist and that opening would refer the model back to a list it
-  // was never given — an instruction that cannot be followed is worse than a
-  // shorter one, and inventing a phantom antecedent is exactly the kind of
-  // thing that makes a model hallucinate the missing content.
-  const opening = hasNamedPieces ? `Beyond the pieces named above, furnish` : `Furnish`;
-  return `${opening} this ${label} completely, as a real finished ${label} would be.`;
+  // SCOPED TO THE ADDITIONS, deliberately. The first draft of this read "Keep
+  // doors and windows clear." as a standalone imperative, which is a direct
+  // contradiction of the structural contract two sections earlier: that says
+  // "Darker grey volumes are furniture: keep their position, footprint and
+  // approximate size", and a user who deliberately placed a bench under a
+  // window in the 3D editor means it. A blanket clearance order tells the
+  // model to move the one thing the whole greybox exists to pin down.
+  //
+  // "Place none of it" binds to "the finishing layer" named in the same
+  // sentence, so the rule reaches the invented objects and nothing else.
+  //
+  // The no-greybox branch gets the BLANKET form instead, and safely: nothing
+  // was placed on that path, so there is no user-authored arrangement for a
+  // general clearance order to override — and "none of it" would have no
+  // antecedent there, since no list was given.
+  const clearance =
+    openingCount === 0
+      ? ""
+      : hasNamedPieces
+        ? " Place none of it in front of a door or window."
+        : " Leave the doors and windows unblocked.";
+  return hasNamedPieces
+    ? `Beyond the pieces named above, add the finishing layer — ${dressing} — so the ${label} looks complete.${clearance}`
+    : `Furnish this ${label} completely, as a real finished ${label} would be.${clearance}`;
 }
 
 /**
@@ -551,7 +676,7 @@ function buildGeminiPrompt(
         // Same room-type naming as the FLUX contract's `subject`, so the two
         // flows describe image 1 identically.
         `An untextured grey massing render of ${
-          room.type?.trim() ? `this exact ${room.type.trim().toLowerCase()}` : "this exact room"
+          room.type?.trim() ? `this exact ${prosaicRoomType(room.type)}` : "this exact room"
         }, from the exact camera the output must use. ` +
         "A framed recessed panel is a closed door; a bright panel is a window.",
     };
@@ -625,8 +750,19 @@ function buildGeminiPrompt(
   // renders nothing on the FLUX flow renders nothing here either.
   const furnitureItems = opts.roomSpec ? mappedFurnitureItems(opts.roomSpec, furniture) : [];
   const serviceContents = serviceContentsFor(room);
+  // PARITY GAP, fixed: this flow named the pieces and their materials but
+  // never told the model to LEAVE THEM WHERE THEY ARE. The FLUX contract has
+  // carried "Darker grey volumes are furniture: keep their position, footprint
+  // and approximate size" since the greybox landed; the JSON payload carried
+  // no equivalent, so on the Gemini path the arrangement a user built in the
+  // 3D editor was a suggestion rather than a constraint. Same words as the
+  // FLUX contract, deliberately — the two flows must not describe the same
+  // guarantee differently.
+  const KEEP_PLACEMENT =
+    "Keep the position, footprint and approximate size of every piece exactly as image 1 shows it.";
   if (furniture.length && furnitureItems.length) {
     payload.furniture = {
+      keepPlacement: KEEP_PLACEMENT,
       items: furnitureItems.map((item) => geminiFurnitureEntry(item, spec.materialTokens, numbered)),
     };
   } else if (furniture.length) {
@@ -637,7 +773,7 @@ function buildGeminiPrompt(
     // its catalogue-ordering/priority-drop logic. Budget is generous (no
     // FLUX-style 200-char retry needed) since this flow has no char cap.
     const summary = buildFurnitureMaterials(furniture, spec.materialTokens, 4000);
-    if (summary) payload.furniture = { summary };
+    if (summary) payload.furniture = { keepPlacement: KEEP_PLACEMENT, summary };
   } else if (serviceContents) {
     payload.furniture = { contents: serviceContents };
   }
@@ -649,7 +785,20 @@ function buildGeminiPrompt(
   // `payload.furniture` is only set when something was actually placed (its
   // service-room `contents` branch doesn't count — furnishFullyFor returns ""
   // for those rooms anyway), so this is exactly "were pieces named above".
-  const furnishFully = furnishFullyFor(room, furniture.length > 0 && !!payload.furniture);
+  // The opening total comes from whichever source this path already trusts —
+  // the Pass B mask ledger with a greybox, the room's own recorded openings
+  // without one — so the clearance sentence can only ever mention openings
+  // the payload above has already declared.
+  const openingTotal = (() => {
+    const c = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
+    return c.doors + c.windows;
+  })();
+  const furnishFully = furnishFullyFor(
+    room,
+    furniture.length > 0 && !!payload.furniture,
+    openingTotal,
+    dressingFor(spec, room),
+  );
   if (furnishFully) payload.furnishRoomFully = furnishFully;
 
   // Priority 3: "nothing abnormal" — geometry lock and matte, non-reflective
@@ -793,8 +942,26 @@ export async function buildRoomPrompt(
   // subcategory is the user's own label for what the space IS, so it is used
   // verbatim rather than lowercased — "2BHK Apartment" survives, where
   // lowercasing would have produced "2bhk apartment".
+  // The SUBJECT of the photograph is the room, not the building. This line
+  // used to open "a real, ordinary 3BHK Apartment" for a render of one
+  // bedroom — naming the whole dwelling as the thing being photographed,
+  // which invites the model to show more of it than the massing render
+  // contains. The room type leads and the subcategory follows as context, so
+  // the model knows both what it is shooting and what kind of building it
+  // sits in. Falls back to the old shape when a room has no type at all, so
+  // the sentence never reads "a real, ordinary  in a Villa".
+  //
+  // The article is picked, not hardcoded: subcategory is free text, so "in a
+  // Independent House" and "in a Office" are both reachable. FLUX.2's encoder
+  // is an instruction-tuned LLM trained on prose — broken English in the
+  // opening clause is exactly the input it handles worst.
+  const roomSubject = room.type?.trim() ? prosaicRoomType(room.type) : "";
+  const place = labels.subcategory || "home";
+  const article = /^[aeiou]/i.test(place) ? "an" : "a";
   const medium =
-    `Photorealistic photograph of a real, ordinary ${labels.subcategory || "home"}, wide angle, ` +
+    `Photorealistic photograph of a real, ordinary ${
+      roomSubject ? `${roomSubject} in ${article} ${place}` : place
+    }, wide angle, ` +
     "eye level. Real camera: natural depth of field, uneven daylight, slight variation across " +
     `surfaces. Walls are ordinary smooth painted plaster${wallColour ? ` in ${wallColour}` : ""}, ` +
     `flat matte and light-absorbing.${accents ? ` Accents throughout in ${accents}.` : ""}`;
@@ -873,7 +1040,18 @@ export async function buildRoomPrompt(
   //    `furnitureLine` is non-empty for a service room too (its contents
   //    clause lives in that slot), but furnishFullyFor returns "" for those,
   //    so gating on real placed furniture is exactly "were pieces named".
-  const furnishFully = furnishFullyFor(room, furniture.length > 0 && !!furnitureLine);
+  //    The opening total is read off the same source this path's census used
+  //    — see the identical derivation in buildGeminiPrompt for why.
+  const openingTotal = (() => {
+    const c = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
+    return c.doors + c.windows;
+  })();
+  const furnishFully = furnishFullyFor(
+    room,
+    furniture.length > 0 && !!furnitureLine,
+    openingTotal,
+    dressingFor(spec, room),
+  );
 
   // 7. Accent — optional, always last, engineered to be the thing that gets
   //    cut if anything gets cut.

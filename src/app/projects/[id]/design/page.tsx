@@ -3,8 +3,8 @@
 import { useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useProject, useVasto } from "@/lib/store";
-import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES } from "@/lib/data";
+import { useProject, useVasto, useHydrated } from "@/lib/store";
+import { STYLES, LUXURY_LEVELS, COLOUR_PALETTES, buildCustomPaletteText } from "@/lib/data";
 import { categoryForPropertyType, getProjectTypeConfig } from "@/lib/project-types/config";
 import { runDesignPlan, generateRoomImage, analyseDesignReferenceViaApi } from "@/lib/design-plan-client";
 import type { LuxuryLevel } from "@/lib/ai/prompting/types";
@@ -22,7 +22,44 @@ import { roomSpecFor } from "@/lib/greybox/room-spec";
  * Design Specification on the project, so every room's generation prompt
  * (Rooms → Render) is built from the same shared design language.
  */
+
+/**
+ * Hydration gate — the same split plan/page.tsx uses, and for a worse version
+ * of the same reason.
+ *
+ * The persisted store only finishes hydrating from localStorage AFTER the
+ * first render. DesignPageContent below seeds SEVEN pieces of local state
+ * from `project` through useState initializers (style, subcategory, luxury
+ * level, palette, custom colours, additional requirements and the design
+ * reference), and a useState argument is evaluated exactly once, ever. So on
+ * the first paint every one of them latched to its default, and the
+ * `if (!project) return null` inside did NOT save it: returning null does not
+ * unmount the component, so those defaults survived into the render where the
+ * real project finally arrived.
+ *
+ * That was silent data loss, not just a stale display. `confirm()` passes
+ * `designReference: reference` to setDesignPlan, whose reducer does
+ * `touch({ ...p, ...plan })` — an explicit `undefined` in a spread OVERWRITES,
+ * so clicking Confirm on a freshly-reloaded Design page erased a stored
+ * reference and re-planned the whole project from picker defaults, changing
+ * designSignature and marking already-approved rooms stale into the bargain.
+ * Reported as "the reference image isn't being saved".
+ *
+ * Not fixed with an effect that syncs state after hydration: that would fight
+ * this repo's react-hooks/set-state-in-effect rule, and it would still flash
+ * the wrong values for a frame. Not mounting the content until real data
+ * exists means each of those seven initializers runs for the first time with
+ * the real project already in hand.
+ */
 export default function DesignPage() {
+  const { id } = useParams<{ id: string }>();
+  const hydrated = useHydrated();
+  const project = useProject(id);
+  if (!hydrated || !project) return null;
+  return <DesignPageContent />;
+}
+
+function DesignPageContent() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const project = useProject(id);
@@ -159,8 +196,14 @@ export default function DesignPage() {
       return;
     }
     const palette = COLOUR_PALETTES.find((c) => c.id === colourPalette) ?? COLOUR_PALETTES[0];
+    // The role is spelled out in the text itself, not left for the model to
+    // guess: colourPaletteText is the ONLY colour information the Design
+    // Planning call receives, and an unlabelled list of three hexes let it
+    // decide the whole palette read as an accent scheme and answer with a
+    // "safe" neutral for the walls — reported bug: a custom palette of three
+    // magentas came back with ivory walls. See buildCustomPaletteText below.
     const colourPaletteText = isCustomPalette
-      ? `Custom (${customColors.join(", ")})`
+      ? buildCustomPaletteText(customColors)
       : `${palette.label} (${palette.description})`;
     // Fingerprints exactly the design selections that affect a room's
     // generated image. Compared against the project's last-saved signature
@@ -613,25 +656,32 @@ export default function DesignPage() {
             </button>
           </div>
 
+          <p className="mt-1.5 text-[11px] text-faint">
+            With a custom palette, the first colour is used for the walls and the other two as
+            accents — soft furnishings, trim and details.
+          </p>
+
           {isCustomPalette && (
             <div className="mt-3 flex items-center gap-3 rounded-2xl border border-border bg-surface p-3.5">
               <p className="text-xs text-muted">Pick 3 colours:</p>
               {customColors.map((hex, i) => (
-                <label
-                  key={i}
-                  className="relative size-10 cursor-pointer overflow-hidden rounded-lg border border-border-strong"
-                  style={{ background: hex }}
-                >
-                  <input
-                    type="color"
-                    value={hex}
-                    onChange={(e) =>
-                      setCustomColors((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
-                    }
-                    className="absolute inset-0 size-full cursor-pointer opacity-0"
-                    aria-label={`Custom colour ${i + 1}`}
-                  />
-                </label>
+                <div key={i} className="flex flex-col items-center gap-1">
+                  <label
+                    className="relative size-10 cursor-pointer overflow-hidden rounded-lg border border-border-strong"
+                    style={{ background: hex }}
+                  >
+                    <input
+                      type="color"
+                      value={hex}
+                      onChange={(e) =>
+                        setCustomColors((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
+                      }
+                      className="absolute inset-0 size-full cursor-pointer opacity-0"
+                      aria-label={i === 0 ? "Wall colour" : `Accent colour ${i}`}
+                    />
+                  </label>
+                  <span className="text-[10px] text-faint">{i === 0 ? "Wall" : `Accent ${i}`}</span>
+                </div>
               ))}
               <p className="ml-auto text-xs font-mono text-faint">{customColors.join(" · ")}</p>
             </div>

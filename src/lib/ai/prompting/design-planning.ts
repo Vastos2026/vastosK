@@ -29,8 +29,9 @@ const DESIGN_SPEC_SCHEMA = {
           room: { type: "STRING" },
           guidance: { type: "STRING" },
           compactGuidance: { type: "STRING" },
+          dressing: { type: "STRING" },
         },
-        required: ["room", "guidance", "compactGuidance"],
+        required: ["room", "guidance", "compactGuidance", "dressing"],
       },
     },
   },
@@ -70,9 +71,22 @@ const DESIGN_SPEC_SCHEMA = {
  * Specification (design language, materials, lighting, colour, furniture,
  * camera and negative guidance, plus per-room guidance for every room in the
  * input). The caller is responsible for caching the result on
- * projects.manifest (see src/lib/projects/state.ts) so it's produced once
+ * projects.manifest so it's produced once
  * and reused for every room and every "generate more" — this function itself
  * doesn't know about projects or caching, only about the AI call.
+ *
+ * PALETTE ROLES (added after a reported bug): when the user picks a custom
+ * palette, the Design page now states the roles explicitly in the text this
+ * function receives — "wall colour X; accent colours Y and Z" — because
+ * leaving three unlabelled hexes for the model to sort out let it decide the
+ * whole palette read as an accent scheme and answer with a "safe" neutral
+ * for the walls, silently overriding the user's explicit choice (reported:
+ * a custom palette of three magentas came back with ivory walls). The
+ * PALETTE ROLES rule in the prompt below tells the model those stated roles
+ * are fixed, and the HEX CODES rule makes sure the literal hex the user
+ * picked survives into wallColour/accentColours verbatim rather than a
+ * paraphrase of it — an instruction the model can reinterpret is exactly
+ * what produced the ivory-walls bug in the first place.
  */
 export async function runDesignPlanning(
   input: UniversalInput,
@@ -105,6 +119,17 @@ about any surface you describe as a wall. The walls in this project are ordinary
 plaster, exactly as in a normal home, and that is already stated elsewhere — your job is only the \
 colour they are painted.
 
+PALETTE ROLES: if the colour palette above already states a role — it will read "wall colour" \
+followed by one colour and "accent colours" followed by the rest — then the user chose those \
+roles themselves and they are FIXED. Put exactly that colour in wallColour and exactly the others \
+in accentColours. Never swap them, never substitute a "safer" neutral, and never override the \
+choice however unusual it looks. The PALETTE SPLIT rule below applies only when no role is stated.
+
+HEX CODES: when a colour is given to you as a hex code, wallColour and accentColours must each \
+carry BOTH a short plain-English name for that colour AND the hex code itself, copied exactly as \
+given — for example "deep crimson red #8b1a1a". Never the hex alone, and never the name alone. \
+Keep the names short: both fields have a hard character limit and the hex codes must fit inside it.
+
 PALETTE SPLIT: the colour palette above lists several colours with no stated role. You must decide \
 which ONE of them is the wall colour and put ONLY that one in wallColour below; every other colour \
 in the palette goes in accentColours instead, describing where each is used (soft furnishing, \
@@ -120,16 +145,28 @@ and the quality of light. Do NOT name colours here — wallColour and accentColo
 palette instead, so repeating it here only wastes the budget. No preamble, no room names, no furniture.
 - wallColour: AT MOST 40 characters. The ONE colour the walls are painted, per the PALETTE SPLIT \
 rule above — for example "warm sand", "soft off-white", "muted sage green". A colour and nothing \
-else: no finish, no material, no sentence.
+else: no finish, no material, no sentence. When a hex code was supplied for this colour, per the \
+HEX CODES rule above, this value must be the name plus that hex code together and still fit inside \
+the 40-character limit.
 - accentColours: AT MOST 60 characters. Every OTHER colour from the palette, per the PALETTE SPLIT \
 rule above, as a short phrase — for example "muted sage green and deep olive brown". Colours only, \
-no finish, no sentence.
+no finish, no sentence. When hex codes were supplied, per the HEX CODES rule above, each colour \
+here must be name plus hex — since two hexes must share the 60-character limit, keep each name to \
+two or three words at most.
 - materialTokens: three short noun phrases, at most three words each, naming the specific dominant \
 wood ("walnut", "light oak"), the dominant soft/upholstery material ("cream boucle", "charcoal linen") \
 and the dominant stone ("carrara marble", "honed granite") for this project.
 - compactGuidance, per room: AT MOST 120 characters. The single most important thing about THAT \
 room's materials, colour or light. No furniture positions — a separate reference image already \
-fixes those.`;
+fixes those.
+- dressing, per room: AT MOST 70 characters. The SMALL, LOOSE objects a finished room of THAT \
+specific type actually has, as a bare comma-separated list — for a bedroom "a rug, bedside lamps, \
+cushions, folded throws"; for a kitchen "a fruit bowl, chopping board, jars, a tea towel"; for a \
+pooja room "brass lamps, a bell, fresh flowers, framed images"; for a bathroom "rolled towels, \
+soap, a small plant". Every item must be something a person could pick up and carry. NEVER name \
+furniture — no bed, sofa, table, chair, wardrobe, desk or shelving unit — because the furniture \
+in this room is fixed by a reference image and an invented piece would land on top of a door or \
+a window. No sentence, no adjectives about style, just the objects.`;
 
   const prompt = await withSystemPreamble(body);
   const spec = await generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx);
@@ -151,6 +188,13 @@ fixes those.`;
     roomGuidelines: spec.roomGuidelines.map((g) => ({
       ...g,
       compactGuidance: clamp(stripWallFinishes(g.compactGuidance), 120),
+      // Same clamp-don't-ask discipline as every other field that reaches an
+      // image prompt. `dressing` lands in furnishFullyFor's clause, which
+      // sits OUTSIDE the overflow ladder — an overlong value there is paid
+      // for by the accent note and the furniture line, silently, so the
+      // 70-char limit stated in the prompt is enforced here rather than
+      // trusted.
+      dressing: clamp(stripWallFinishes(g.dressing), 70),
     })),
   };
 }

@@ -20,12 +20,6 @@ export interface PlanningTemplateBody {
   persona: string;
 }
 
-export interface BuilderTemplateBody {
-  intro: string;
-  cameraPrefix: string;
-  negativePrefix: string;
-}
-
 /**
  * Three phrases were removed here (2026-08-14) after a report that generated
  * rooms read as "a very polished catalog image that isn't realistically
@@ -69,12 +63,6 @@ const DEFAULT_PLANNING_PERSONA: Record<string, string> = {
     "named business alongside the chosen style.",
 };
 
-const DEFAULT_BUILDER: BuilderTemplateBody = {
-  intro: "Generate one photorealistic interior photograph of the following room.",
-  cameraPrefix: "Camera guidance:",
-  negativePrefix: "Do not include:",
-};
-
 export async function getSystemTemplate(): Promise<SystemTemplateBody> {
   const row = await fetchPublished("system");
   return (row?.body as SystemTemplateBody) ?? DEFAULT_SYSTEM;
@@ -113,11 +101,6 @@ export async function getPlanningTemplate(category: string): Promise<PlanningTem
   const row = await fetchPublished("planning", category);
   if (row?.body) return row.body as PlanningTemplateBody;
   return { persona: DEFAULT_PLANNING_PERSONA[category] ?? DEFAULT_PLANNING_PERSONA.Custom };
-}
-
-export async function getBuilderTemplate(): Promise<BuilderTemplateBody> {
-  const row = await fetchPublished("builder");
-  return (row?.body as BuilderTemplateBody) ?? DEFAULT_BUILDER;
 }
 
 async function fetchPublished(

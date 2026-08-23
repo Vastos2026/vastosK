@@ -122,6 +122,33 @@ export interface RoomGuideline {
    * compressed to what fits.
    */
   compactGuidance: string;
+  /**
+   * The DRESSING layer for this specific room: the small, loose objects a
+   * finished room of THIS type has, which the greybox never models — for a
+   * bedroom "a rug, bedside lamps, cushions and folded throws"; for a kitchen
+   * "a fruit bowl, a chopping board, jars and a tea towel"; for a pooja room
+   * "brass lamps, a bell, fresh flowers and framed images".
+   *
+   * Exists because the furniture line is a closed, exhaustive list of the
+   * placed grey boxes, which reads to the image model as the room's complete
+   * contents — so rooms came back bare. The clause that fixes that used to
+   * name ONE hardcoded list ("rug, lamps, cushions, art, plants") for every
+   * room type in the app: right for a bedroom, wrong for a kitchen, absurd
+   * for a pooja room. This is that list, per room, from the one component
+   * that actually knows what belongs in each.
+   *
+   * Constrained to SMALL, loose items on purpose — see furnishFullyFor. The
+   * greybox owns the mass; asking for another wardrobe would put invented
+   * furniture in front of an opening the structural contract just spent 700
+   * characters pinning down. Anything on this list should be something a
+   * person could pick up.
+   *
+   * Optional: a DesignSpecification cached on a project before this field
+   * existed has no `dressing`, and those projects must keep generating — the
+   * builder falls back to its generic list rather than emitting a broken
+   * clause. Same reason wallColour and accentColours are optional.
+   */
+  dressing?: string;
 }
 
 /**

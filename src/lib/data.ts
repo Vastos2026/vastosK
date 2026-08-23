@@ -46,6 +46,38 @@ export const LUXURY_LEVELS: { id: import("./ai/prompting/types").LuxuryLevel; la
  * to overrule the user. `description` is unchanged and still goes to the
  * planner as the full palette statement.
  */
+/**
+ * The colour-palette text sent to the Design Planning call for a CUSTOM
+ * palette: slot one is always the wall, the rest are accents — the user picks
+ * them in that order (see the "Wall"/"Accent" swatch labels on the Design
+ * page), so the string states the roles explicitly instead of handing the
+ * model three unlabelled hexes and letting it guess. Guessing is what
+ * produced the reported "I chose pink and got ivory walls" bug: the planner
+ * read an unlabelled list as an accent scheme and picked a safe neutral for
+ * the walls. Same fix as `wallColour` on the presets above, applied to the
+ * one palette that has no preset row to carry it.
+ *
+ * Lives HERE rather than beside its call site in design/page.tsx, and this is
+ * load-bearing: that page is `"use client"`, and a function exported from a
+ * client module cannot be *called* from server code — Next throws
+ * "Attempted to call buildCustomPaletteText() from the server" at runtime,
+ * which a build passes straight over. /api/dev-check is a server route and
+ * asserts this function's shape, so it has to sit in a plain shared module.
+ * It cannot go in design-planning.ts either, which is "server-only" and so
+ * unimportable from the client page in the other direction. data.ts already
+ * holds COLOUR_PALETTES and is imported by both sides.
+ *
+ * Guards `colours.slice(1)` so an array shorter than 3 can never produce a
+ * dangling " and " or an empty "; accent colours" clause: with no accents the
+ * clause is omitted outright, and with exactly one it reads as that one
+ * colour, no "and".
+ */
+export function buildCustomPaletteText(colours: string[]): string {
+  const [wall, ...accents] = colours;
+  const accentClause = accents.length > 0 ? `; accent colours ${accents.join(" and ")}` : "";
+  return `Custom — wall colour ${wall}${accentClause}`;
+}
+
 export const COLOUR_PALETTES: {
   id: string;
   label: string;
