@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto } from "@/lib/store";
@@ -18,6 +19,13 @@ export default function ApprovePage() {
   const project = useProject(id);
   const setApproved = useVasto((s) => s.setApproved);
   const setIncluded = useVasto((s) => s.setIncluded);
+
+  // "Build walkthrough" below is a router.push, not a <Link>, so it isn't
+  // covered by Next's automatic viewport prefetch. It's the only route this
+  // page ever navigates forward to.
+  useEffect(() => {
+    router.prefetch(`/projects/${id}/walkthrough`);
+  }, [router, id]);
 
   if (!project) return null;
   const rooms = project.floorPlan?.rooms ?? [];

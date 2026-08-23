@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useProject, useVasto, useHydrated } from "@/lib/store";
@@ -89,6 +89,15 @@ function DesignPageContent() {
   // which a photo of somebody else's cafe says nothing about.
   const [reference, setReference] = useState<DesignReference | undefined>(project?.designReference);
   const [referenceBusy, setReferenceBusy] = useState(false);
+
+  // confirm() below (Design Planning) ends with a router.push to /generate —
+  // a router.push, not a <Link>, so it isn't covered by Next's automatic
+  // viewport prefetch. It's the ONLY next step from this page, so warm it
+  // on mount rather than waiting for the (multi-second) planning call to
+  // finish first.
+  useEffect(() => {
+    router.prefetch(`/projects/${id}/generate`);
+  }, [router, id]);
   const [referenceError, setReferenceError] = useState<string | null>(null);
   // A picked-but-not-yet-analysed file: chat-attachment staging so the paid
   // Gemini vision call only fires on an explicit "Send reference" click, not

@@ -159,6 +159,15 @@ function PlanEditorContent({
   }, []);
   const [tool, setTool] = useState<EditorTool>("select");
 
+  // "Continue" below is a router.push, not a <Link>, so Next's automatic
+  // viewport prefetch never covers it. Room Confirmation is the only
+  // possible next step from here, so warm it as soon as the editor mounts —
+  // by the time someone finishes placing rooms/openings and clicks Continue,
+  // the route is already fetched.
+  useEffect(() => {
+    router.prefetch(`/projects/${projectId}/review`);
+  }, [router, projectId]);
+
   // Toolbar keyboard shortcuts. The listener lives in an effect because it is
   // a window subscription — subscribe on mount, unsubscribe on unmount, with
   // nothing else in the effect body. The state setter runs inside the

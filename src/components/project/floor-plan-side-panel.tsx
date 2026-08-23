@@ -146,6 +146,7 @@ export function FloorPlanSidePanel({ plan, className }: { plan?: FloorPlan; clas
         <RetryImg
           src={referenceImage}
           alt="Uploaded floor plan"
+          loading="eager"
           className="absolute inset-0 h-full w-full object-contain"
         />
         <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">

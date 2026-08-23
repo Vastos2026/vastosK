@@ -11,6 +11,7 @@ import { ProjectTypeMeta } from "./project-type-meta";
 import { Icon } from "./ui/icon";
 import { Button } from "./ui/button";
 import { Modal } from "./ui/modal";
+import { RetryImg } from "./ui/retry-img";
 
 /**
  * Wide, horizontal project summary card for the Profile page (distinct from
@@ -88,8 +89,7 @@ export function ProfileProjectCard({ project }: { project: Project }) {
                     className="relative size-16 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-surface-2 sm:size-20"
                     aria-label="View render"
                   >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={g.imageUrl} alt="" className="size-full object-cover" />
+                    <RetryImg src={g.imageUrl} alt="" className="size-full object-cover" />
                   </button>
                 ))}
                 {wt?.videoUrl && (
@@ -156,12 +156,18 @@ export function ProfileProjectCard({ project }: { project: Project }) {
         <div onClick={stopLinkNav}>
           <Modal open={!!lightboxImage} onClose={() => setLightboxImage(null)} className="max-w-2xl">
             <div className="p-5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={lightboxImage}
-                alt="Render"
-                className="max-h-[70vh] w-full rounded-xl border border-border object-contain"
-              />
+              {/* Fixed-height box, not an intrinsic-size <img> — RetryImg's
+                  inner <img> is always position:absolute + inset-0 (see that
+                  component's own doc comment), so it needs a sized ancestor
+                  to fill; a plain height-auto box would collapse to nothing. */}
+              <div className="relative h-[70vh] w-full">
+                <RetryImg
+                  src={lightboxImage}
+                  alt="Render"
+                  loading="eager"
+                  className="h-full w-full rounded-xl border border-border object-contain"
+                />
+              </div>
               <div className="mt-4 flex justify-end">
                 <Link href={projectHref(project)}>
                   <Button icon="ArrowRight">Go to project</Button>

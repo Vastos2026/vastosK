@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { emptyPlan } from "@/lib/pipeline/empty-plan";
@@ -17,6 +17,17 @@ export default function FloorPlanPage() {
   const setStatus = useVasto((s) => s.setStatus);
   const [choice, setChoice] = useState<"yes" | "no" | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Neither destination is a <Link> (both fire from onClick handlers after
+  // side-effecting first — setPendingUploadFile / setFloorPlan), so Next's
+  // automatic viewport <Link> prefetch never kicks in here. This is the very
+  // first project route a user hits, so warm both of this page's two
+  // possible next steps up front — cheap (two route-segment fetches) and
+  // whichever the user picks (Yes/upload vs. No/draw) is then instant.
+  useEffect(() => {
+    router.prefetch(`/projects/${id}/upload`);
+    router.prefetch(`/projects/${id}/plan`);
+  }, [router, id]);
 
   // Hands the picked file to pending-upload.ts and moves on — see that
   // file's doc comment for why the File itself, not another click, is what

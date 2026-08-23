@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
@@ -42,6 +42,17 @@ export default function ReviewPage() {
   const [deleteBlockedId, setDeleteBlockedId] = useState<string | null>(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
+
+  // Continue below is a router.push, not a <Link>, so it isn't covered by
+  // Next's automatic viewport prefetch. Which of the two next steps applies
+  // depends on project.planSkipped (goForward's own branch below), so warm
+  // only the one this project will actually land on rather than both.
+  const projectLoaded = !!project;
+  const planSkipped = !!project?.planSkipped;
+  useEffect(() => {
+    if (!projectLoaded) return;
+    router.prefetch(`/projects/${id}/${planSkipped ? "design" : "furnish"}`);
+  }, [router, id, projectLoaded, planSkipped]);
 
   if (!project) return null;
 

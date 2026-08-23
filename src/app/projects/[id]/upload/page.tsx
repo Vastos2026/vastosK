@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useProject, useVasto } from "@/lib/store";
 import { parsePlanViaApi } from "@/lib/parse-plan-client";
@@ -55,6 +55,15 @@ export default function UploadPage() {
   const [unreadable, setUnreadable] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // runDetection's success path is a router.push, not a <Link>, so it gets
+  // no automatic viewport prefetch. /plan is this page's ONE possible next
+  // step regardless of how extraction goes, so warm it as soon as this page
+  // mounts rather than waiting for the (up to several seconds) extraction
+  // call to finish first.
+  useEffect(() => {
+    router.prefetch(`/projects/${id}/plan`);
+  }, [router, id]);
 
   const onFiles = useCallback((files: FileList | null) => {
     const file = files?.[0];

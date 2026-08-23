@@ -36,12 +36,22 @@ export function RetryImg({
   className,
   draggable,
   onLoad,
+  // Defaults to "lazy": every known call site sits in a gallery/grid/strip
+  // where most tiles start off-screen, so deferring their network request
+  // until they near the viewport is the right default (see CLAUDE.md's
+  // "images sometimes don't render" complaint and the task's requirement
+  // that below-the-fold generated images be lazy). Pass "eager" explicitly
+  // for the rare single always-visible image (e.g. the floor-plan side
+  // panel's one reference thumbnail) where deferring buys nothing and only
+  // delays a load the user will see immediately anyway.
+  loading = "lazy",
 }: {
   src: string;
   alt: string;
   className?: string;
   draggable?: boolean;
   onLoad?: (e: React.SyntheticEvent<HTMLImageElement>) => void;
+  loading?: "lazy" | "eager";
 }) {
   // Resets attempt/gaveUp whenever `src` changes — done by comparing against
   // a stored previous value DURING RENDER (React's documented pattern for
@@ -109,6 +119,8 @@ export function RetryImg({
         src={src}
         alt={alt}
         draggable={draggable}
+        loading={loading}
+        decoding="async"
         className={cn(
           "absolute inset-0 h-full w-full transition-opacity duration-150",
           objectFit,

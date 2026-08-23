@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { RetryImg } from "@/components/ui/retry-img";
 import { cn } from "@/lib/utils";
 import type { Room } from "@/lib/types";
 
@@ -151,8 +152,13 @@ export function RoomReorderModal({
               >
                 <div className="relative h-20 w-full overflow-hidden bg-surface-3">
                   {item.imageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.imageUrl} alt="" draggable={false} className="h-full w-full object-cover" />
+                    <RetryImg
+                      src={item.imageUrl}
+                      alt=""
+                      draggable={false}
+                      loading="eager"
+                      className="h-full w-full object-cover"
+                    />
                   ) : (
                     <span className="absolute inset-0" style={{ background: item.room.color, opacity: 0.25 }} />
                   )}

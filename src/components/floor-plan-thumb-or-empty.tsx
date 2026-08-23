@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import type { FloorPlan } from "@/lib/types";
 import { PlanThumb } from "./plan-thumb";
 import { Icon } from "./ui/icon";
+import { RetryImg } from "./ui/retry-img";
 
 /**
  * A floor-plan thumbnail, or a consistent "No floor plan yet" empty state
@@ -26,8 +27,14 @@ export function FloorPlanThumbOrEmpty({
   if (plan?.meta?.storageKey) {
     return (
       <div className="absolute inset-0 overflow-hidden transition-transform duration-300 group-hover:scale-[1.03]">
-        {/* eslint-disable-next-line @next/next/no-img-element -- storage key is dynamic and can't use next/image's static loader config for arbitrary aspect ratios here */}
-        <img
+        {/* Was a bare <img> with no retry — this is the dashboard/profile
+            project-card thumbnail, the very first image surface most users
+            see, and a transient storage/ownership read (see /api/render's
+            requireOwnedKey) left it permanently blank with no way to recover
+            short of a manual reload. RetryImg gives it the same
+            retry-then-icon behavior every other stored image in the app
+            already has (generate/page.tsx, furnish-room-card.tsx, etc). */}
+        <RetryImg
           src={`/api/render?key=${encodeURIComponent(plan.meta.storageKey)}`}
           alt=""
           className="size-full object-cover"
