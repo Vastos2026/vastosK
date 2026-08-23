@@ -144,17 +144,46 @@ function buildLeggedSlab(
  * reference image. Now a real king: 6.3ft across by 6.8ft head to foot.
  */
 const BED_W = 6.3;
-const BED_LEN = 6.8;
+// Trimmed 6.8 -> 6.5 (81.6in -> 78in). 6.8ft was slightly over a real
+// mattress run and the bed was eating more floor than it should in the
+// small-to-average rooms most plans actually have. NOTE it is still nearly
+// square (6.3 x 6.5), because BED_W is a KING width — see the doc comment
+// above, which set the width to fix an earlier bug and left the footprint
+// almost 1:1. A true queen (5.0 x 6.6) would read far more like a bed from
+// the locked camera and free real floor space; that is a separate,
+// deliberate change, not something to slip in under "shorten it".
+const BED_LEN = 6.5;
 
-function buildBed(): THREE.Group {
+/**
+ * A real single/twin mattress — for a small bedroom or a second occupant,
+ * offered as an opt-in alongside the double bed above rather than seeded by
+ * default (see its promptPriority for why).
+ */
+const SINGLE_BED_W = 3.5;
+const SINGLE_BED_LEN = 6.5;
+
+/**
+ * Shared bed massing — mattress slab plus a taller, thin headboard at the -Z
+ * ("head") edge — parameterised by footprint so the double and single bed
+ * don't fork into two near-identical builders.
+ */
+function buildBedShape(bedW: number, bedLen: number): THREE.Group {
   const group = new THREE.Group();
   const mattressH = 1.3;
-  addBox(group, seatMat(), BED_W, mattressH, BED_LEN, 0, 0, 0);
+  addBox(group, seatMat(), bedW, mattressH, bedLen, 0, 0, 0);
   // Headboard at the -Z ("head") edge, taller and thin.
   const headboardH = 3.2;
   const headboardD = 0.3;
-  addBox(group, frameMat(), BED_W, headboardH, headboardD, 0, 0, -BED_LEN / 2 - headboardD / 2);
+  addBox(group, frameMat(), bedW, headboardH, headboardD, 0, 0, -bedLen / 2 - headboardD / 2);
   return group;
+}
+
+function buildBed(): THREE.Group {
+  return buildBedShape(BED_W, BED_LEN);
+}
+
+function buildSingleBed(): THREE.Group {
+  return buildBedShape(SINGLE_BED_W, SINGLE_BED_LEN);
 }
 
 /**
@@ -459,12 +488,38 @@ function buildConferenceTable(): THREE.Group {
   return buildLeggedSlab(9, 0.35, 4, 2.65, 0.1, 0.3);
 }
 
-function buildOutdoorChair(): THREE.Group {
+/**
+ * A compact hatchback's footprint — 5ft wide by 12ft long (ratio 2.4), which
+ * puts `shapeWord` (furniture-descriptors.ts) into "long low box", a correct
+ * silhouette for a car.
+ */
+const CAR_W = 5;
+const CAR_LEN = 12;
+
+function buildCar(): THREE.Group {
   const group = new THREE.Group();
-  const seatH = 1.4;
-  addBox(group, seatMat(), 2, 0.25, 2, 0, seatH, 0);
-  addBox(group, frameMat(), 2, 1.2, 0.15, 0, seatH + 0.25, -2 / 2 + 0.075);
-  addBox(group, frameMat(), 0.5, seatH, 0.5, 0, 0, 0);
+  const bodyH = 2;
+  addBox(group, frameMat(), CAR_W, bodyH, CAR_LEN, 0, 0, 0);
+  // Cabin/greenhouse: narrower, set back slightly toward the rear, sitting on
+  // the body roof — reads as "car" rather than an undifferentiated slab.
+  const cabinW = CAR_W * 0.7;
+  const cabinH = 1.6;
+  const cabinLen = CAR_LEN * 0.5;
+  addBox(group, frameMat(), cabinW, cabinH, cabinLen, 0, bodyH, -CAR_LEN * 0.05);
+  // Four wheels, short cylinders tucked well inside the body's own footprint
+  // so they never push the bounding box past CAR_W x CAR_LEN.
+  const wheelR = 0.5;
+  const wheelH = 0.3;
+  const wx = CAR_W / 2 - 0.8;
+  const wz = CAR_LEN / 2 - 1.5;
+  for (const [x, z] of [
+    [-wx, -wz],
+    [wx, -wz],
+    [wx, wz],
+    [-wx, wz],
+  ] as [number, number][]) {
+    addCylinder(group, seatMat(), wheelR, wheelR, wheelH, x, 0, z);
+  }
   return group;
 }
 
@@ -507,6 +562,22 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     build: buildBed,
     materialPhrase: "upholstered bed in {soft}",
     promptPriority: 100,
+  },
+  {
+    kind: "single-bed",
+    label: "Single Bed",
+    footprintFt: { w: SINGLE_BED_W, d: SINGLE_BED_LEN },
+    roomTypes: ["Bedroom", "Guest Room", "Master Bedroom"],
+    build: buildSingleBed,
+    materialPhrase: "upholstered single bed in {soft}",
+    // Below the double bed's 100, and — just as important — below wardrobe
+    // (85) and dresser (65), the other two pieces that fill a normal
+    // bedroom's default top-3: at anything above 65 this would bump one of
+    // them out and get seeded ALONGSIDE the double bed, which is not what
+    // "opt-in for a small room" means. 60 keeps the existing default trio
+    // (bed, wardrobe, dresser) intact; the single bed is only ever added by
+    // hand from the Furnish editor's sidebar.
+    promptPriority: 60,
   },
   {
     kind: "nightstand",
@@ -586,7 +657,11 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     kind: "dining-chair",
     label: "Dining Chair",
     footprintFt: { w: 1.5, d: 1.5 },
-    roomTypes: ["Dining Room", "Living + Dining", "Meeting Room", "Conference Room", "Open Workspace"],
+    // "Open Workspace" removed: no catalogue entry gives that room type a
+    // TABLE, so this seeded a chair with no partner to sit at, and described
+    // office seating to the image model as a "dining chair". Open Workspace's
+    // own desk + office-chair pair is both sufficient and correct for it.
+    roomTypes: ["Dining Room", "Living + Dining", "Meeting Room", "Conference Room"],
     build: buildDiningChair,
     materialPhrase: "{soft} dining chair",
     materialPhrasePlural: "{soft} dining chairs",
@@ -685,24 +760,30 @@ export const FURNITURE_CATALOGUE: FurnitureCatalogueEntry[] = [
     promptPriority: 85,
   },
   {
-    kind: "outdoor-chair",
-    label: "Outdoor Chair",
-    footprintFt: { w: 2, d: 2 },
-    roomTypes: ["Balcony"],
-    build: buildOutdoorChair,
-    materialPhrase: "woven outdoor chair",
-    materialPhrasePlural: "woven outdoor chairs",
-    promptPriority: 35,
-  },
-  {
     kind: "side-table",
     label: "Side Table",
     footprintFt: { w: 1.5, d: 1.5 },
-    roomTypes: ["Living Room", "Lounge", "Balcony"],
+    roomTypes: ["Living Room", "Lounge"],
     build: buildSideTable,
     materialPhrase: "{wood} side table",
     materialPhrasePlural: "{wood} side tables",
     promptPriority: 30,
+  },
+  {
+    kind: "car",
+    label: "Car",
+    footprintFt: { w: CAR_W, d: CAR_LEN },
+    // A garage holds a car too — see NO_FURNITURE_ROOM_TYPES below, which no
+    // longer lists "Garage" for exactly this reason.
+    roomTypes: ["Portico", "Parking", "Garage"],
+    build: buildCar,
+    // A STATIC phrase, deliberately with no {wood}/{soft}/{stone} token: a
+    // car's material is not the project's furniture palette, and interpolate()
+    // (furniture-layout.ts) passes a phrase with no such token through
+    // unchanged, so this is safe to leave untokenised.
+    materialPhrase: "a small parked hatchback car",
+    // Defines the space, same tier as a bed or a sofa.
+    promptPriority: 100,
   },
   {
     kind: "rug",
@@ -741,7 +822,16 @@ const UNIVERSAL_FALLBACK_KINDS = ["rug", "plant", "side-table"];
  * contents clause in ai/prompting/prompt-builder.ts's SERVICE_ROOM_CONTENTS.
  */
 const NO_FURNITURE_ROOM_TYPES = new Set(
-  ["Bathroom", "Washroom", "Utility", "Store Room", "Storage", "Garage"].map((rt) =>
+  // "Garage" removed: it now offers the "car" catalogue entry (roomTypes
+  // includes "Garage"), and NO_FURNITURE_ROOM_TYPES short-circuits
+  // furnitureForRoomType to [] before any catalogue match runs, which made
+  // that roomTypes entry silently dead. The garage's positive-contents
+  // fallback in ai/prompting/prompt-builder.ts's SERVICE_ROOM_CONTENTS stays
+  // as-is — it's still what a garage with no car placed should say.
+  // "Balcony" added: it should read as an open outdoor space (a railing, sky,
+  // a view out), never furniture — see the outdoor-chair/side-table removal
+  // above.
+  ["Bathroom", "Washroom", "Utility", "Store Room", "Storage", "Balcony"].map((rt) =>
     rt.toLowerCase(),
   ),
 );
@@ -797,6 +887,10 @@ const ROOM_TYPE_ALIASES: Record<string, string> = {
   entrance: "Foyer",
   lobby: "Foyer",
   entry: "Foyer",
+  "car porch": "Portico",
+  "car park": "Portico",
+  carport: "Portico",
+  porch: "Portico",
 };
 
 /** Lowercased room type with aliases resolved, ready for exact comparison. */

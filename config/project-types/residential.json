@@ -19,7 +19,9 @@
     "Utility",
     "Store Room",
     "Balcony",
-    "Garage"
+    "Garage",
+    "Portico",
+    "Parking"
   ],
   "walkthroughOrder": [
     "Foyer",
@@ -37,6 +39,8 @@
     "Balcony",
     "Utility",
     "Store Room",
-    "Garage"
+    "Garage",
+    "Portico",
+    "Parking"
   ]
 }

@@ -160,7 +160,26 @@ export function defaultArrangementFor(
   spec: GreyboxRoomSpec,
   camera: THREE.PerspectiveCamera,
 ): PlacedFurniture[] {
-  const entries = furnitureForRoomType(roomType).slice(0, DEFAULT_PIECES);
+  // Sorted by promptPriority BEFORE slicing, not left in catalogue-declaration
+  // order. `furnitureForRoomType` returns matches in the order they appear in
+  // FURNITURE_CATALOGUE, which for a COMBINED room type groups one half first:
+  // "Living + Dining" matched sofa, armchair, coffee-table, tv-unit,
+  // dining-table, dining-chair — so taking the first three seeded the
+  // living-room trio and dropped the dining half of the room entirely, in a
+  // room type named after both. Priority order seeds sofa (95), dining-table
+  // (90) and tv-unit (75) instead.
+  //
+  // promptPriority already encodes "how much does this piece define the room",
+  // which is exactly the question being asked here, and it is the same ranking
+  // buildMappedFurnitureLine trims by — so seeding and trimming now agree
+  // about what matters instead of disagreeing silently.
+  //
+  // Sorted on a COPY: furnitureForRoomType's result can alias a shared array,
+  // and an in-place sort would permanently reorder the catalogue for every
+  // later caller in the process.
+  const entries = [...furnitureForRoomType(roomType)]
+    .sort((a, b) => b.promptPriority - a.promptPriority)
+    .slice(0, DEFAULT_PIECES);
   const placed: PlacedFurniture[] = [];
 
   for (const entry of entries) {

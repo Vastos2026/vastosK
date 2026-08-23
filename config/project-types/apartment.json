@@ -18,7 +18,8 @@
     "Foyer",
     "Utility",
     "Store Room",
-    "Balcony"
+    "Balcony",
+    "Parking"
   ],
   "walkthroughOrder": [
     "Foyer",
@@ -35,6 +36,7 @@
     "Bathroom",
     "Balcony",
     "Utility",
-    "Store Room"
+    "Store Room",
+    "Parking"
   ]
 }
