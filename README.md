@@ -32,9 +32,44 @@ no persistence, and floor-plan extraction fails (routing to manual room
 entry) until `GEMINI_API_KEY` is set.
 
 **Supabase**: if you set the `SUPABASE_*` vars, run `supabase/schema.sql` in
-your project's SQL editor first (idempotent). Bootstrap your first account
-per the comment near the end of that file, then promote it to `master` to
-reach `/console`.
+your project's SQL editor first. Bootstrap your first account per the comment
+near the end of that file, then promote it to `master` to reach `/console`.
+
+### Re-running the schema on an existing database
+
+`schema.sql` is written to be idempotent — every statement is guarded with
+`if not exists` / `drop ... if exists` / an exception-swallowing `do $$`
+block — so re-running the whole file is the intended way to pick up schema
+changes.
+
+Two cautions, both worth reading before you paste it in:
+
+- **It is the only way RLS changes reach your database.** In particular the
+  `project_snapshots` SELECT policy is scoped to `anon_owner = auth.uid()::text`.
+  Until that runs, an older database may still carry a permissive read policy,
+  which would let any holder of the publishable key — a key that ships in the
+  browser bundle by design — read every user's project data.
+- **Two `alter table profiles drop column if exists` statements destroy data**
+  if those columns are still populated (`assigned_admin_id`, `trial_ends_at`).
+  Check before running:
+
+  ```sql
+  select count(*) filter (where assigned_admin_id is not null) as assigned,
+         count(*) filter (where trial_ends_at   is not null) as trials
+  from profiles;
+  ```
+
+  Both zero means the drops are no-ops. Otherwise migrate that data first.
+
+**Storage**: no bucket-side setup is needed beyond the credentials. Every
+object is written server-side under a `renders/<projectId>/` prefix with a
+`randomUUID()` filename, and reads are ownership-checked against the caller's
+own projects (`requireOwnedKey`), so no public bucket policy or CORS rule is
+required — the app proxies bytes through `/api/render`.
+
+**Before going live**: make sure `DEBUG_PROMPTS` is unset in the production
+environment. It prints assembled prompts, including users' free-text notes,
+to the server console.
 
 ## Project structure
 
