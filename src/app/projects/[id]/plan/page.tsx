@@ -55,9 +55,13 @@ const DEFAULT_SHAPE: EditorShape = { x: 0.38, y: 0.38, w: 0.2, h: 0.2 };
  * aspect off, and it has to be a FIXED number rather than "fill the column":
  * every shape is stored normalised to the canvas, so a canvas whose aspect
  * changed with the viewport would move every room's real-world proportions
- * with it. Same 4/3 the image path already falls back to.
+ * with it. Deliberately PORTRAIT and taller than one viewport — the user
+ * wants a canvas roomy enough to draw a real plan into, not one that fits on
+ * screen, so reaching the bottom takes a scroll. That means it no longer
+ * matches the image path's 4/3 fallback below; that's fine, the image path
+ * reads its aspect off the actual uploaded image instead of guessing.
  */
-const BLANK_CANVAS_ASPECT = 4 / 3;
+const BLANK_CANVAS_ASPECT = 5 / 6;
 
 /**
  * The toolbar's keyboard shortcuts, rendered as the legend panel and applied
@@ -141,6 +145,7 @@ function PlanEditorContent({
   const applyPlanLayout = useVasto((s) => s.applyPlanLayout);
   const setFloorPlan = useVasto((s) => s.setFloorPlan);
   const setPlanSkipped = useVasto((s) => s.setPlanSkipped);
+  const confirmPlan = useVasto((s) => s.confirmPlan);
 
   const [rooms, setRooms] = useState<Room[]>(floorPlan?.rooms ?? []);
   const [skipConfirming, setSkipConfirming] = useState(false);
@@ -334,6 +339,12 @@ function PlanEditorContent({
 
   const proceed = () => {
     commitRooms();
+    // The Plan pill's only signal — see Project.planConfirmedAt. Set HERE
+    // rather than on mount, so opening the editor and navigating away without
+    // finishing does not count, exactly as confirmRooms works one step later.
+    // This is the single exit from the page (Continue and the confirmed Skip
+    // both route through it), so one call covers both.
+    confirmPlan(projectId);
     router.push(`/projects/${projectId}/review`);
   };
 
@@ -347,7 +358,7 @@ function PlanEditorContent({
 
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl px-6 py-8">
+      <div className="mx-auto max-w-7xl px-6 py-8">
         <div className="mb-6">
           <h2 className="text-2xl font-bold tracking-tight">
             {blankCanvas ? "Draw your rooms & openings" : "Confirm room & opening placement"}
@@ -359,7 +370,7 @@ function PlanEditorContent({
           </p>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[auto_1.4fr_1fr] lg:gap-6">
+        <div className="grid gap-4 lg:grid-cols-[auto_2.4fr_1fr] lg:gap-6">
           <div className="flex flex-row items-center gap-1 rounded-xl border border-border bg-surface p-1 lg:flex-col lg:items-stretch lg:self-start">
             <ToolButton icon="Move" label="Select" active={tool === "select"} onClick={() => setTool("select")} />
             <ToolButton

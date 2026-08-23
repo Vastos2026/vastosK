@@ -26,7 +26,7 @@ import type { Pt } from "@/lib/sketch/geometry";
  * pointer interaction: select/move/resize a room, and place/drag/resize an
  * opening on the SELECTED room's walls.
  *
- * Follows sketch-canvas.tsx's wrapping-div + canvas + ResizeObserver +
+ * Wrapping-div + canvas + ResizeObserver +
  * normalized-[0,1] + render-on-state-change pattern.
  */
 

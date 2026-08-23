@@ -9,7 +9,8 @@
  * must never do anything that costs money or touches user data.
  */
 import { greyboxHashFor } from "@/lib/greybox/greybox-hash";
-import { openingFaceSamples, type GreyboxClass } from "@/lib/greybox/build-scene";
+import { openingCentre, openingFaceSamples, type GreyboxClass } from "@/lib/greybox/build-scene";
+import { describeFurniture } from "@/lib/greybox/furniture-descriptors";
 // Imported from ./histogram, NOT ./render-to-data-uri — the latter is
 // "use client" (WebGL rendering) and this route runs server-side. histogram.ts
 // carries no directive specifically so this pure-function check can import it.
@@ -34,7 +35,12 @@ import { defaultArrangementFor, firstFreeSlot, isInFrame } from "@/lib/greybox/f
 import type { PlacedFurniture, PlacedOpening, Room } from "@/lib/types";
 import { clamp, stripWallFinishes } from "@/lib/ai/prompting/design-planning";
 import { buildDesignSpec, nameHexColour, styleBriefCoverage, wallColourFor } from "@/lib/ai/prompting/design-spec-tables";
-import { COLOUR_PALETTES, STYLES } from "@/lib/data";
+// buildCustomPaletteText lives in data.ts, NOT beside its call site in
+// design/page.tsx: that page is "use client", and importing a function out of
+// a client module into this server route builds fine but throws at runtime
+// ("Attempted to call buildCustomPaletteText() from the server"). These
+// checks caught exactly that.
+import { COLOUR_PALETTES, STYLES, buildCustomPaletteText } from "@/lib/data";
 import { buildRoomPrompt, LABEL_BUDGET } from "@/lib/ai/prompting/prompt-builder";
 import { referenceDesignSelection, sanitiseReferenceAttributes } from "@/lib/ai/prompting/design-reference";
 import { buildUniversalInput, COLOUR_PALETTE_MAX_LEN } from "@/lib/ai/prompting/build-universal-input";
@@ -49,8 +55,11 @@ import type {
 import { assertGenerationAspect } from "@/lib/render/runware-client";
 // runChain is pure fallback-chain control flow (stub steps below make no
 // network call); ProviderError is the plain error class it inspects.
-import { runChain, type ChainStep } from "@/lib/ai/provider";
+import { runChain, type ChainStep, buildEnhancePrompt } from "@/lib/ai/provider";
 import { ProviderError } from "@/lib/ai/errors";
+// planCropEdit is pure crop/pad/prompt-assembly work (sharp only) — no
+// network call, safe to exercise here like the other pure functions above.
+import { planCropEdit } from "@/lib/render/gemini-image";
 // Pure prefix check (Fix round 1 — B5 critical regression fix), no DB call — see its
 // own doc comment (supabase/projects.ts) for why this replaced requireOwnedKey here.
 import { isOwnedGreyboxKey } from "@/lib/supabase/projects";
@@ -1226,9 +1235,264 @@ export async function GET() {
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
     });
-    assert(p.includes("ordinary Dental Clinic"), `expected the project type, got: ${p.slice(0, 160)}`);
+    // The SUBJECT is the room; the project type is context after it. Naming
+    // the building as the subject of a single-room render is what invited the
+    // model to show more of the building than the massing render contains.
+    assert(
+      p.includes("ordinary study in a Dental Clinic"),
+      `expected room-type-in-project-type, got: ${p.slice(0, 160)}`,
+    );
+    // Subcategory is free text, so a vowel-initial one ("Independent House",
+    // "Office", "Apartment") is reachable and "in a Independent House" is
+    // broken English in the one clause FLUX.2's prose-trained encoder reads
+    // first.
+    const vowel = await buildRoomPrompt(
+      { ...clinic, project: { category: "Residential", subcategory: "Independent House" } },
+      { name: "Bed 1", type: "Bedroom" },
+      dspec,
+      { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 1 } },
+    );
+    assert(
+      vowel.includes("bedroom in an Independent House"),
+      `expected "an" before a vowel-initial project type, got: ${vowel.slice(0, 160)}`,
+    );
     assert(p.includes("massing render of this exact study"), `expected the room type, got: ${p}`);
     assert(!p.includes("exact study room"), `must not double the noun: ${p}`);
+  });
+
+  await checkAsync("the medium line degrades to the project type alone when a room has no type", async () => {
+    // A room whose type was never set must not produce "a real, ordinary  in
+    // a Villa" — the sentence has to still read as English with the room half
+    // missing, which is why the fallback drops the whole "X in a" construction
+    // rather than interpolating an empty string.
+    const typeless: UniversalInput = {
+      project: { category: "Residential", subcategory: "Villa" },
+      layout: { rooms: [] },
+      design: { style: "Modern Indian", luxury_level: "Premium", colour_palette: "Warm White" },
+    };
+    const p = await buildRoomPrompt(typeless, { name: "Room 1" }, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+    });
+    assert(p.includes("ordinary Villa, wide angle"), `expected the bare project type, got: ${p.slice(0, 160)}`);
+    assert(!/ordinary\s+in a/.test(p), `left a hole where the room type would go: ${p.slice(0, 160)}`);
+  });
+
+  await checkAsync("the dressing layer comes from the design spec, per room, not from one hardcoded list", async () => {
+    // The clause used to name "rug, lamps, cushions, art, plants" for every
+    // room type in the app — right for a bedroom, wrong for a kitchen. It now
+    // reads RoomGuideline.dressing, which the planner writes per room.
+    const withDressing: DesignSpecification = {
+      ...dspec,
+      roomGuidelines: [
+        { room: uiRoom.name, guidance: "x", compactGuidance: "y", dressing: "a fruit bowl, jars, a tea towel" },
+      ],
+    };
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, uiRoom, withDressing, {
+        provider,
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 1 },
+        furniture: [f("1", "bed")],
+      });
+      assert(p.includes("a fruit bowl, jars, a tea towel"), `${provider}: the spec's dressing list is missing: ${p}`);
+      assert(!/rug, lamps, cushions, art, plants/.test(p), `${provider}: the fallback leaked through: ${p}`);
+    }
+  });
+
+  await checkAsync("every configured room type reads as English in every prose slot", async () => {
+    // The sweep that was missing. Until this existed, no test exercised more
+    // than one or two fixed room types, so "Living + Dining" — a real type in
+    // both the residential and apartment configs — put a literal "+" into
+    // FOUR prose slots at once ("a real, ordinary living + dining in a 3BHK
+    // Apartment", "this exact living + dining", "Hall, a living + dining",
+    // "so the living + dining looks complete") and nothing caught it.
+    //
+    // Runs the REAL builder over every type every config offers, rather than
+    // unit-testing prosaicRoomType, so a future prose slot that forgets to
+    // call it fails here too.
+    const seen = new Set<string>();
+    const offenders: string[] = [];
+    for (const category of ["Residential", "Apartment", "Commercial", "Custom"]) {
+      for (const type of getProjectTypeConfig(category)?.roomTypes ?? []) {
+        if (seen.has(type)) continue;
+        seen.add(type);
+        const p = await buildRoomPrompt(uiInput, { name: "Room 1", type }, dspec, {
+          provider: "runware",
+          hasGreybox: true,
+          ledger: { doors: 1, windows: 1 },
+          furniture: [f("1", "bed")],
+        });
+        // Room-type text reaches prose in the medium line, the contract, the
+        // room label and the finishing clause. None of them may carry an
+        // operator, a slash, a double space or a dangling article.
+        if (/\s[+&/]\s/.test(p)) offenders.push(`${type}: raw separator in prose`);
+        if (/ {2,}/.test(p)) offenders.push(`${type}: double space`);
+        if (/\ba\s+[aeiou]/i.test(p.split("\n\n")[0])) offenders.push(`${type}: wrong article in the medium line`);
+      }
+    }
+    assert(seen.size >= 20, `expected the configs to offer many room types, saw ${seen.size}`);
+    assert(offenders.length === 0, `room types that read badly in prose:\n  ${offenders.join("\n  ")}`);
+  });
+
+  // ---- describeFurniture, Extension 1: opening-anchored descriptors ----
+  //
+  // Built as a shared fixture so every case below reasons about the SAME
+  // room and camera. The opening's world position is read from the exported
+  // openingCentre rather than hardcoded, so these tests do not encode
+  // build-scene.ts's wall-frame convention and cannot rot if it changes.
+  const anchorSpec = (): GreyboxRoomSpec => ({
+    width: 20,
+    depth: 16,
+    // Pinned, not "auto": the camera stands against the wall it names and
+    // shows the other three, so pinning south guarantees the north wall (and
+    // its window) is in frame for every case below.
+    cameraView: "south",
+    openings: [{ id: "w1", type: "window", wall: "north", t: 0.5, widthFt: 4 }],
+    furniture: [],
+  });
+
+  check("describeFurniture anchors a piece that is genuinely beside an opening", () => {
+    const base = anchorSpec();
+    const o = openingCentre(base, base.openings[0]);
+    // 20% in from the window wall — a piece pushed up against it.
+    const spec: GreyboxRoomSpec = { ...base, furniture: [{ kind: "sofa", x: o.x, z: o.z * 0.8, rotation: 0 }] };
+    const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+    const [d] = describeFurniture(spec, camera);
+    assert(d.inFrame, `the fixture piece must be in frame, got: ${JSON.stringify(d)}`);
+    assert(/under the window/.test(d.phrase), `expected an opening anchor, got: "${d.phrase}"`);
+  });
+
+  check("describeFurniture does NOT anchor a piece far from every opening", () => {
+    // The explicit requirement: proximity is a precondition, not a
+    // preference. A piece in open floor keeps the original frame-band
+    // phrasing, because claiming it is "under the window" would assert a
+    // spatial fact the reference image contradicts.
+    const base = anchorSpec();
+    const o = openingCentre(base, base.openings[0]);
+    // Room centre: same x as the window, but the full half-depth away from it.
+    const spec: GreyboxRoomSpec = { ...base, furniture: [{ kind: "sofa", x: o.x, z: 0, rotation: 0 }] };
+    const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+    const [d] = describeFurniture(spec, camera);
+    assert(d.inFrame, `the fixture piece must be in frame, got: ${JSON.stringify(d)}`);
+    assert(!/under|beside/.test(d.phrase), `a distant piece must not be anchored, got: "${d.phrase}"`);
+    assert(/at (left|centre|right)/.test(d.phrase), `expected the frame-band fallback, got: "${d.phrase}"`);
+  });
+
+  check("describeFurniture's anchor reach scales with the piece's own footprint", () => {
+    // Reach is measured from the piece's EDGE (ANCHOR_MARGIN_FT + half its
+    // smaller footprint), not its centre. A bed flat against the window wall
+    // has its centre 3.4ft out and must still anchor; a nightstand stranded
+    // the same distance from the wall must not, because its edge is nowhere
+    // near it.
+    const base = anchorSpec();
+    const o = openingCentre(base, base.openings[0]);
+    const at = (kind: string, z: number): string => {
+      const spec: GreyboxRoomSpec = { ...base, furniture: [{ kind, x: o.x, z, rotation: 0 }] };
+      return describeFurniture(spec, greyboxCamera(spec, GREYBOX_ASPECT))[0].phrase;
+    };
+    // Toward the room interior from the north wall, by a bed's half-depth.
+    const inward = o.z > 0 ? -3.4 : 3.4;
+    assert(/under the window/.test(at("bed", o.z + inward)), `a bed against the wall should anchor: "${at("bed", o.z + inward)}"`);
+    assert(
+      !/under the window/.test(at("nightstand", o.z + inward)),
+      `a nightstand that far out should not anchor: "${at("nightstand", o.z + inward)}"`,
+    );
+  });
+
+  check("describeFurniture never anchors two pieces to the same opening identically", () => {
+    // Two pieces genuinely can share one window. Identical anchors would
+    // point the model at one landmark for two boxes — worse than no anchor —
+    // so the ordinal tie-break kicks in among exactly the colliding pair.
+    const base = anchorSpec();
+    const o = openingCentre(base, base.openings[0]);
+    const z = o.z * 0.8;
+    const spec: GreyboxRoomSpec = {
+      ...base,
+      furniture: [
+        { kind: "armchair", x: o.x - 1.6, z, rotation: 0 },
+        { kind: "armchair", x: o.x + 1.6, z, rotation: 0 },
+      ],
+    };
+    const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+    const ds = describeFurniture(spec, camera).filter((d) => d.inFrame);
+    assert(ds.length === 2, `both fixture pieces must be in frame, got ${ds.length}`);
+    assert(ds[0].phrase !== ds[1].phrase, `two pieces got the identical phrase: "${ds[0].phrase}"`);
+  });
+
+  check("describeFurniture is deterministic — same spec, same phrases, every time", () => {
+    // The property the whole design rests on: descriptors are a pure function
+    // of geometry, so a regenerated prompt cannot silently drift. Extension 1
+    // adds an opening lookup, which must not change that.
+    const base = anchorSpec();
+    const o = openingCentre(base, base.openings[0]);
+    const spec: GreyboxRoomSpec = {
+      ...base,
+      furniture: [
+        { kind: "sofa", x: o.x, z: o.z * 0.8, rotation: 0 },
+        { kind: "coffee-table", x: o.x + 4, z: 0, rotation: 0 },
+      ],
+    };
+    const first = describeFurniture(spec, greyboxCamera(spec, GREYBOX_ASPECT)).map((d) => d.phrase);
+    const second = describeFurniture(spec, greyboxCamera(spec, GREYBOX_ASPECT)).map((d) => d.phrase);
+    eq(second, first, "describeFurniture must be a pure function of the spec");
+  });
+
+  check("defaultArrangementFor seeds a combined room type from BOTH halves", () => {
+    // "Living + Dining" matched sofa, armchair, coffee-table, tv-unit,
+    // dining-table, dining-chair in catalogue-declaration order, so taking the
+    // first three seeded the living-room trio and dropped the dining half of a
+    // room named after both. Seeding is priority-ordered now.
+    const spec = roomSpecFor({ id: "r1", name: "Hall", width: 20, height: 16, openings: [] } as unknown as Room);
+    const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+    const kinds = defaultArrangementFor("Living + Dining", spec, camera).map((p) => p.kind);
+    assert(kinds.length > 0, "seeded nothing at all");
+    assert(
+      kinds.some((k) => k === "sofa"),
+      `expected the living half to be represented, got: ${kinds.join(", ")}`,
+    );
+    assert(
+      kinds.some((k) => k === "dining-table"),
+      `expected the dining half to be represented, got: ${kinds.join(", ")}`,
+    );
+  });
+
+  check("no room type seeds a chair whose table does not exist for that room type", () => {
+    // The Open Workspace bug, generalised: a seating entry is only sensible in
+    // a room type that also has something to sit AT. Checked across every
+    // configured type rather than for the one that was reported.
+    const TABLES = new Set(["dining-table", "conference-table", "desk", "kitchen-island", "coffee-table"]);
+    const SEATS = new Set(["dining-chair", "office-chair", "bar-stool"]);
+    const orphans: string[] = [];
+    for (const category of ["Residential", "Apartment", "Commercial", "Custom"]) {
+      for (const type of getProjectTypeConfig(category)?.roomTypes ?? []) {
+        const kinds = furnitureForRoomType(type).map((e) => e.kind);
+        const hasSeat = kinds.some((k) => SEATS.has(k));
+        const hasTable = kinds.some((k) => TABLES.has(k));
+        if (hasSeat && !hasTable) orphans.push(`${type}: [${kinds.join(", ")}]`);
+      }
+    }
+    assert(orphans.length === 0, `room types offering seating with nothing to sit at:\n  ${orphans.join("\n  ")}`);
+  });
+
+  await checkAsync("a spec cached before `dressing` existed still produces a valid clause", async () => {
+    // DesignSpecification is cached in localStorage on the project. A spec
+    // written before this field existed has no `dressing`, and those projects
+    // must keep generating rather than emitting "the finishing layer —  — so
+    // the bedroom looks complete."
+    const legacy: DesignSpecification = {
+      ...dspec,
+      roomGuidelines: [{ room: uiRoom.name, guidance: "x", compactGuidance: "y" }],
+    };
+    const p = await buildRoomPrompt(uiInput, uiRoom, legacy, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed")],
+    });
+    assert(p.includes("rug, lamps, cushions, art, plants"), `expected the generic fallback, got: ${p}`);
+    assert(!/—\s*—/.test(p), `left an empty dressing slot: ${p}`);
   });
 
   await checkAsync("the finish-the-job clause keeps its back-reference when pieces WERE named", async () => {
@@ -1255,7 +1519,111 @@ export async function GET() {
       furniture: [f("1", "bed"), f("2", "nightstand"), f("3", "wardrobe")],
     });
     assert(p.length <= 1800, `prompt is ${p.length} chars`);
-    assert(/furnish this bedroom completely/i.test(p), `the finish-the-job clause was trimmed away: ${p}`);
+    // Pieces WERE named here, so this is the dressing-layer wording, not the
+    // "furnish completely" one — see furnishFullyFor for why the two branches
+    // ask for opposite things.
+    assert(/add the finishing layer/i.test(p), `the finish-the-job clause was trimmed away: ${p}`);
+    assert(/place none of it in front of a door or window/i.test(p), `the clearance rule was trimmed away: ${p}`);
+  });
+
+  await checkAsync("the finish-the-job clause stays short enough not to starve the trimmable sections", async () => {
+    // It sits OUTSIDE the overflow ladder, so every character it spends is a
+    // character the accent note and the furniture line lose first under
+    // pressure. This is the guard on that: the clause grew once already
+    // (100 -> ~150 chars) when the dressing layer and the clearance rule
+    // replaced "furnish completely", and the next person to extend it should
+    // find out here rather than from a silently dropped Additional
+    // Requirements note in production.
+    //
+    // Measured against the assembled prompt rather than the clause alone,
+    // because the clause is not exported — the delta between a room WITH
+    // furniture (dressing-layer branch, the long one) and the same prompt is
+    // what actually matters.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("1", "bed"), f("2", "nightstand")],
+    });
+    const clause = p.split("\n\n").find((s) => /add the finishing layer/i.test(s)) ?? "";
+    assert(clause.length > 0, `no finish-the-job section found in: ${p}`);
+    // Measured at the WORST case, not at the fallback. `dressing` is clamped
+    // to 70 chars by design-planning.ts and the generic fallback is only 35,
+    // so sizing this budget against the fallback (as the first version did)
+    // understated the real ceiling by half — the test stayed green while a
+    // genuine planner response would have sailed past it in production.
+    const worst = await buildRoomPrompt(
+      uiInput,
+      uiRoom,
+      {
+        ...dspec,
+        roomGuidelines: [{ room: uiRoom.name, guidance: "x", compactGuidance: "y", dressing: "z".repeat(70) }],
+      },
+      { provider: "runware", hasGreybox: true, ledger: { doors: 1, windows: 1 }, furniture: [f("1", "bed")] },
+    );
+    const worstClause = worst.split("\n\n").find((s) => /add the finishing layer/i.test(s)) ?? "";
+    assert(
+      worstClause.length <= 215,
+      `the clause is ${worstClause.length} chars at a full 70-char dressing, over its 215 budget: ${worstClause}`,
+    );
+  });
+
+  await checkAsync("the clearance rule never overrides deliberately placed furniture", async () => {
+    // The structural contract says "Darker grey volumes are furniture: keep
+    // their position, footprint and approximate size". A blanket "keep doors
+    // and windows clear" contradicts that outright — a user who placed a
+    // bench under a window in the 3D editor meant it, and the greybox exists
+    // precisely so that placement survives. The clearance rule must therefore
+    // bind to the ADDED dressing, never to the placed pieces.
+    for (const provider of ["runware", "gemini"] as const) {
+      const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider,
+        hasGreybox: true,
+        ledger: { doors: 1, windows: 1 },
+        furniture: [f("1", "bed")],
+      });
+      assert(
+        /place none of it in front of a door or window/i.test(p),
+        `${provider}: expected the scoped clearance rule, got: ${p}`,
+      );
+      // The unscoped imperative must not appear anywhere on a greybox path.
+      assert(
+        !/keep (the )?doors and windows clear/i.test(p),
+        `${provider}: an unscoped clearance order contradicts the geometry lock: ${p}`,
+      );
+      // Both flows must state the furniture placement lock — the FLUX
+      // contract in prose, the Gemini payload as `furniture.keepPlacement`.
+      // The Gemini flow shipped without it: it named the pieces and their
+      // materials but never said "leave them where they are", so the
+      // arrangement built in the 3D editor was a suggestion, not a
+      // constraint, on that path only.
+      assert(
+        /keep (their|the) position, footprint and approximate size/i.test(p),
+        `${provider}: the furniture placement lock is missing: ${p}`,
+      );
+    }
+  });
+
+  await checkAsync("the clearance rule is omitted for a room with no openings at all", async () => {
+    // A clearance sentence on a room whose openings were never recorded
+    // ASSERTS that openings exist — the same fabrication
+    // noGreyboxOpeningCensus refuses to commit. Both flows, both paths.
+    for (const provider of ["runware", "gemini"] as const) {
+      const noOpenings = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider,
+        hasGreybox: true,
+        ledger: { doors: 0, windows: 0 },
+        furniture: [f("1", "bed")],
+      });
+      assert(
+        !/in front of a door or window|doors and windows/i.test(noOpenings),
+        `${provider}: a room with no openings must not be told to keep them clear, got: ${noOpenings}`,
+      );
+      assert(
+        /add the finishing layer/i.test(noOpenings),
+        `${provider}: the dressing-layer clause should still be present, got: ${noOpenings}`,
+      );
+    }
   });
 
   check("stripWallFinishes removes a finish without mangling the colour it was attached to", () => {
@@ -1479,6 +1847,56 @@ export async function GET() {
     // must instead stop at the sentence, WITH its period.
     const out = clamp("Warm walnut and stone. Soft light everywhere across the room", 30);
     eq(out, "Warm walnut and stone.", "cuts at the sentence, period included, not the later word boundary");
+  });
+
+  // ---- buildCustomPaletteText (Design page's custom-palette colourPaletteText,
+  // the fix for the "first colour must be the wall" bug — see design-planning.ts's
+  // PALETTE ROLES rule for the other half of this fix) ----
+  check("buildCustomPaletteText: states the wall/accent roles explicitly, hex codes intact", () => {
+    const out = buildCustomPaletteText(["#ff0000", "#00ff00", "#0000ff"]);
+    assert(out.includes("wall colour #ff0000"), `expected the wall role and hex, got: ${out}`);
+    assert(out.includes("accent colours #00ff00 and #0000ff"), `expected the accent role and hexes, got: ${out}`);
+  });
+
+  check("buildCustomPaletteText: a single-colour array has no accent clause and no dangling \" and \"", () => {
+    const out = buildCustomPaletteText(["#ff0000"]);
+    eq(out, "Custom — wall colour #ff0000", "no accent clause at all when there is nothing to put in it");
+    assert(!out.includes(" and "), "no dangling \" and \" with zero accents");
+    assert(!out.includes("accent colours"), "no empty accent clause with zero accents");
+  });
+
+  check("buildCustomPaletteText: a two-colour array reads a single accent, no \"and\"", () => {
+    const out = buildCustomPaletteText(["#ff0000", "#00ff00"]);
+    eq(out, "Custom — wall colour #ff0000; accent colours #00ff00", "exactly one accent colour, unjoined");
+  });
+
+  // ---- stripWallFinishes / clamp vs. a hex code (design-planning.ts's HEX
+  // CODES rule — the model is asked to return "name + hex", e.g. "deep
+  // crimson red #8b1a1a", and neither pure post-processing step may mangle
+  // that hex on the way to the prompt) ----
+  check("stripWallFinishes leaves a name+hex colour value untouched — no finish word in a hex string to strip", () => {
+    eq(
+      stripWallFinishes("deep crimson red #8b1a1a"),
+      "deep crimson red #8b1a1a",
+      "no WALL_FINISHES token can match inside a bare hex string",
+    );
+  });
+
+  check("clamp leaves an in-budget name+hex value untouched", () => {
+    eq(clamp("deep crimson red #8b1a1a", 40), "deep crimson red #8b1a1a", "well under 40 chars, nothing trimmed");
+  });
+
+  check("clamp on an over-budget name+hex value drops the whole hex token, never half of one", () => {
+    // 42 chars raw, over the 40-char budget the wallColour field uses. The
+    // last space in the 40-char cut falls right before the "#", well past
+    // the 60%-of-max boundary guard, so the word-boundary branch fires and
+    // the ENTIRE incomplete hex token is dropped along with its name's
+    // trailing word — never a truncated "#8b1a" left dangling in the prompt.
+    const overLong = "muted desert rose blush pink shade #8b1a1a";
+    const out = clamp(overLong, 40);
+    assert(out.length <= 40, `over budget: ${out.length} chars — ${out}`);
+    assert(!out.includes("#"), `a partial hex token leaked through: ${out}`);
+    eq(out, "muted desert rose blush pink shade", "the whole hex token is dropped, not sliced");
   });
 
   // ---- design reference (Design page's "Upload design reference") ----
@@ -2178,6 +2596,64 @@ export async function GET() {
     );
   });
 
+  // ---- Balcony: open outdoor space, no furniture ----
+  check("Balcony resolves to zero furniture, not even the universal rug/plant/side-table fallback", () => {
+    eq(furnitureForRoomType("Balcony"), [], "Balcony must offer no furniture at all");
+  });
+
+  // ---- Portico / Parking: a car, not the universal fallback ----
+  check('"Portico" and "Parking" both resolve to a set containing "car"', () => {
+    for (const type of ["Portico", "Parking"]) {
+      const kinds = furnitureForRoomType(type).map((e) => e.kind);
+      assert(kinds.includes("car"), `"${type}" does not offer a car: [${kinds.join(", ")}]`);
+    }
+  });
+
+  check('"car porch", "car park", "carport" and "porch" all resolve to the Portico set', () => {
+    const portico = furnitureForRoomType("Portico").map((e) => e.kind);
+    for (const label of ["car porch", "car park", "carport", "porch", "Car Porch", "CARPORT"]) {
+      eq(furnitureForRoomType(label).map((e) => e.kind), portico, `"${label}" must resolve to the Portico set`);
+    }
+  });
+
+  check("the car's materialPhrase survives token interpolation unchanged, with no leftover braces", () => {
+    // materialPhrase is a static string with no {wood}/{soft}/{stone} token —
+    // a car's material isn't the project's furniture palette — so this must
+    // pass through buildFurnitureMaterials byte-for-byte.
+    const line = buildFurnitureMaterials([f("1", "car")], tokens);
+    assert(line.includes("a small parked hatchback car"), `car phrase missing or altered: ${line}`);
+    assert(!/[{}]/.test(line), `car phrase leaked an unreplaced token: ${line}`);
+  });
+
+  // ---- Single Bed: opt-in, never seeded ahead of the double bed ----
+  check("a normal Bedroom's default arrangement still seeds the double bed, not the single bed", () => {
+    const spec = roomSpecFor({ id: "r1", name: "Bedroom", width: 14, height: 12, openings: [] } as unknown as Room);
+    const camera = greyboxCamera(spec, GREYBOX_ASPECT);
+    const kinds = defaultArrangementFor("Bedroom", spec, camera).map((p) => p.kind);
+    assert(kinds.includes("bed"), `expected the double bed in a normal bedroom's default set, got: ${kinds.join(", ")}`);
+    assert(
+      !kinds.includes("single-bed"),
+      `single-bed must be opt-in only, not seeded by default: ${kinds.join(", ")}`,
+    );
+  });
+
+  check("single-bed fits a small, narrow bedroom the double bed cannot", () => {
+    // 5ft wide is enough for the single bed (3.5ft) but not the 6.3ft-wide
+    // double bed — a genuine "small bedroom" case (a box room, a servant's
+    // room) where the single bed is the only one that has a legal, in-frame,
+    // camera-clear slot at all.
+    const small: GreyboxRoomSpec = { width: 5, depth: 12, openings: [] };
+    const cam = greyboxCamera(small, GREYBOX_ASPECT);
+    assert(
+      firstFreeSlot("single-bed", [], small, cam) !== null,
+      "single-bed still has no legal slot in a 5x12ft bedroom",
+    );
+    assert(
+      firstFreeSlot("bed", [], small, cam) === null,
+      "double bed unexpectedly still fits a 5x12ft bedroom — pick a narrower test room to keep this check meaningful",
+    );
+  });
+
   check('room-type aliases: "Hall" gets the full living-room set, not the universal fallback', () => {
     // The reported "coffee table wasn't available in the 3D scene". Exact
     // matching meant a room Gemini typed "Hall" fell through to
@@ -2508,6 +2984,60 @@ export async function GET() {
     assert(/not be reproduced|must NOT/i.test(p), "the JSON never warns against reproducing the badge numerals");
   });
 
+  // ---- lasso reference image + Enhance prompt (design-spec-ai-comparison Tasks 1/2) ----
+
+  /** Small solid-colour PNG data URI, for planCropEdit fixtures below. */
+  async function tinySolidDataUri(w: number, h: number, rgb: [number, number, number]): Promise<string> {
+    const buf = await sharp({
+      create: { width: w, height: h, channels: 3, background: { r: rgb[0], g: rgb[1], b: rgb[2] } },
+    })
+      .png()
+      .toBuffer();
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  }
+
+  /** Black PNG with a white square in the middle — a real (non-empty) lasso selection. */
+  async function tinyMaskDataUri(w: number, h: number): Promise<string> {
+    const svg = `<svg width="${w}" height="${h}"><rect width="${w}" height="${h}" fill="black"/><rect x="${Math.round(w * 0.3)}" y="${Math.round(h * 0.3)}" width="${Math.round(w * 0.4)}" height="${Math.round(h * 0.4)}" fill="white"/></svg>`;
+    const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  }
+
+  await checkAsync(
+    "planCropEdit's IMAGE 2 reference clause appears only when a reference is supplied",
+    async () => {
+      const base = await tinySolidDataUri(200, 200, [200, 180, 160]);
+      const mask = await tinyMaskDataUri(200, 200);
+      const ref = await tinySolidDataUri(64, 64, [10, 200, 10]);
+      const style = STYLES[0];
+
+      const withoutRef = await planCropEdit(base, mask, "add a lamp", style);
+      assert(!!withoutRef, "planCropEdit returned null for a real (non-empty) mask selection");
+      assert(!/IMAGE 2/.test(withoutRef!.prompt), "prompt mentions IMAGE 2 when no reference was supplied");
+      eq(withoutRef!.refDataUri, null, "refDataUri must be null when no reference was supplied");
+
+      const withRef = await planCropEdit(base, mask, "add a lamp", style, ref);
+      assert(!!withRef, "planCropEdit returned null for a real (non-empty) mask selection, with reference");
+      assert(/IMAGE 2/.test(withRef!.prompt), "prompt omits the IMAGE 2 reference clause when a reference IS supplied");
+      assert(withRef!.refDataUri !== null, "refDataUri must be set when a reference was supplied");
+    },
+  );
+
+  check("buildEnhancePrompt contains both the KEEP and ENHANCE halves", () => {
+    const bare = buildEnhancePrompt();
+    assert(/KEEP EXACTLY AS THEY ARE/.test(bare), "missing the KEEP-identical half");
+    assert(/ENHANCE EVERYTHING ELSE/.test(bare), "missing the ENHANCE-everything-else half");
+    assert(!/Interior style:/.test(bare), "a bare call (no style resolved) must not append a style clause");
+
+    const styled = buildEnhancePrompt(STYLES[0]);
+    assert(/KEEP EXACTLY AS THEY ARE/.test(styled), "styled call is missing the KEEP-identical half");
+    assert(/ENHANCE EVERYTHING ELSE/.test(styled), "styled call is missing the ENHANCE-everything-else half");
+    assert(
+      styled.includes(`Interior style: "${STYLES[0].name}".`),
+      "styled call must append the interior style clause",
+    );
+  });
+
   await checkAsync("neither flow ever asks for a shiny wall", async () => {
     // "sheen" specifically caused the reported oily walls. Guard both flows,
     // not just the prose one.
@@ -2550,6 +3080,48 @@ export async function GET() {
     promptPreview = `preview failed: ${e instanceof Error ? e.message : String(e)}`;
   }
 
+  // Extension 1 made visible. The promptPreview fixture above deliberately
+  // places its furniture in open floor, so its descriptors show the
+  // frame-band FALLBACK — correct, but it means the preview alone never
+  // demonstrates anchoring. This pairs the two: the same three pieces, once
+  // parked against the window and once out in the room, so the difference the
+  // anchor makes can be read straight off the endpoint.
+  let descriptorPreview: { anchored: string[]; unanchored: string[] } | string;
+  try {
+    const room: GreyboxRoomSpec = {
+      width: 16,
+      depth: 12,
+      cameraView: "south",
+      openings: [
+        { id: "w1", type: "window", wall: "north", t: 0.35, widthFt: 4 },
+        { id: "d1", type: "door", wall: "east", t: 0.5, widthFt: 3 },
+      ],
+    };
+    const win = openingCentre(room, room.openings[0]);
+    const door = openingCentre(room, room.openings[1]);
+    const toward = (v: number, by: number) => (v > 0 ? v - by : v + by);
+    const phrases = (furniture: GreyboxRoomSpec["furniture"]) => {
+      const spec: GreyboxRoomSpec = { ...room, furniture };
+      return describeFurniture(spec, greyboxCamera(spec, GREYBOX_ASPECT))
+        .filter((d) => d.inFrame)
+        .map((d) => `${d.kind}: ${d.phrase}`);
+    };
+    descriptorPreview = {
+      anchored: phrases([
+        { kind: "sofa", x: win.x, z: toward(win.z, 1.6), rotation: 0 },
+        { kind: "bookshelf", x: toward(door.x, 1), z: door.z, rotation: 0 },
+        { kind: "coffee-table", x: 0, z: 0, rotation: 0 },
+      ]),
+      unanchored: phrases([
+        { kind: "sofa", x: -3, z: 0, rotation: 0 },
+        { kind: "bookshelf", x: 0, z: 0, rotation: 0 },
+        { kind: "coffee-table", x: 3, z: 0, rotation: 0 },
+      ]),
+    };
+  } catch (e) {
+    descriptorPreview = `descriptor preview failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
   // The same room through the Gemini flow, with numbered boxes, so both
   // prompts can be compared side by side without spending a generation.
   let geminiPromptPreview: string;
@@ -2573,6 +3145,7 @@ export async function GET() {
       failed: failed.length,
       promptPreview,
       promptPreviewChars: promptPreview.length,
+      descriptorPreview,
       geminiPromptPreview,
       geminiPromptPreviewChars: geminiPromptPreview.length,
       results,

@@ -196,9 +196,8 @@ export interface DetectedGeometry {
   doors: { x: number; y: number; orientation: "h" | "v" }[];
   windows: { x: number; y: number; orientation: "h" | "v"; length: number }[];
   /**
-   * Room boundary boxes in pixels. The label-anchored detector
-   * (DETECTOR=labeled) also fills `name`/`type` from the plan's printed labels;
-   * the contour detector leaves them undefined and names come from Gemini.
+   * Room boundary boxes in pixels, as read off the plan by the Gemini vision
+   * extraction call — which also supplies `name`/`type`.
    */
   rooms: {
     x: number;
@@ -322,6 +321,15 @@ export interface RoomGeneration {
   note?: string;
   /** true when this version came from a lasso edit of an earlier version, not a fresh generation */
   edited?: boolean;
+  /**
+   * true when this version came from the Enhance button — a whole-image
+   * re-render of an earlier version that keeps its camera, geometry, openings
+   * and furniture placement and improves only finish, lighting and the
+   * dressing layer. Sibling of `edited` above and carried for the same
+   * reason: the gallery badges it so a strip of near-identical images can
+   * still be told apart at a glance.
+   */
+  enhanced?: boolean;
 }
 
 /** One room's generation history + Final Image Selection state. */
@@ -399,6 +407,24 @@ export interface Project {
    * handled where `computeDoneMap` reads it, not here.
    */
   roomsConfirmedAt?: string;
+  /**
+   * ISO timestamp set when the user leaves the Plan Editor via its Continue
+   * (or its confirmed Skip) — the actual "the user finished the Plan step"
+   * signal, and the sibling of `roomsConfirmedAt` above.
+   *
+   * Exists because the Plan pill had no signal of its own: `computeDoneMap`
+   * keyed it off `roomsConfirmedAt`, which is only set one step LATER on Room
+   * Confirmation, so finishing the Plan page ticked nothing and the pill went
+   * green only after Review was also confirmed (reported bug). It could not
+   * simply key off `rooms.some(r => r.shape)` either — extract-plan.ts's
+   * toRoom populates `shape` straight from Gemini's box_2d reading, so that
+   * is true before the user has opened the editor at all, which is the
+   * premature-done bug `roomsConfirmedAt` was itself introduced to fix.
+   *
+   * Absent for any project created before this field existed; that case is
+   * handled where `computeDoneMap` reads it, not here.
+   */
+  planConfirmedAt?: string;
   /**
    * The user chose to skip the Plan step from the blank-canvas path — no
    * floor-plan image, no rooms drawn, no openings placed. Set only by the

@@ -15,7 +15,7 @@ export interface ReorderableRoom {
 /**
  * Drag-and-drop replacement for the Walkthrough page's old chevron-button
  * reorder (revamp gap-fill). Hand-rolled pointer-event dragging rather than a
- * dependency — same style as sketch-canvas.tsx's click-to-place canvas, just
+ * dependency — a plain click-to-place canvas, just
  * applied to a DOM list instead of a `<canvas>`. A card follows the pointer
  * via `transform` only (never top/left/width/height/margin, per the design
  * system's motion rule) while the rest of the grid swaps instantly as the

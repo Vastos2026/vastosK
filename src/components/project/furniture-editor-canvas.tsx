@@ -802,7 +802,19 @@ export function FurnitureEditorCanvas({
       <canvas
         ref={canvasRef}
         tabIndex={0}
-        className="max-h-full min-h-0 max-w-full min-w-0 touch-none outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        // h-full/w-full is load-bearing, not decorative: a bare <canvas> with
+        // no explicit sizing falls back to the HTML spec's default replaced-
+        // element intrinsic size (300x150 CSS px) — max-h-full/max-w-full
+        // only CAP that, they don't grow it, and aspect-ratio alone doesn't
+        // stretch a replaced element either. The result was a tiny fixed-size
+        // canvas centred (by the wrapper's items-center/justify-center) inside
+        // a much bigger dark box, with the parent's aspect-locked sizing (see
+        // furnish/[roomId]/page.tsx's wrapping div) doing nothing for the
+        // canvas itself (reported bug). The parent box already has this exact
+        // aspect ratio via inline style, so filling it with h-full/w-full is
+        // always correct here, not just a fallback — max-h-full/max-w-full
+        // stay as a defensive cap in case that ever stops being true.
+        className="h-full w-full max-h-full min-h-0 max-w-full min-w-0 touch-none outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
         style={{ aspectRatio: GREYBOX_ASPECT }}
       />
     </div>

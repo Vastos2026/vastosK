@@ -50,6 +50,13 @@ export default function ReviewPage() {
   const unit: Unit = project.units ?? "ft-in";
   const category = categoryForPropertyType(project.propertyType);
   const roomTypes = getProjectTypeConfig(category)?.roomTypes ?? [];
+  // Derived live, not a stored flag — same reasoning as the per-room
+  // dimensionsMissing check inside the room .map() below — so filling in a
+  // box clears this list (and re-enables Continue, on a non-skipped plan)
+  // on the very next render instead of it going stale.
+  const roomsMissingDimensions = rooms.filter(
+    (r) => r.width === undefined || r.height === undefined,
+  );
   // plan.previewUrl (a blob: URL from the browser tab that did the upload,
   // see upload/page.tsx) only survives that one tab's lifetime — dead on any
   // reload or later visit for a project that never got a durable
@@ -72,7 +79,31 @@ export default function ReviewPage() {
   // guard); Design is the next real step. confirmRooms still runs either way
   // — it records that the user confirmed their rooms, which is unrelated to
   // which step follows.
+  //
+  // The two branches also treat missing width/height differently, and
+  // deliberately so:
+  // - Not skipped: Furnish comes next and builds a real 3D greybox straight
+  //   from each room's width/height. A fabricated dimension would silently
+  //   corrupt that geometry, so this function never invents one — the
+  //   Continue button below is disabled instead while any room is missing a
+  //   dimension, so this branch is only ever reached once every room has
+  //   both.
+  // - Skipped: there's no Furnish step and no greybox at all for this
+  //   project, so a fabricated dimension feeds into nothing — defaulting it
+  //   is harmless, and blocking the user on a step they already opted out of
+  //   buys nothing. So instead of disabling anything, every room still
+  //   missing a dimension is defaulted to 10x10ft here before navigating.
+  //   zustand's `set` is synchronous, so these resizeRoom calls are
+  //   guaranteed to have landed by the time router.push runs below.
   const goForward = () => {
+    if (project.planSkipped) {
+      for (const room of roomsMissingDimensions) {
+        const size: { width?: number; height?: number } = {};
+        if (room.width === undefined) size.width = 10;
+        if (room.height === undefined) size.height = 10;
+        resizeRoom(id, room.id, size);
+      }
+    }
     confirmRooms(id);
     router.push(`/projects/${id}/${project.planSkipped ? "design" : "furnish"}`);
   };
@@ -321,8 +352,25 @@ export default function ReviewPage() {
           )}
         </div>
 
-        <div className="mt-8 flex justify-end">
-          <Button iconRight="ArrowRight" disabled={rooms.length === 0} onClick={goForward}>
+        <div className="mt-8 flex flex-col items-end gap-2">
+          {roomsMissingDimensions.length > 0 && (
+            project.planSkipped ? (
+              <p className="text-right text-xs text-faint">
+                Rooms without dimensions will use 10 × 10 ft:{" "}
+                {roomsMissingDimensions.map((r) => r.name || "Unnamed room").join(", ")}.
+              </p>
+            ) : (
+              <p className="flex items-center gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+                <Icon name="CircleAlert" className="size-3.5 shrink-0" />
+                Missing dimensions: {roomsMissingDimensions.map((r) => r.name || "Unnamed room").join(", ")}
+              </p>
+            )
+          )}
+          <Button
+            iconRight="ArrowRight"
+            disabled={rooms.length === 0 || (!project.planSkipped && roomsMissingDimensions.length > 0)}
+            onClick={goForward}
+          >
             {project.planSkipped ? "Continue to Design" : "Continue to Furnish"}
           </Button>
         </div>
@@ -350,6 +398,23 @@ export default function ReviewPage() {
  * rather than a useEffect, since a bare effect calling setState here would
  * both trip this repo's react-hooks/set-state-in-effect rule and flash the
  * stale buffer for one extra frame before the effect ran.
+ *
+ * Second-generation bug, now also fixed: with `min`/`max` in play (e.g.
+ * `resizeRoom` in store.ts clamping width/height to `Math.max(2, ...)`),
+ * typing "1" meaning to type "10" instantly became "2". `onChange` commits
+ * on EVERY keystroke, so `onCommit(1)` fired immediately, the store clamped
+ * it to 2, the external `value` prop changed to 2, and the render-phase
+ * resync above — which used to run unconditionally — overwrote the buffer
+ * the user was mid-keystroke into with "2" before they could type the next
+ * digit. An external clamp in the store, plus a per-keystroke commit, plus
+ * an unconditional render-phase resync, equals a field that fights the user
+ * mid-word. The fix: track whether the field is focused, and skip the
+ * buffer resync (though `prevValue` still updates, so the field doesn't
+ * fall permanently out of sync once focus leaves) while it is. The buffer
+ * only ever reconciles against the external value again on blur, which is
+ * also why `onBlur` now resyncs from `value` rather than from the
+ * locally-parsed number — the store, not the last keystroke, is the source
+ * of truth for what the clamped value actually is.
  */
 function BufferedNumberInput({
   value,
@@ -370,9 +435,15 @@ function BufferedNumberInput({
 }) {
   const [buffer, setBuffer] = useState(value === undefined ? "" : String(value));
   const [prevValue, setPrevValue] = useState(value);
+  // While the field has focus, an external value change (e.g. this same
+  // field's own commit getting clamped by the store) must NOT overwrite
+  // what the user is actively typing — see the doc comment above.
+  const [focused, setFocused] = useState(false);
   if (value !== prevValue) {
     setPrevValue(value);
-    setBuffer(value === undefined ? "" : String(value));
+    if (!focused) {
+      setBuffer(value === undefined ? "" : String(value));
+    }
   }
 
   const clamp = (n: number) => {
@@ -389,6 +460,7 @@ function BufferedNumberInput({
       max={max}
       value={buffer}
       placeholder={placeholder}
+      onFocus={() => setFocused(true)}
       onChange={(e) => {
         const raw = e.target.value;
         setBuffer(raw);
@@ -402,15 +474,15 @@ function BufferedNumberInput({
         }
       }}
       onBlur={() => {
-        const n = Number(buffer);
-        // Empty or unparseable on blur: snap the display back to whatever
-        // the external value actually is, rather than leaving garbage
-        // on-screen or silently committing 0.
-        if (buffer === "" || !Number.isFinite(n)) {
-          setBuffer(value === undefined ? "" : String(value));
-        } else {
-          setBuffer(String(clamp(n)));
-        }
+        setFocused(false);
+        // The store is the source of truth once the field loses focus, not
+        // the locally-parsed buffer — onCommit above may have clamped to
+        // something the buffer never displayed (typing "1" commits a
+        // clamped 2 while the buffer still shows "1"). Resyncing from
+        // `value` unconditionally here — the same fallback empty/unparseable
+        // input used to take — is what makes the box end up showing what
+        // the store actually holds instead of a stale pre-clamp digit.
+        setBuffer(value === undefined ? "" : String(value));
       }}
       className={className}
       aria-label={ariaLabel}

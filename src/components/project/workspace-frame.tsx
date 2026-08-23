@@ -31,7 +31,14 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
     // Plan (Review's only entrance is Plan's Continue), so roomsConfirmedAt
     // is evidence for this phase too, and generated output covers projects
     // predating the field.
+    // planConfirmedAt (set by plan/page.tsx's proceed(), the page's single
+    // exit) is now this phase's OWN signal. Before it, the only evidence here
+    // was roomsConfirmedAt — set one step LATER, on Room Confirmation — so
+    // finishing the Plan page ticked nothing and the pill went green only
+    // once Review was also confirmed (reported bug). The two older checks
+    // stay as fallbacks for projects predating the field.
     plan:
+      !!project?.planConfirmedAt ||
       !!project?.roomsConfirmedAt ||
       (project?.roomCards ?? []).some((c) => c.generations.length > 0),
     // Real signal is Project.roomsConfirmedAt, set only when the user clicks
@@ -48,10 +55,28 @@ function computeDoneMap(project?: Project): Record<Phase, boolean> {
     review:
       !!project?.roomsConfirmedAt ||
       (project?.roomCards ?? []).some((c) => c.generations.length > 0),
-    // furnish is done when at least one room has furniture. greyboxKey is not the signal
-    // because it's set by the Generate flow as a side effect (via ensureGreybox),
-    // regardless of whether anyone actually furnished the room.
-    furnish: (project?.floorPlan?.rooms ?? []).some((r) => (r.furniture?.length ?? 0) > 0),
+    // `room.furniture.length > 0` used to be the signal here, on the theory
+    // that greyboxKey couldn't be used (it's set by the Generate flow as a
+    // side effect, regardless of whether anyone furnished anything — see the
+    // comment that used to sit here). But `room.furniture` has the exact same
+    // problem: the Furnish gallery's own mount effect
+    // (furnish/page.tsx's FurnishGalleryContent) auto-seeds a default
+    // arrangement into every never-furnished room's `furniture` field the
+    // moment `/furnish` is visited — "every room starts with a default
+    // arrangement automatically" is a deliberate feature, not a bug, but it
+    // means `furniture.length > 0` becomes true from merely opening the
+    // gallery, not from the user doing anything. That produced exactly the
+    // reported bug: skip dimensions, visit Furnish (render fails so nothing
+    // furnished on purpose), go back to Room Confirmation, and the Furnish
+    // pill is already ticked green. The only signals in this project that
+    // cannot be set by a mere page visit are `designSpec` (requires an
+    // explicit Design-step submission) and a real generation — both already
+    // used by `plan`/`review` above for the identical "older project, no
+    // roomsConfirmedAt" fallback. Reusing them here means the Furnish pill
+    // reads as "you are past Furnish", true whether the user rearranged
+    // anything or deliberately skipped every room — which matches this app's
+    // own stated policy that furnishing is optional.
+    furnish: !!project?.designSpec || (project?.roomCards ?? []).some((c) => c.generations.length > 0),
     design: !!project?.designSpec,
     generate: (project?.roomCards ?? []).some((c) => c.generations.length > 0),
     approve: (project?.roomCards ?? []).some((c) => !!c.approvedByUser),

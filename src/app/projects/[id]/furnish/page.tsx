@@ -85,14 +85,28 @@ function FurnishGalleryContent({
     Object.fromEntries(rooms.map((r) => [r.id, "pending" as const])),
   );
 
+  // Stable per-room signature of just the fields that decide whether a room
+  // CAN render at all (width/height) — deliberately not furniture or
+  // openings, which this effect already treats as "picked up on next mount,
+  // not live" by design (see below). Recomputed every render (cheap: a join
+  // over room count) purely so it can sit in the effect's dependency array;
+  // it does nothing else.
+  const dimsSignature = rooms.map((r) => `${r.id}:${r.width ?? ""}:${r.height ?? ""}`).join("|");
+
   // On mount, queue every room's greybox render one at a time through
   // render-queue.ts's serial chain — see that file's doc comment for why
   // (parallel WebGL contexts get silently evicted). ensureGreybox is
   // hash-gated, so revisiting this page after nothing changed resolves every
   // job from cache with zero renders/uploads (Step 4's "reload re-renders
-  // nothing"). Runs once for the room list this component mounted with; a
-  // room added or removed via Room Confirmation is picked up the next time
-  // this page mounts, not live while it's open.
+  // nothing"). Runs once for the room list this component mounted with, AND
+  // re-runs if any room's width/height changes without a remount — Next's
+  // router cache can preserve this page across a Review round trip, and
+  // without `dimsSignature` in the deps a room's status stayed stuck on
+  // whatever it resolved to BEFORE the user filled in dimensions (reported
+  // bug: "add dimensions" kept showing after they were added). A room added
+  // or removed via Room Confirmation is still only picked up the next time
+  // this page mounts — that part is unchanged, and deliberately not covered
+  // by this signature.
   useEffect(() => {
     let cancelled = false;
     // Loaded on demand rather than at module scope. This page renders <img>
@@ -184,7 +198,7 @@ function FurnishGalleryContent({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, dimsSignature]);
 
   const furnishedCount = rooms.filter((r) => (r.furniture?.length ?? 0) > 0).length;
 

@@ -306,6 +306,15 @@ function FurnishContent({
   // instead of re-rendering the same thing twice.
   useEffect(() => {
     let cancelled = false;
+    // Deliberately does NOT setReadiness("checking") here — that's a
+    // synchronous setState-in-effect-body call (this repo's
+    // react-hooks/set-state-in-effect is a hard error), and it isn't needed:
+    // readiness already starts at "checking" via useState's initial value
+    // for the room's first mount, and on a re-run triggered by a dimension
+    // change (see the deps comment below) it's fine to leave the PREVIOUS
+    // ready/unavailable state on screen until this attempt resolves —
+    // avoids flashing the full-page loading state for what should be a
+    // quick re-check.
     ensureGreybox(projectId, { ...room, furniture: initialFurnitureRef.current })
       .then((gb) => {
         if (cancelled) return;
@@ -327,8 +336,19 @@ function FurnishContent({
     return () => {
       cancelled = true;
     };
+    // Deliberately depends on room.width/height (not the whole `room`
+    // object, which the store hands back a new reference for on every
+    // furniture edit — see the comment on `base` above for why that
+    // distinction matters). Without these two, a component instance that
+    // survives a round trip to Room Confirmation and back WITHOUT
+    // unmounting (Next's router cache can preserve a page across a
+    // back/forward navigation) never re-attempts ensureGreybox after the
+    // user fills in dimensions: [projectId, room.id] alone stayed identical,
+    // so the effect never re-ran, and this page kept showing "Add this
+    // room's dimensions..." even though they had been added (reported bug —
+    // Furnish still demands dimensions after they're filled in).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, room.id]);
+  }, [projectId, room.id, room.width, room.height]);
 
   /**
    * Furniture the CURRENT camera cannot show. Switching viewpoint moves the

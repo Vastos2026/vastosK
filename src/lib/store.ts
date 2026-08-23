@@ -48,7 +48,7 @@ interface VastoState {
       "furniture" | "greyboxKey" | "greyboxMaskKey" | "greyboxAnnotatedKey" | "greyboxHash" | "greyboxLedger"
     >,
   ) => void;
-  /** Append a room to the plan (lasso-extracted rooms). */
+  /** Append a room to the plan. */
   addRoom: (id: string, room: Room) => void;
   /** Delete a room from the plan (Room Confirmation's room-list edit) and its generation history. */
   removeRoom: (id: string, roomId: string) => void;
@@ -64,6 +64,15 @@ interface VastoState {
    * confirmed. `computeDoneMap` in workspace-frame.tsx is the reader.
    */
   confirmRooms: (id: string) => void;
+  /**
+   * The Plan Editor's equivalent — sets `Project.planConfirmedAt` to now.
+   * Called only from plan/page.tsx's `proceed()`, which is the single exit
+   * from that page (both Continue and the confirmed Skip route through it),
+   * never on mount. Its own entry point rather than a `patchProject` call at
+   * the call site, for the same reason `confirmRooms` and `setPlanSkipped`
+   * are: one named, greppable place per stepper signal.
+   */
+  confirmPlan: (id: string) => void;
   /**
    * Sets/clears `Project.planSkipped` — the Plan Editor's confirmed skip on
    * the blank-canvas path, and the Yes answer to "you skipped this page, do
@@ -420,6 +429,13 @@ export const useVasto = create<VastoState>()(
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === id ? touch({ ...p, roomsConfirmedAt: new Date().toISOString() }) : p,
+          ),
+        })),
+
+      confirmPlan: (id) =>
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === id ? touch({ ...p, planConfirmedAt: new Date().toISOString() }) : p,
           ),
         })),
 
