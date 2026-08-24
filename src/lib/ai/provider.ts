@@ -38,6 +38,7 @@ import {
 } from "@/lib/render/runware-client";
 import { getProviderPrimary, type ProviderCapability } from "@/lib/settings/provider-settings";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
+import { geminiModelFor, geminiFallbacksFor } from "@/lib/ai/gemini-models";
 import { debugLogPrompt } from "@/lib/ai/debug-log";
 
 export interface CallContext {
@@ -406,12 +407,14 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
 
   debugLogPrompt("1. Upload → floor-plan extraction (extractFloorPlan)", {
     prompt,
-    chain: `Gemini ${process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest"} (direct, vision)`,
+    chain: `Gemini ${geminiModelFor("extraction")} (direct, vision)`,
     referenceImages: [`the uploaded plan image itself (${img.mimeType})`],
   });
 
-  return instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest", ctx, async () => {
+  return instrumented("planning", geminiModelFor("extraction"), ctx, async () => {
     const raw = await generateJson<RawExtractionResponse>(parts, {
+      model: geminiModelFor("extraction"),
+      fallbackModels: geminiFallbacksFor("extraction"),
       temperature: 0.1,
       thinkingBudget: 0,
       deadlineMs,
@@ -595,12 +598,14 @@ Be conservative — omit an entry rather than guess if you're not confident.`;
 
     debugLogPrompt("2. Upload → opening/geometry extraction (extractOpeningGeometry)", {
       prompt,
-      chain: `Gemini ${process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest"} (direct, vision)`,
+      chain: `Gemini ${geminiModelFor("geometry")} (direct, vision)`,
       referenceImages: [`the uploaded plan image itself (${img.mimeType})`],
     });
 
-    return await instrumented("planning", process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest", ctx, async () => {
+    return await instrumented("planning", geminiModelFor("geometry"), ctx, async () => {
       const raw = await generateJson<RawGeometryResponse>(parts, {
+        model: geminiModelFor("geometry"),
+        fallbackModels: geminiFallbacksFor("geometry"),
         temperature: 0.1,
         maxOutputTokens: 65536,
         responseSchema: GEOMETRY_SCHEMA,
@@ -1072,7 +1077,7 @@ export async function generateStructured<T>(
   deadlineMs?: number,
 ): Promise<T> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
-  const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
+  const model = geminiModelFor("planning");
   debugLogPrompt("2b. Design → Design Planning (generateStructured, runs runDesignPlanning's prompt)", {
     prompt,
     chain: `Gemini ${model} (direct, structured JSON)`,
@@ -1082,6 +1087,8 @@ export async function generateStructured<T>(
     const parts: GeminiPart[] = [{ text: prompt }];
     const diagnostics: { quotaExhausted?: boolean } = {};
     const out = await generateJson<T>(parts, {
+      model: geminiModelFor("planning"),
+      fallbackModels: geminiFallbacksFor("planning"),
       diagnostics,
       deadlineMs,
       temperature: 0.4,
@@ -1131,7 +1138,7 @@ export async function generateStructuredFromImage<T>(
   if (!geminiConfigured()) {
     throw new ProviderError("ValidationError", "GEMINI_API_KEY is not configured");
   }
-  const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
+  const model = geminiModelFor("planning");
   const img = await downscaleForGemini(image);
   const parts: GeminiPart[] = [
     { inlineData: { mimeType: img.mimeType, data: img.data } },
@@ -1146,6 +1153,11 @@ export async function generateStructuredFromImage<T>(
 
   return instrumented("planning", model, ctx, async () => {
     const out = await generateJson<T>(parts, {
+      // Runs on the planning model. It is a vision call, but a soft one —
+      // six subjective style attributes, not the bounding-box precision that
+      // makes opening geometry its own purpose in gemini-models.ts.
+      model: geminiModelFor("planning"),
+      fallbackModels: geminiFallbacksFor("planning"),
       // Low but not floor-zero: this is a subjective reading of a photograph,
       // not the near-deterministic transcription extractFloorPlan does at 0.1.
       temperature: 0.2,

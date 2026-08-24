@@ -17,11 +17,18 @@ const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 // shutdown date, so neither can be the default any more. gemini-flash-latest
 // is an always-current alias — it now resolves to the Gemini 3.x generation,
 // see callModel's thinking-config handling below for what that changes.
-const DEFAULT_MODEL = "gemini-flash-latest";
+// Pinned, never an alias. `gemini-flash-latest` used to be the default here;
+// it is a pointer Google repoints without notice (and therefore reprices
+// without notice), so every model this app names is now an explicit version.
+// The real per-call choice lives in ai/gemini-models.ts — this constant only
+// covers a caller that passes neither a model nor a purpose.
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
 // Live fallbacks with SEPARATE capacity pools: explicit-versioned 3.x models
 // in case the `-latest` alias has its own outage, then legacy 2.5-flash last
 // for any project/key that still has access ahead of its shutdown date.
-const FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
+// Only used when a caller supplies no ladder of its own. The real ladders are
+// per-call and cost-capped — see ai/gemini-models.ts's geminiFallbacksFor.
+const FALLBACK_MODELS = ["gemini-2.5-flash"];
 
 /**
  * Wall-clock budget for ONE generateJson call — the whole ladder, across
@@ -110,6 +117,13 @@ export interface GenerateOptions {
   /** override the model for this call (else GEMINI_MODEL, else default) */
   model?: string;
   /**
+   * The ladder to walk when `model` fails, cheapest-adequate first. Supplied
+   * per call by ai/gemini-models.ts's geminiFallbacksFor, which cost-caps it
+   * against the primary — without that, making a primary cheap would make
+   * every failure cost MORE than the success it replaced.
+   */
+  fallbackModels?: string[];
+  /**
    * Model-agnostic "keep thinking minimal" knob for structured extraction/
    * transcription calls that don't benefit from the slow thinking pass. Set
    * to 0 to request the fastest/cheapest reasoning the resolved model
@@ -170,7 +184,9 @@ export async function generateJson<T>(
   // still goes through on another model instead of collapsing to the null
   // (position-less) fallback. Dedup keeps a single pass when they coincide.
   const primary = opts.model || process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
-  const models = [primary, ...FALLBACK_MODELS].filter((m, i, a) => a.indexOf(m) === i);
+  const models = [primary, ...(opts.fallbackModels ?? FALLBACK_MODELS)].filter(
+    (m, i, a) => a.indexOf(m) === i,
+  );
 
   // One budget for the WHOLE ladder, fixed here so that walking to a fallback
   // model can never extend it. See DEFAULT_DEADLINE_MS for why this exists.

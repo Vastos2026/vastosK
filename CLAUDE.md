@@ -114,6 +114,34 @@ For the prompt-construction rules behind `prompt-builder.ts` and `design-plannin
 
 Persistence is entirely local-first: every page's state is mirrored to `project_snapshots` (a JSONB blob keyed by the authenticated user's id) via `/api/projects`, and that is the row every other feature resolves against — share links, PDF export and storage-key ownership checks all read it. Moving onto the normalized `projects` table is future work, not a bug.
 
+### Gemini model selection
+
+`src/lib/ai/gemini-models.ts` pins a model per call purpose — sibling of
+`model-labels.ts`, which does the same for image/video. `extraction` and
+`planning` run `gemini-3.5-flash-lite`; `geometry` runs `gemini-3.5-flash`,
+deliberately stronger because it returns bounding boxes that feed the greybox
+and therefore every render. Override with `GEMINI_EXTRACTION_MODEL` /
+`GEMINI_PLANNING_MODEL` / `GEMINI_GEOMETRY_MODEL`; the legacy `GEMINI_MODEL`
+still wins over all three and flattens them back onto one model.
+
+Two invariants, both asserted in `/api/dev-check`:
+
+- **No `-latest` alias, anywhere.** Google repoints aliases without notice and
+  they bill at whatever they resolve to. `gemini-flash-latest` was the default
+  primary for all three calls and, tested live on this project's key
+  (2026-08-24), returns **429 — no quota**; every call was already spending a
+  round-trip to be refused before falling through to `gemini-3.5-flash`.
+- **Ladders are cost-capped**: no fallback may cost more per output token than
+  the primary (`geminiFallbacksFor` filters against the RESOLVED primary, so
+  an env override cannot reintroduce an expensive tier). Otherwise a cheap
+  primary makes every failure dearer than the success it replaced.
+
+Only models with a published price are eligible, and availability is
+per-account: `gemini-2.5-flash` (which was in the old fallback list) and
+`gemini-2.5-flash-lite` both 404 as "no longer available to new users", and
+`gemini-3.7-flash` 429s. Re-test with a real key before adding a model —
+being on the pricing page does not mean the key can call it.
+
 ### Request budgets and quota
 
 Two failure modes that used to reach users as a timeout or as silence:

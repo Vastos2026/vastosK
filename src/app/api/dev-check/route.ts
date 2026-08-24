@@ -65,6 +65,7 @@ import {
   attemptCapMs,
   retryBackoffMs,
 } from "@/lib/pipeline/gemini-client";
+import { GEMINI_PLAN, GEMINI_RATES, geminiFallbacksFor, geminiModelFor } from "@/lib/ai/gemini-models";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -3313,6 +3314,72 @@ export async function GET() {
     }
     assert(caught instanceof ProviderError, "runChain did not throw a ProviderError");
     eq((caught as ProviderError).category, "QuotaError", "the quota diagnosis was lost behind a later tier");
+  });
+
+  // ---- Gemini model selection ----
+  check("no Gemini call runs on a -latest alias", () => {
+    // An alias is a pointer Google repoints without notice, and it bills at
+    // whatever it currently resolves to — so both the price and the behaviour
+    // of a call can change under a deploy that changed nothing. Every model
+    // this app names must be a pinned version.
+    for (const [purpose, plan] of Object.entries(GEMINI_PLAN)) {
+      for (const model of [plan.primary, ...plan.fallbacks]) {
+        assert(!/-latest$/.test(model), `${purpose} names the moving alias "${model}"`);
+      }
+    }
+  });
+
+  check("every model in a ladder has a known price", () => {
+    // A ladder whose job is to cap cost cannot contain a model whose cost
+    // nobody knows. gemini-3.1-flash-lite is the live example: callable, but
+    // absent from Google's published price table.
+    for (const [purpose, plan] of Object.entries(GEMINI_PLAN)) {
+      for (const model of [plan.primary, ...plan.fallbacks]) {
+        assert(!!GEMINI_RATES[model], `${purpose} uses "${model}", which has no published rate`);
+      }
+    }
+  });
+
+  check("no fallback costs more than the primary it backs up", () => {
+    // Without this rule, making a primary cheap has the perverse effect of
+    // making every FAILURE more expensive than the success it replaced.
+    for (const purpose of ["extraction", "geometry", "planning"] as const) {
+      const primary = geminiModelFor(purpose);
+      const cap = GEMINI_RATES[primary]?.out;
+      assert(cap !== undefined, `resolved primary "${primary}" for ${purpose} has no known rate`);
+      for (const model of geminiFallbacksFor(purpose)) {
+        const rate = GEMINI_RATES[model]?.out;
+        assert(
+          rate !== undefined && rate <= cap!,
+          `${purpose}: fallback "${model}" (${rate}) costs more than primary "${primary}" (${cap})`,
+        );
+      }
+    }
+  });
+
+  check("the primary never appears again in its own fallback ladder", () => {
+    for (const purpose of ["extraction", "geometry", "planning"] as const) {
+      const primary = geminiModelFor(purpose);
+      assert(
+        !geminiFallbacksFor(purpose).includes(primary),
+        `${purpose} retries "${primary}" as its own fallback, which is a wasted tier`,
+      );
+    }
+  });
+
+  check("opening geometry keeps a stronger model than extraction", () => {
+    // Geometry returns bounding boxes, and spatial precision is the first
+    // thing to go on a cheap model. Its output feeds the greybox, which
+    // conditions every generated image, so a regression there damages renders
+    // silently rather than failing loudly. If someone ever levels these down
+    // to save money, this is where they find out it was a decision.
+    const geometry = GEMINI_RATES[GEMINI_PLAN.geometry.primary]?.out;
+    const extraction = GEMINI_RATES[GEMINI_PLAN.extraction.primary]?.out;
+    assert(geometry !== undefined && extraction !== undefined, "a primary has no known rate");
+    assert(
+      geometry! > extraction!,
+      "geometry is no longer on a stronger tier than extraction — see gemini-models.ts",
+    );
   });
 
   // ---- sharp / libvips: exactly one native copy ----

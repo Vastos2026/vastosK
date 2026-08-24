@@ -241,8 +241,49 @@ Treat these as order-of-magnitude. Google does not itemise how many tokens a
 1280px image costs, so the input side rests on an assumption; the output side,
 which dominates, is firmer.
 
-Three things about this are genuinely uncertain and should be checked against
-the live account rather than trusted from any document:
+**Which model each call runs on** is pinned per purpose in
+`src/lib/ai/gemini-models.ts`, overridable by `GEMINI_EXTRACTION_MODEL` /
+`GEMINI_PLANNING_MODEL` / `GEMINI_GEOMETRY_MODEL`:
+
+| Call | Model | Output rate / 1M |
+| --- | --- | --- |
+| extraction | `gemini-3.5-flash-lite` | $2.50 |
+| design planning | `gemini-3.5-flash-lite` | $2.50 |
+| opening geometry | `gemini-3.5-flash` | $9.00 |
+
+Geometry keeps the strong model on purpose: it returns bounding boxes, spatial
+precision is the first thing to go on a cheap model, and its output feeds the
+greybox and therefore every render — a regression there damages images
+silently instead of failing loudly.
+
+Ladders are **cost-capped**: no fallback may cost more per output token than
+the primary it backs up, or making a primary cheap would make every *failure*
+more expensive than the success it replaced. `/api/dev-check` asserts it.
+
+Verified live against this project's key on 2026-08-24 — and worth
+re-verifying with your own key, because availability is per-account and
+being listed on the pricing page does NOT mean your key can call it:
+
+| Model | Result | Latency |
+| --- | --- | --- |
+| `gemini-3.5-flash-lite` | 200 | 1.3s |
+| `gemini-3.1-flash-lite` | 200 | 1.7s |
+| `gemini-3.5-flash` | 200 | 10.4s |
+| `gemini-3.6-flash` | 200 | 12.9s |
+| `gemini-flash-latest` | **429, no quota** | — |
+| `gemini-3.7-flash` | **429, no quota** | — |
+| `gemini-2.5-flash` | **404, retired** | — |
+| `gemini-2.5-flash-lite` | **404, retired** | — |
+
+Two of those matter a lot. `gemini-flash-latest` was the default primary for
+all three calls and it 429s, so every call was already spending a round-trip
+being told no before falling through to `gemini-3.5-flash` — which is why
+pinning geometry to that model changes nothing about what actually executes.
+And `gemini-2.5-flash` was in the fallback list while being retired: a dead
+tier nobody had noticed.
+
+Three things remain genuinely uncertain and should be checked against the
+live account rather than trusted from any document:
 
 - **Free-tier request limits are no longer published.** Google moved per-model
   RPM/RPD/TPM off its public rate-limits page onto the authenticated
@@ -254,21 +295,19 @@ the live account rather than trusted from any document:
   telling you.** It was repointed to `gemini-3.5-flash` in May 2026; whether
   the August 2026 `gemini-3.7-flash` release moved it again is not stated
   anywhere official. Since the alias is billed at whatever it resolves to, the
-  price of a call can change under a deploy that changed nothing. **Pinning
-  `GEMINI_MODEL` to an explicit version is the recommended change before
-  taking real customers** — it costs the same but stops the bill and the
-  behaviour moving on their own. Worth noting the fallback ladder in
-  `gemini-client.ts` lists `gemini-flash-latest` first and `gemini-3.5-flash`
-  second: if the alias currently resolves to 3.5-flash, the first two tiers
-  are the same model and the ladder is one tier shorter than it looks.
+  price of a call can change under a deploy that changed nothing. **This is
+  now fixed** — no alias appears anywhere in the codebase, and dev-check fails
+  if one reappears. Left here because it is the reason the pinned table above
+  exists, and the same trap applies to any model anyone adds later.
 - **Billing has no hard spend cap.** Google Cloud budgets raise *alerts*, they
   do not stop the meter. The app's own per-user cap (`profiles.usage_limit_usd`,
   enforced by `assertAllowed({ checkUsage: true })`) is the only actual
   ceiling, and it is per user, not per account.
 
-Before taking paying customers: enable billing on the Google project (the free
-tier's undocumented daily caps are not something to run a product on), pin the
-model version, and set a budget alert even though it will not stop anything.
+Before taking paying customers: enable billing on the Google project. The 429s
+above are not a rate limit that clears — they are the free tier saying no for
+those models — and the app currently works only because two other models still
+answer. Also set a budget alert, remembering it alerts and never caps.
 
 ## Known gaps and deliberate decisions
 
