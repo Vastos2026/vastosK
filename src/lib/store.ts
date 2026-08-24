@@ -132,6 +132,37 @@ interface VastoState {
   /** Decrements the room's in-flight count, deleting the room's entry once it
    *  hits zero rather than leaving a stale `0` around — never goes negative. */
   stopGenerating: (projectId: string, roomId: string) => void;
+
+  /**
+   * Which per-image operation is in flight for a room, on the View & Edit
+   * screen: a lasso edit or a whole-image Enhance.
+   *
+   * Store-backed rather than a `useState` in the page, because the page's own
+   * local flag disappeared the instant you navigated away — leave mid-Enhance
+   * and come back and the screen looked idle, even though the request was
+   * still running and its result still landed (the completion path calls
+   * `addGeneration`, a store action, which does not care that the component
+   * unmounted). So the work was never actually lost; only the evidence that
+   * it was happening was. Same shape and lifecycle rules as
+   * `generatingRoomIds` above, including the rehydrate reset below.
+   */
+  roomOps: Record<string, Record<string, "edit" | "enhance">>;
+  startRoomOp: (projectId: string, roomId: string, kind: "edit" | "enhance") => void;
+  stopRoomOp: (projectId: string, roomId: string) => void;
+
+  /**
+   * Why a room's last generation/edit/enhance failed, if it did.
+   *
+   * Kept in the store, and NOT cleared on rehydrate, precisely because the
+   * failure outlives the request: the reported bug was a generation that hit
+   * a provider credit limit and simply stopped — no spinner, no message —
+   * leaving the server log as the only way to find out what happened. The
+   * message is whatever the API returned, which for a spent balance is the
+   * fixed QUOTA_MESSAGE from ai/errors.ts.
+   */
+  roomErrors: Record<string, Record<string, string>>;
+  setRoomError: (projectId: string, roomId: string, message: string) => void;
+  clearRoomError: (projectId: string, roomId: string) => void;
 }
 
 /**
@@ -247,6 +278,8 @@ export const useVasto = create<VastoState>()(
     (set, get) => ({
       projects: [],
       generatingRoomIds: {},
+      roomOps: {},
+      roomErrors: {},
 
       createProject: (name, propertyType) => {
         const id = uid("proj");
@@ -270,7 +303,7 @@ export const useVasto = create<VastoState>()(
        *  already reacts to any known id disappearing from `projects` by firing a
        *  DELETE per id, so clearing the array here is enough to propagate to
        *  Supabase too — no separate bulk-sync code needed. */
-      clearAllProjects: () => set({ projects: [], generatingRoomIds: {} }),
+      clearAllProjects: () => set({ projects: [], generatingRoomIds: {}, roomOps: {}, roomErrors: {} }),
 
       importProjects: (incoming) =>
         set((s) => {
@@ -633,12 +666,43 @@ export const useVasto = create<VastoState>()(
             generatingRoomIds: { ...s.generatingRoomIds, [projectId]: { ...existing, [roomId]: count } },
           };
         }),
+
+      startRoomOp: (projectId, roomId, kind) =>
+        set((s) => ({
+          roomOps: { ...s.roomOps, [projectId]: { ...(s.roomOps[projectId] ?? {}), [roomId]: kind } },
+        })),
+
+      stopRoomOp: (projectId, roomId) =>
+        set((s) => {
+          const existing = s.roomOps[projectId];
+          if (!existing?.[roomId]) return s;
+          const { [roomId]: _done, ...rest } = existing;
+          return { roomOps: { ...s.roomOps, [projectId]: rest } };
+        }),
+
+      setRoomError: (projectId, roomId, message) =>
+        set((s) => ({
+          roomErrors: { ...s.roomErrors, [projectId]: { ...(s.roomErrors[projectId] ?? {}), [roomId]: message } },
+        })),
+
+      clearRoomError: (projectId, roomId) =>
+        set((s) => {
+          const existing = s.roomErrors[projectId];
+          if (!existing?.[roomId]) return s;
+          const { [roomId]: _gone, ...rest } = existing;
+          return { roomErrors: { ...s.roomErrors, [projectId]: rest } };
+        }),
     }),
     {
       name: "vasto-store-v1",
       storage: createJSONStorage(() => debouncedStorage(localStorage, 300)),
       version: 4,
-      partialize: (s) => ({ projects: s.projects, generatingRoomIds: s.generatingRoomIds }),
+      partialize: (s) => ({
+        projects: s.projects,
+        generatingRoomIds: s.generatingRoomIds,
+        roomOps: s.roomOps,
+        roomErrors: s.roomErrors,
+      }),
       // Reset generatingRoomIds the moment rehydration finishes, rather than
       // trusting whatever was on disk. This looks like it defeats the point
       // of persisting the field at all, but it's the correct call, not just
@@ -660,8 +724,17 @@ export const useVasto = create<VastoState>()(
       // (Soft, in-app navigation between pages needs none of this — the
       // store is a module-level singleton, so it never rehydrates and never
       // loses generatingRoomIds just from a route change.)
+      // roomOps is cleared for exactly the same reason as generatingRoomIds:
+      // it describes a fetch the current JS execution is awaiting, and a
+      // reload destroys both the request and the only code that would ever
+      // clear the flag. roomErrors is deliberately NOT cleared — a failure is
+      // a fact about what happened, not about a request still in flight, and
+      // the whole point of recording it is that the user finds out.
       onRehydrateStorage: () => (state) => {
-        if (state) state.generatingRoomIds = {};
+        if (state) {
+          state.generatingRoomIds = {};
+          state.roomOps = {};
+        }
       },
       // v2: drop the old seeded demo projects so only real, user-created
       // projects remain. v3: the Workstream 8.5 rebuild destroyed the 3D

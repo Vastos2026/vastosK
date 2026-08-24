@@ -25,6 +25,7 @@ import { roomSpecFor } from "@/lib/greybox/room-spec";
 // state) and causes "getServerSnapshot should be cached to avoid an infinite
 // loop" / "Maximum update depth exceeded".
 const NO_GENERATING_COUNTS: Record<string, number> = {};
+const NO_ROOM_ERRORS: Record<string, string> = {};
 
 /**
  * Room Generation Gallery (rebuilt) — one SECTION per room. Each section is a
@@ -45,6 +46,9 @@ export default function GeneratePage() {
   const generatingCounts = useVasto((s) => s.generatingRoomIds[id] ?? NO_GENERATING_COUNTS);
   const startGenerating = useVasto((s) => s.startGenerating);
   const stopGenerating = useVasto((s) => s.stopGenerating);
+  const roomErrors = useVasto((s) => s.roomErrors[id] ?? NO_ROOM_ERRORS);
+  const setRoomError = useVasto((s) => s.setRoomError);
+  const clearRoomError = useVasto((s) => s.clearRoomError);
 
   if (!project) return null;
 
@@ -85,6 +89,7 @@ export default function GeneratePage() {
 
   const generateMore = async (room: Room, note?: string) => {
     startGenerating(id, room.id);
+    clearRoomError(id, room.id);
     try {
       // Renders + uploads a fresh greybox only when the room's content hash
       // has changed since the last cached one (see ensure-greybox-key.ts), so
@@ -169,6 +174,14 @@ export default function GeneratePage() {
         imageKey: gen.key,
         note,
       });
+    } catch (e) {
+      // This used to be a bare try/finally. The spinner stopped, nothing
+      // replaced it, and the rejection became an unhandled promise — so a
+      // provider credit limit looked exactly like nothing happening at all,
+      // and the only way to find out was to read the server log. The "failed"
+      // tile below only covers a room with NO images yet, so a Generate More
+      // failure on an already-generated room showed nothing whatsoever.
+      setRoomError(id, room.id, e instanceof Error ? e.message : "Generation failed");
     } finally {
       stopGenerating(id, room.id);
     }
@@ -216,6 +229,8 @@ export default function GeneratePage() {
                 room={room}
                 card={cardOf(room.id)}
                 generatingCount={generatingCounts[room.id] ?? 0}
+                errorMessage={roomErrors[room.id]}
+                onDismissError={() => clearRoomError(id, room.id)}
                 onGenerateMore={(note) => generateMore(room, note)}
                 onRetryFirst={() => generateMore(room)}
                 onView={(genId) =>
@@ -238,6 +253,8 @@ function RoomSection({
   room,
   card,
   generatingCount,
+  errorMessage,
+  onDismissError,
   onGenerateMore,
   onRetryFirst,
   onView,
@@ -246,6 +263,9 @@ function RoomSection({
   room: Room;
   card?: RoomCard;
   generatingCount: number;
+  /** Why this room's last generation failed, if it did — see the store's roomErrors. */
+  errorMessage?: string;
+  onDismissError: () => void;
   onGenerateMore: (note?: string) => Promise<void>;
   onRetryFirst: () => Promise<void>;
   onView: (genId?: string) => void;
@@ -284,6 +304,24 @@ function RoomSection({
         </div>
         <p className="text-xs text-muted">{formatDimensionsRounded(room.width, room.height)}</p>
       </div>
+
+      {/* Sits above the strip rather than inside a tile, because the failure
+          this most often reports — a provider credit limit — is about the
+          room as a whole, not about any one generation, and a room that
+          already has images has no empty tile to put it in. */}
+      {errorMessage && (
+        <div className="mb-2 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm">
+          <Icon name="CircleAlert" className="mt-0.5 size-4 shrink-0 text-danger" />
+          <span className="min-w-0 flex-1 text-danger">{errorMessage}</span>
+          <button
+            onClick={onDismissError}
+            aria-label="Dismiss this error"
+            className="shrink-0 rounded p-0.5 text-danger/70 transition-colors hover:text-danger cursor-pointer"
+          >
+            <Icon name="X" className="size-4" />
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-3 overflow-x-auto pb-2" ref={stripRef}>
         {failed ? (

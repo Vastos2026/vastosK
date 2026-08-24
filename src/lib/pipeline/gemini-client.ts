@@ -138,6 +138,13 @@ export interface GenerateOptions {
   responseSchema?: object;
   signal?: AbortSignal;
   /**
+   * Write-only channel for WHY the call failed, since generateJson's contract
+   * is to return null rather than throw and callers have relied on that for
+   * a long time. Without it an exhausted Google quota is indistinguishable
+   * from an unreadable image, and the user is told the wrong thing.
+   */
+  diagnostics?: { quotaExhausted?: boolean };
+  /**
    * Wall-clock budget for this whole call (every model, every retry).
    * Defaults to DEFAULT_DEADLINE_MS. Set it from a route to whatever is
    * safely under that route's `maxDuration`, leaving room for the work
@@ -302,6 +309,11 @@ async function callModel<T>(
     // immediately so the next model / the CV fallback takes it.
     if (res.status === 429 && isDailyQuota(errText)) {
       console.warn(`[gemini] ${model} → daily quota exhausted; failing over without retry`);
+      // Recorded so the CALLER can tell an empty quota apart from every other
+      // reason this returns null. Still "overloaded" rather than a hard stop:
+      // the fallback models have separate pools, so one of them may well
+      // answer — this only survives to be reported if none of them do.
+      if (opts.diagnostics) opts.diagnostics.quotaExhausted = true;
       return { status: "overloaded" };
     }
     if ((res.status === 429 || res.status === 503) && attempt < maxAttempts) {

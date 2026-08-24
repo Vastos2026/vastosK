@@ -77,7 +77,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { sleep, ProviderError } from "@/lib/ai/errors";
+import { sleep, ProviderError, looksLikeQuotaExhaustion } from "@/lib/ai/errors";
 import { planCropEdit, compositeCrop, parseDataUri } from "@/lib/render/gemini-image";
 import { GREYBOX_ASPECT } from "@/lib/greybox/dimensions";
 import type { DesignStyle } from "@/lib/types";
@@ -243,14 +243,32 @@ async function submit(tasks: Record<string, unknown>[]): Promise<RunwareTaskResu
   const payload = (await res.json().catch(() => null)) as RunwareResponse | null;
   if (!res.ok || !payload) {
     const body = payload ? JSON.stringify(payload) : await res.text().catch(() => "");
-    const category = res.status >= 400 && res.status < 500 ? "ValidationError" : "AiProviderError";
+    // 402 Payment Required is the unambiguous "this balance is empty" status;
+    // otherwise read the body, since Runware also reports a spent balance as
+    // a task-level error on a 200 (see below).
+    const category =
+      res.status === 402 || looksLikeQuotaExhaustion(body)
+        ? "QuotaError"
+        : res.status >= 400 && res.status < 500
+          ? "ValidationError"
+          : "AiProviderError";
     throw new ProviderError(category, `Runware ${res.status}: ${body}`);
   }
   if (payload.errors?.length) {
     // A 200 OK carrying a task-level error array (e.g. "unsupportedDimensions",
     // "unsupportedParameter") is just as deterministic as an HTTP 4xx would
     // have been — same non-retryable category.
-    throw new ProviderError("ValidationError", `Runware error: ${payload.errors.map((e) => e.message).join("; ")}`);
+    //
+    // Except when it says the account is out of credit. That arrives here as
+    // an ordinary task error on a 200, and calling it a ValidationError meant
+    // an exhausted balance reached the user as a generic "generation failed"
+    // 502 — the reported symptom was a generation that simply stopped, with
+    // the real reason findable only by opening the server log.
+    const detail = payload.errors.map((e) => e.message).join("; ");
+    throw new ProviderError(
+      looksLikeQuotaExhaustion(detail) ? "QuotaError" : "ValidationError",
+      `Runware error: ${detail}`,
+    );
   }
   return payload.data ?? [];
 }
@@ -269,7 +287,13 @@ async function pollUntilDone(taskUUID: string, maxWaitMs: number): Promise<Runwa
     if (!result) continue;
     if (result.status === "success") return result;
     if (result.status === "error") {
-      throw new Error(`Runware task ${taskUUID} failed: ${result.errorMessage ?? "unknown error"}`);
+      // Same reasoning as submit() above: a task that failed for want of
+      // credit must not be reported as a generic failure.
+      const detail = result.errorMessage ?? "unknown error";
+      if (looksLikeQuotaExhaustion(detail)) {
+        throw new ProviderError("QuotaError", `Runware task ${taskUUID} failed: ${detail}`);
+      }
+      throw new Error(`Runware task ${taskUUID} failed: ${detail}`);
     }
   }
   throw new Error(`Runware task ${taskUUID} timed out after ${maxWaitMs}ms`);

@@ -78,19 +78,29 @@ export default function ViewEditPage() {
   const { id, roomId } = useParams<{ id: string; roomId: string }>();
   const project = useProject(id);
   const addGeneration = useVasto((s) => s.addGeneration);
+  // In-flight state and the last failure both live in the store, not in this
+  // component: leaving this screen mid-Enhance (or mid-edit) used to hide the
+  // fact that anything was running, even though the request carried on and
+  // its result still landed via addGeneration. Coming back now shows the same
+  // progress state you left, and a failure is still on screen when you
+  // return to it.
+  const startRoomOp = useVasto((s) => s.startRoomOp);
+  const stopRoomOp = useVasto((s) => s.stopRoomOp);
+  const setRoomError = useVasto((s) => s.setRoomError);
+  const clearRoomError = useVasto((s) => s.clearRoomError);
+  const activeOp = useVasto((s) => s.roomOps[id]?.[roomId]);
+  const roomError = useVasto((s) => s.roomErrors[id]?.[roomId]);
 
   const [lassoOn, setLassoOn] = useState(false);
   const [regionCount, setRegionCount] = useState(0);
   const [prompts, setPrompts] = useState<string[]>(["", ""]);
   const [regionRefs, setRegionRefs] = useState<(RegionRef | null)[]>([null, null]);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lassoError, setLassoError] = useState<string | null>(null);
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 });
   const [viewedId, setViewedId] = useState<string | null>(null);
-  const [enhanceBusy, setEnhanceBusy] = useState(false);
-  const [enhanceError, setEnhanceError] = useState<string | null>(null);
+
   const lassoRef = useRef<LassoRegionsHandle>(null);
   const lassoErrorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const regionFileInputs = useRef<(HTMLInputElement | null)[]>([]);
@@ -130,7 +140,13 @@ export default function ViewEditPage() {
   }
 
   const current = card.generations.find((g) => g.id === viewedId) ?? card.generations.at(-1)!;
-  const anyBusy = busy || enhanceBusy;
+  const busy = activeOp === "edit";
+  const enhanceBusy = activeOp === "enhance";
+  const anyBusy = !!activeOp;
+  // The store holds one message per room; which control shows it depends on
+  // which operation produced it, so the error still appears beside the thing
+  // that failed rather than in a single catch-all banner.
+  const enhanceError = activeOp ? null : roomError ?? null;
 
   const clearRegionRefs = () => {
     regionRefs.forEach((r) => r && URL.revokeObjectURL(r.url));
@@ -227,8 +243,9 @@ export default function ViewEditPage() {
       setError("Add an instruction for at least one region.");
       return;
     }
-    setBusy(true);
+    startRoomOp(id, roomId, "edit");
     setError(null);
+    clearRoomError(id, roomId);
     try {
       const result = await editRoomImage({
         projectId: id,
@@ -250,16 +267,18 @@ export default function ViewEditPage() {
       setLassoOn(false);
       setViewedId(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Edit failed");
+      const message = e instanceof Error ? e.message : "Edit failed";
+      setError(message);
+      setRoomError(id, roomId, message);
     } finally {
-      setBusy(false);
+      stopRoomOp(id, roomId);
     }
   };
 
   const enhance = async () => {
     if (anyBusy) return;
-    setEnhanceBusy(true);
-    setEnhanceError(null);
+    startRoomOp(id, roomId, "enhance");
+    clearRoomError(id, roomId);
     try {
       const result = await enhanceRoomImage({
         projectId: id,
@@ -275,9 +294,9 @@ export default function ViewEditPage() {
       });
       setViewedId(null);
     } catch (e) {
-      setEnhanceError(e instanceof Error ? e.message : "Enhance failed");
+      setRoomError(id, roomId, e instanceof Error ? e.message : "Enhance failed");
     } finally {
-      setEnhanceBusy(false);
+      stopRoomOp(id, roomId);
     }
   };
 

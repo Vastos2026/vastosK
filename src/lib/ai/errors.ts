@@ -10,7 +10,45 @@ export type ErrorCategory =
   | "AiProviderError"
   | "StorageError"
   | "TimeoutError"
+  /**
+   * The money ran out — a provider account with no credit left, or a daily
+   * API quota spent. Separate from AiProviderError because it is neither
+   * transient nor retryable: every retry and every fallback tier draws on the
+   * same wallet, so trying harder just fails slower. It is also the one
+   * provider failure a USER can act on, which is why it is the only non-
+   * ValidationError category whose message is shown verbatim (see
+   * QUOTA_MESSAGE below).
+   */
+  | "QuotaError"
   | "InternalError";
+
+/**
+ * The exact words a user sees when a provider account is out of credit or a
+ * daily quota is spent. Deliberately says nothing about WHICH provider — the
+ * fact that this app runs on Runware or Gemini is not the customer's
+ * business, and naming it here would leak that into the browser on a failure
+ * path (the same reasoning that keeps the assembled prompt server-side).
+ */
+export const QUOTA_MESSAGE = "Quota limit hit. Contact Vastos Admin";
+
+/**
+ * Does this error text mean "out of credit / over quota" rather than a
+ * transient provider hiccup? Matched on text because neither provider gives
+ * a stable machine-readable marker for it across every surface: Runware
+ * reports it in a task-level `errors[]` message on an HTTP 200, Google in a
+ * 429 body's status field. Kept deliberately narrow — "rate" and "too many
+ * requests" are NOT here, because a per-minute rate limit clears on its own
+ * and must stay retryable.
+ */
+export function looksLikeQuotaExhaustion(text: string): boolean {
+  const t = text.toLowerCase();
+  if (/\binsufficient\b/.test(t) && /\b(credit|credits|balance|funds)\b/.test(t)) return true;
+  if (/\bresource_exhausted\b/.test(t)) return true;
+  if (/\b(out of|no|zero)\s+(credit|credits|balance|quota)\b/.test(t)) return true;
+  if (/\bquota\b/.test(t) && /\b(exceed|exceeded|exhausted|depleted)\b/.test(t)) return true;
+  if (/\bbilling\b/.test(t) && /\b(required|disabled|not enabled)\b/.test(t)) return true;
+  return false;
+}
 
 export class ProviderError extends Error {
   category: ErrorCategory;
@@ -47,6 +85,9 @@ export const RETRYABLE_CATEGORIES: ReadonlySet<ErrorCategory> = new Set([
   "AiProviderError",
   "TimeoutError",
 ]);
+// Note the omission: "QuotaError" is NOT retryable. Every retry and every
+// fallback tier bills the same account, so retrying an exhausted balance only
+// makes the user wait longer for the same failure.
 
 export const MAX_RETRIES = 2;
 
@@ -82,6 +123,15 @@ export function toErrorResponse(
     console.error(`[${context}]`, e.category, e.message);
     if (e.category === "ValidationError") {
       return { status: 400, body: { error: e.message, category: e.category } };
+    }
+    // Quota gets its own fixed sentence and a 429, not the generic 502
+    // "<context> failed". The old behaviour was actively unhelpful: an
+    // exhausted Runware balance surfaced as an ordinary provider failure, so
+    // the only way to find out the account was empty was to read the server
+    // log. The message is a constant, never the upstream text, so no provider
+    // name or account detail crosses into the browser.
+    if (e.category === "QuotaError") {
+      return { status: 429, body: { error: QUOTA_MESSAGE, category: e.category } };
     }
     return { status: 502, body: { error: `${context} failed`, category: e.category } };
   }

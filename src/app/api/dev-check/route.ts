@@ -68,7 +68,13 @@ import {
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ProviderError } from "@/lib/ai/errors";
+import {
+  ProviderError,
+  QUOTA_MESSAGE,
+  RETRYABLE_CATEGORIES,
+  looksLikeQuotaExhaustion,
+  toErrorResponse,
+} from "@/lib/ai/errors";
 // planCropEdit is pure crop/pad/prompt-assembly work (sharp only) — no
 // network call, safe to exercise here like the other pure functions above.
 import { planCropEdit } from "@/lib/render/gemini-image";
@@ -3223,6 +3229,90 @@ export async function GET() {
       eq(out.openings.length, 0, `budget ${budget} returned openings`);
       assert(Date.now() - started < 1_000, `budget ${budget} did work instead of skipping`);
     }
+  });
+
+  // ---- quota classification ----
+  // A spent provider balance used to reach the user as a generic 502
+  // "generation failed", so the only way to learn the account was empty was
+  // to read the server log. These pin both halves of the fix: what counts as
+  // quota exhaustion, and what the user is shown when it happens.
+  check("real out-of-credit messages are recognised", () => {
+    for (const text of [
+      "insufficientCredits: your account has insufficient credits",
+      "Runware error: Insufficient credits to run this task",
+      '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}',
+      "You have exceeded your quota for this model",
+      "daily quota exhausted",
+      "out of credits",
+      "Billing is required to use this model",
+    ]) {
+      assert(looksLikeQuotaExhaustion(text), `not recognised as quota exhaustion: ${text}`);
+    }
+  });
+
+  check("transient failures are NOT mistaken for quota", () => {
+    // This half matters more than the half above: a false positive here marks
+    // a retryable blip non-retryable AND tells the user to contact an admin
+    // about a bill that is perfectly healthy.
+    for (const text of [
+      "429: rate limit exceeded, please slow down",
+      "Too many requests",
+      "fetch failed",
+      "503 Service Unavailable: the model is overloaded",
+      "unsupportedDimensions: width must be a multiple of 64",
+      "credits will be charged for this request",
+      "Request timed out",
+    ]) {
+      assert(!looksLikeQuotaExhaustion(text), `wrongly treated as quota exhaustion: ${text}`);
+    }
+  });
+
+  check("a quota failure reaches the browser as the admin message, not a 502", () => {
+    const { status, body } = toErrorResponse(
+      new ProviderError("QuotaError", "Runware error: insufficient credits on account 12345"),
+      "Room image generation",
+    );
+    eq(status, 429, "quota should be 429, not the generic 502");
+    eq(body.error, QUOTA_MESSAGE, "user did not get the actionable quota message");
+    assert(
+      !/runware|gemini|google|12345|account/i.test(body.error),
+      `provider or account detail leaked to the browser: ${body.error}`,
+    );
+  });
+
+  check("quota is never retried", () => {
+    // Every retry and every fallback tier bills the same wallet.
+    assert(!RETRYABLE_CATEGORIES.has("QuotaError"), "QuotaError must not be retryable");
+    assert(RETRYABLE_CATEGORIES.has("AiProviderError"), "ordinary provider errors must stay retryable");
+  });
+
+  await checkAsync("a later tier's failure cannot bury an earlier quota failure", async () => {
+    // runChain reported only the LAST error, so a quota failure on tier 1
+    // followed by an unrelated failure on tier 2 was reported as the latter.
+    const steps: ChainStep<string>[] = [
+      {
+        model: "tier-1",
+        provider: "runware",
+        run: async () => {
+          throw new ProviderError("QuotaError", "Runware error: insufficient credits");
+        },
+      },
+      {
+        model: "tier-2",
+        provider: "google",
+        run: async () => {
+          throw new ProviderError("AiProviderError", "something else entirely");
+        },
+      },
+    ];
+    let caught: unknown;
+    try {
+      await runChain(steps, () => {});
+    } catch (e) {
+      caught = e;
+    }
+    assert(caught instanceof ProviderError, "runChain did not throw a ProviderError");
+    eq((caught as ProviderError).category, "QuotaError", "the quota diagnosis was lost behind a later tier");
   });
 
   // ---- sharp / libvips: exactly one native copy ----

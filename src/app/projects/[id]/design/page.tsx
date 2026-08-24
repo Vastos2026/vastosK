@@ -329,6 +329,7 @@ function DesignPageContent() {
         if (signatureUnchanged && (existingCard?.generations.length ?? 0) > 0) continue;
 
         useVasto.getState().startGenerating(id, room.id);
+        useVasto.getState().clearRoomError(id, room.id);
         // Omit size entirely when a dimension is still missing, rather than
         // sending a literal "undefined x undefined ft" into the render
         // prompt — see Room.width/height's doc comment. Same helper
@@ -403,7 +404,13 @@ function DesignPageContent() {
               imageKey: gen.key,
             });
           } catch (e) {
-            console.warn(`[generate] room "${room.name}" failed:`, e instanceof Error ? e.message : e);
+            const message = e instanceof Error ? e.message : "Generation failed";
+            console.warn(`[generate] room "${room.name}" failed:`, message);
+            // Also recorded for the UI. Without this the Generate gallery
+            // could only say "Generation failed", with a Retry button that
+            // fails identically — the actual reason (a spent provider
+            // balance, say) reached nothing but the server log.
+            useVasto.getState().setRoomError(id, room.id, message);
           } finally {
             useVasto.getState().stopGenerating(id, room.id);
           }

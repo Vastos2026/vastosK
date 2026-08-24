@@ -196,6 +196,7 @@ export async function runChain<T>(
   setUsed: (model: string, provider: "google" | "runware") => void,
 ): Promise<T> {
   let lastErr: unknown;
+  let quotaErr: ProviderError | undefined;
   for (const step of steps) {
     try {
       const result = await step.run();
@@ -213,6 +214,13 @@ export async function runChain<T>(
       // as before this flag existed; this is a narrow carve-out for one
       // specific failure class, not a broader retry-semantics change.
       if (e instanceof ProviderError && e.nonRecoverable) throw e;
+      // Remember the FIRST quota failure and prefer it at the end. Every tier
+      // in this chain bills the same two accounts, so once one reports an
+      // empty balance the later tiers usually fail too — for their own,
+      // unrelated reasons — and reporting only `lastErr` threw that diagnosis
+      // away. The user would then be told "generation failed" when the true
+      // and actionable answer was "the account is out of credit".
+      if (e instanceof ProviderError && e.category === "QuotaError" && !quotaErr) quotaErr = e;
       lastErr = e;
       console.warn(
         `[ai-provider-chain] ${step.provider}:${step.model} failed, trying next tier:`,
@@ -220,6 +228,7 @@ export async function runChain<T>(
       );
     }
   }
+  if (quotaErr) throw quotaErr;
   if (lastErr instanceof ProviderError) throw lastErr;
   throw new ProviderError(
     "AiProviderError",
@@ -1071,14 +1080,21 @@ export async function generateStructured<T>(
   });
   return instrumented("planning", model, ctx, async () => {
     const parts: GeminiPart[] = [{ text: prompt }];
+    const diagnostics: { quotaExhausted?: boolean } = {};
     const out = await generateJson<T>(parts, {
+      diagnostics,
       deadlineMs,
       temperature: 0.4,
       thinkingBudget: 0,
       maxOutputTokens: 8192,
       responseSchema: schema,
     });
-    if (out === null) throw new ProviderError("AiProviderError", "structured generation failed");
+    if (out === null) {
+      // Quota is the one failure here a user can act on, and generateJson's
+      // null return is otherwise indistinguishable from every other cause.
+      if (diagnostics.quotaExhausted) throw new ProviderError("QuotaError", "Gemini quota exhausted");
+      throw new ProviderError("AiProviderError", "structured generation failed");
+    }
     return out;
   });
 }
