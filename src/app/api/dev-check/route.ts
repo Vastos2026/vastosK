@@ -3317,6 +3317,92 @@ export async function GET() {
     eq((caught as ProviderError).category, "QuotaError", "the quota diagnosis was lost behind a later tier");
   });
 
+  // ---- opening legend is gated on the ledger ----
+  // "A framed recessed panel is a closed door" and "A bright panel is a
+  // window" used to be unconditional. A room with a door but no window still
+  // told the model what a window looks like, which invites it to read any
+  // bright patch in the render as one; a room with NO openings got both
+  // sentences immediately followed by the census saying every wall is solid.
+  for (const [doors, windows] of [[1, 1], [1, 0], [0, 1], [0, 0]] as const) {
+    await checkAsync(`legend matches the ledger: ${doors} door(s), ${windows} window(s)`, async () => {
+      const flux = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider: "runware", hasGreybox: true, ledger: { doors, windows },
+      });
+      const gem = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider: "gemini", hasGreybox: true, ledger: { doors, windows },
+      });
+      for (const [flow, p] of [["FLUX", flux], ["Gemini", gem]] as const) {
+        const low = p.toLowerCase();
+        eq(
+          low.includes("recessed panel is a closed door"),
+          doors > 0,
+          `${flow}: door legend present=${low.includes("recessed panel is a closed door")} but doors=${doors}`,
+        );
+        eq(
+          low.includes("bright panel is a window"),
+          windows > 0,
+          `${flow}: window legend present=${low.includes("bright panel is a window")} but windows=${windows}`,
+        );
+      }
+    });
+  }
+
+  await checkAsync("a room with no openings never mentions a door or a window as a thing it has", async () => {
+    // The contradiction this whole change exists to remove: defining both,
+    // then stating neither exists.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware", hasGreybox: true, ledger: { doors: 0, windows: 0 },
+    });
+    assert(!p.includes("A framed recessed panel"), `door legend survived a 0/0 ledger: ${p}`);
+    assert(!p.includes("A bright panel"), `window legend survived a 0/0 ledger: ${p}`);
+    assert(
+      p.includes("no doors and no windows"),
+      "the positive 'every wall is solid' census must still be present",
+    );
+    // Never left a doubled space or a stranded full stop where the legend was.
+    assert(!/ {2,}/.test(p), `collapsed spacing broke: ${JSON.stringify(p)}`);
+    assert(!/\.\s*\./.test(p), `stranded punctuation where the legend was: ${JSON.stringify(p)}`);
+  });
+
+  await checkAsync("the single-legend Gemini sentence still reads correctly", async () => {
+    // Only the window applies, so it must be capitalised as a sentence
+    // opener rather than left lowercase from the semicolon join.
+    const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "gemini", hasGreybox: true, ledger: { doors: 0, windows: 2 },
+    });
+    assert(p.includes("A bright panel is a window."), `window-only legend was not capitalised: ${p}`);
+    assert(!p.includes("; a bright panel"), "a semicolon join survived with only one legend part");
+  });
+
+  await checkAsync("the clearance clause names only the openings the room has", async () => {
+    // Same phantom-opening problem as the legend, one line further down:
+    // "Leave the doors and windows unblocked" in a room with no window tells
+    // the model a window is there to be kept clear.
+    const cases: [number, number, string[], string[]][] = [
+      [1, 0, ["door"], ["window"]],
+      [0, 1, ["window"], ["door"]],
+      [1, 1, ["door", "window"], []],
+    ];
+    for (const [doors, windows, expect, forbid] of cases) {
+      const p = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider: "runware", hasGreybox: true, ledger: { doors, windows },
+      });
+      const tail = p.slice(p.indexOf("Furnish this"));
+      for (const kind of expect) {
+        assert(tail.includes(kind), `${doors}d/${windows}w: clearance omitted "${kind}": ${tail}`);
+      }
+      for (const kind of forbid) {
+        assert(!tail.includes(kind), `${doors}d/${windows}w: clearance named absent "${kind}": ${tail}`);
+      }
+    }
+    // And nothing at all when the room has neither.
+    const none = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "runware", hasGreybox: true, ledger: { doors: 0, windows: 0 },
+    });
+    const tail = none.slice(none.indexOf("Furnish this"));
+    assert(!tail.includes("unblocked"), `a 0/0 room still got a clearance order: ${tail}`);
+  });
+
   // ---- greybox room scale ----
   // A 10x12 room could not fit a wardrobe once a bed was placed: measured at
   // 0.0 sq ft of legal positions, because the camera's fixed clearance disk
@@ -3494,6 +3580,26 @@ export async function GET() {
     );
   });
 
+  // The structural contract at each ledger combination, so the wording of a
+  // room with only a door, only a window, or neither is reviewable without
+  // building a project that has one. Same purpose as promptPreview above.
+  const legendPreview: Record<string, string> = {};
+  for (const [doors, windows] of [[1, 1], [1, 0], [0, 1], [0, 0]] as const) {
+    try {
+      const full = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+        provider: "runware",
+        hasGreybox: true,
+        ledger: { doors, windows },
+      });
+      const from = full.indexOf("Image 1 is");
+      const to = full.indexOf("Darker grey volumes");
+      legendPreview[`${doors}door_${windows}window`] =
+        from >= 0 && to > from ? full.slice(from, to).trim() : full;
+    } catch (e) {
+      legendPreview[`${doors}door_${windows}window`] = `failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     {
@@ -3502,6 +3608,7 @@ export async function GET() {
       promptPreview,
       promptPreviewChars: promptPreview.length,
       descriptorPreview,
+      legendPreview,
       geminiPromptPreview,
       geminiPromptPreviewChars: geminiPromptPreview.length,
       results,

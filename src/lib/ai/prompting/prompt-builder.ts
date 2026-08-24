@@ -167,8 +167,8 @@ function structuralContract(hasFurniture: boolean, ledger?: GreyboxLedger, room?
   return (
     `Image 1 is an untextured grey massing render of ${subject}, from the exact camera the ` +
     "output must use. Preserve without deviation: camera position, angle and field of view; room " +
-    "proportions and all wall positions; the position, width and height of every opening. A framed " +
-    `recessed panel is a closed door. A bright panel is a window. ${openingCensus(ledger)}` +
+    "proportions and all wall positions; the position, width and height of every opening. " +
+    `${openingLegendProse(ledger)}${openingCensus(ledger)}` +
     `${furnitureClause} Change only surfaces, materials, lighting and furnishing.`
   ).replace(/ {2,}/g, " ");
 }
@@ -211,6 +211,54 @@ function roomOpeningCounts(room: UniversalInputRoom): { doors: number; windows: 
  * functions of the counts and carry their own leading space, so either can be
  * empty without leaving a gap.
  */
+/**
+ * How to READ the greybox: what a door looks like in it, what a window looks
+ * like in it. Shared by both flows so neither can define an opening the other
+ * does not.
+ *
+ * Each sentence is emitted ONLY when the ledger actually contains that kind
+ * of opening. Both used to be unconditional, which was wrong in two ways at
+ * once. A room with a door but no window still carried "A bright panel is a
+ * window", which is a standing invitation to read any bright patch in the
+ * render — a sunlit wall, a pale floor — as a window that is not there. And a
+ * room with NO openings got both sentences immediately followed by the
+ * census saying every wall is solid, so the prompt defined a door and a
+ * window and then denied both existed.
+ *
+ * Returned as parts rather than a finished string because the two flows
+ * punctuate differently: FLUX gets full sentences, the Gemini JSON joins them
+ * with a semicolon inside one field. Same words either way.
+ */
+function openingLegendParts(ledger?: GreyboxLedger): string[] {
+  const { doors, windows } = openingCounts(ledger);
+  const parts: string[] = [];
+  if (doors > 0) parts.push("A framed recessed panel is a closed door");
+  if (windows > 0) parts.push("A bright panel is a window");
+  return parts;
+}
+
+/**
+ * The legend for the Gemini JSON flow: the same parts joined with a semicolon
+ * inside image1's description, lowercasing anything after the first so the
+ * sentence still reads correctly when only ONE of the two applies.
+ * Carries its own leading space, so it can be empty without leaving a gap.
+ */
+function geminiOpeningLegend(ledger?: GreyboxLedger): string {
+  const parts = openingLegendParts(ledger);
+  if (parts.length === 0) return "";
+  const joined = parts
+    .map((part, i) => (i === 0 ? part : part.charAt(0).toLowerCase() + part.slice(1)))
+    .join("; ");
+  return ` ${joined}.`;
+}
+
+/** The legend as FLUX prose: one sentence each, each carrying its own trailing space. */
+function openingLegendProse(ledger?: GreyboxLedger): string {
+  return openingLegendParts(ledger)
+    .map((part) => `${part}. `)
+    .join("");
+}
+
 function doorsClosedClause(doors: number): string {
   return doors > 0 ? " All doors are closed." : "";
 }
@@ -554,7 +602,7 @@ function serviceContentsFor(room: UniversalInputRoom): string | undefined {
 function furnishFullyFor(
   room: UniversalInputRoom,
   hasNamedPieces: boolean,
-  openingCount: number,
+  openings: { doors: number; windows: number },
   dressing: string,
 ): string {
   if (serviceContentsFor(room)) return "";
@@ -577,12 +625,21 @@ function furnishFullyFor(
   // was placed on that path, so there is no user-authored arrangement for a
   // general clearance order to override — and "none of it" would have no
   // antecedent there, since no list was given.
+  //
+  // Names ONLY the kinds this room actually has. Saying "a door or window" in
+  // a room with no window tells the model a window is there to be kept clear,
+  // which is the same phantom-opening problem the legend sentences above were
+  // fixed for — and a clearance order is if anything the more dangerous
+  // place to leave one, because it implies the opening is somewhere specific.
+  const kinds: string[] = [];
+  if (openings.doors > 0) kinds.push("door");
+  if (openings.windows > 0) kinds.push("window");
   const clearance =
-    openingCount === 0
+    kinds.length === 0
       ? ""
       : hasNamedPieces
-        ? " Place none of it in front of a door or window."
-        : " Leave the doors and windows unblocked.";
+        ? ` Place none of it in front of a ${kinds.join(" or ")}.`
+        : ` Leave the ${kinds.map((k) => `${k}s`).join(" and ")} unblocked.`;
   return hasNamedPieces
     ? `Beyond the pieces named above, add the finishing layer — ${dressing} — so the ${label} looks complete.${clearance}`
     : `Furnish this ${label} completely, as a real finished ${label} would be.${clearance}`;
@@ -677,8 +734,7 @@ function buildGeminiPrompt(
         // flows describe image 1 identically.
         `An untextured grey massing render of ${
           room.type?.trim() ? `this exact ${prosaicRoomType(room.type)}` : "this exact room"
-        }, from the exact camera the output must use. ` +
-        "A framed recessed panel is a closed door; a bright panel is a window.",
+        }, from the exact camera the output must use.${geminiOpeningLegend(opts.ledger)}`,
     };
     if (numbered) {
       referenceImages.image2 =
@@ -789,14 +845,11 @@ function buildGeminiPrompt(
   // the Pass B mask ledger with a greybox, the room's own recorded openings
   // without one — so the clearance sentence can only ever mention openings
   // the payload above has already declared.
-  const openingTotal = (() => {
-    const c = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
-    return c.doors + c.windows;
-  })();
+  const openingSplit = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
   const furnishFully = furnishFullyFor(
     room,
     furniture.length > 0 && !!payload.furniture,
-    openingTotal,
+    openingSplit,
     dressingFor(spec, room),
   );
   if (furnishFully) payload.furnishRoomFully = furnishFully;
@@ -1042,14 +1095,11 @@ export async function buildRoomPrompt(
   //    so gating on real placed furniture is exactly "were pieces named".
   //    The opening total is read off the same source this path's census used
   //    — see the identical derivation in buildGeminiPrompt for why.
-  const openingTotal = (() => {
-    const c = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
-    return c.doors + c.windows;
-  })();
+  const openingSplit = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
   const furnishFully = furnishFullyFor(
     room,
     furniture.length > 0 && !!furnitureLine,
-    openingTotal,
+    openingSplit,
     dressingFor(spec, room),
   );
 
