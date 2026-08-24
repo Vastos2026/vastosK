@@ -80,7 +80,7 @@ Real auth now exists (revamp Workstream 2), built on Supabase Auth rather than a
 
 `src/app/api/design-reference/route.ts` backs the Design page's "Upload design reference": a photo of a look the user wants, analysed once (`analyseDesignReference`) into the same six design-look attributes the planning call otherwise infers, cached on the project (`Project.designReference`) and sent alongside the design plan. The uploaded bytes are never persisted to object storage — only a small downscaled preview lives on the local-first project.
 
-The full flow, in order: `/projects/[id]/floor-plan` (Yes/No) → `upload` (detection: one panel showing the image + wall/door/window/room overlay + layer toggles + stats — detected rooms land on the plan directly, no per-room confirmation step here) → `review` (Room Confirmation: rename, type, size, door/window counts, unit selector, delete room, and a manual "Add room" form — name/type/width/height — for anything detection missed) → `furnish` (Furnish gallery, one card per room: renders + caches each room's greybox reference image, then routes into a per-room 3D editor to place furniture — skippable per room, generates fine from an openings-only greybox) → `design` (style/luxury/colour, optional design-reference upload, + one global Additional Requirements box) → `POST /api/design-plan` (`buildUniversalInput` + `runDesignPlanning`, cached on the project via `setDesignPlan`) → `generate` (Room Generation Gallery: `POST /api/generate-room-image`, `buildRoomPrompt` + `provider.generateImage`, one horizontally-scrollable strip of generations per room, oldest→newest, Generate More with its own per-call note) → `generate/[roomId]` (View & Edit: up to 2 numbered lasso regions, `POST /api/edit-room-image`) → `approve` (Final Image Selection, plus `POST /api/enhance-room-image` for a one-shot whole-image enhance) → `walkthrough` (`POST /api/generate-walkthrough`, one 3-second clip per approved image, concatenated). `/api/export-pdf` and `/api/share-link` hang off the finished project. Everything is cached on the local-first `useVasto` project (`universalInput`, `designSpec`, `roomCards`, `walkthrough`) — not yet the real `projects.manifest` row (see the state-machine note below), same situation as before Workstream 8.5.
+The full flow, in order: `/projects/[id]/floor-plan` (Yes/No) → `upload` (detection: one panel showing the image + wall/door/window/room overlay + layer toggles + stats — detected rooms land on the plan directly, no per-room confirmation step here) → `plan` (Plan Editor: draw/adjust each room rectangle and drag its doors and windows onto the walls — this is where the geometry the greybox renders actually comes from; stamps `planConfirmedAt`, which is what the stepper reads) → `review` (Room Confirmation: rename, type, size, door/window counts, unit selector, delete room, and a manual "Add room" form — name/type/width/height — for anything detection missed) → `furnish` (Furnish gallery, one card per room: renders + caches each room's greybox reference image, then routes into a per-room 3D editor to place furniture — skippable per room, generates fine from an openings-only greybox) → `design` (style/luxury/colour, optional design-reference upload, + one global Additional Requirements box) → `POST /api/design-plan` (`buildUniversalInput` + `runDesignPlanning`, cached on the project via `setDesignPlan`) → `generate` (Room Generation Gallery: `POST /api/generate-room-image`, `buildRoomPrompt` + `provider.generateImage`, one horizontally-scrollable strip of generations per room, oldest→newest, Generate More with its own per-call note) → `generate/[roomId]` (View & Edit: up to 2 numbered lasso regions, `POST /api/edit-room-image`) → `approve` (Final Image Selection, plus `POST /api/enhance-room-image` for a one-shot whole-image enhance) → `walkthrough` (`POST /api/generate-walkthrough`, one 3-second clip per approved image, concatenated). `/api/export-pdf` and `/api/share-link` hang off the finished project. Everything is cached on the local-first `useVasto` project (`universalInput`, `designSpec`, `roomCards`, `walkthrough`) — not yet the real `projects.manifest` row (see the state-machine note below), same situation as before Workstream 8.5.
 
 For the prompt-construction rules behind `prompt-builder.ts` and `design-planning.ts` (FLUX's 1,800-char cliff, JSON-vs-prose model handling, negative-instruction avoidance, etc.), see `docs/PROMPTING-RULES.md` — a portable rulebook extracted from this pipeline. Don't restate its content here; point at it.
 
@@ -113,6 +113,45 @@ For the prompt-construction rules behind `prompt-builder.ts` and `design-plannin
 `projects.status` (11-value enum, `supabase/schema.sql`) plus `projects.manifest` (JSONB) exist as columns and are **read and written by nothing**. The TypeScript transition helper that once accompanied them was deleted as dead code; the columns are left alone because the table may hold rows.
 
 Persistence is entirely local-first: every page's state is mirrored to `project_snapshots` (a JSONB blob keyed by the authenticated user's id) via `/api/projects`, and that is the row every other feature resolves against — share links, PDF export and storage-key ownership checks all read it. Moving onto the normalized `projects` table is future work, not a bug.
+
+### Request budgets and quota
+
+Two failure modes that used to reach users as a timeout or as silence:
+
+- **Every `generateJson` call is bounded by a wall clock.** `gemini-client.ts`
+  owns a per-call deadline (`DEFAULT_DEADLINE_MS`, 45s default; routes may
+  pass a tighter or looser `deadlineMs`), a per-attempt abort sized as a share
+  of what is left (`attemptCapMs`), and backoffs clamped to the remaining time
+  (`retryBackoffMs`). Without it the model ladder — 5 attempts on the primary
+  plus 2 on each of three fallbacks — was unbounded, and one spell of
+  `fetch failed` overran the route's `maxDuration`, which the platform
+  returned as a 504. Note that `toErrorResponse` cannot emit 504 at all, so a
+  504 is always the gateway. `parse-plan` runs TWO calls sharing one budget
+  (split 65/35, geometry skipped outright if nothing is left) and declares
+  `maxDuration = 120`; `design-plan` passes an explicit 100s budget.
+- **`QuotaError`** (`ai/errors.ts`) marks a spent provider balance or daily
+  quota. Not retryable, preferred by `runChain` over a later tier's error, and
+  the only non-validation category whose message reaches the browser verbatim
+  — the fixed `QUOTA_MESSAGE`, never upstream text. Detection is
+  `looksLikeQuotaExhaustion`, matched on text because Runware reports it in a
+  task-level error on an HTTP 200 and Google as `RESOURCE_EXHAUSTED` in a 429.
+  It deliberately excludes rate limits, which must stay retryable.
+
+Client-side, in-flight and failed state for a room lives in `store.ts`
+(`generatingRoomIds`, `roomOps`, `roomErrors`) rather than in a page's
+`useState`, so it survives soft navigation. `roomOps`/`generatingRoomIds`
+reset on rehydrate; `roomErrors` does not.
+
+### Dependency constraint: exactly one sharp
+
+`package.json`'s `sharp` MUST satisfy the range Next declares in its own
+`optionalDependencies` (`node -p "require('next/package.json').optionalDependencies.sharp"`).
+Miss it and npm installs a second copy under `next/node_modules` with its own
+native libvips, which yields either a `GLib-GObject-CRITICAL ... VipsInterpretation`
+warning on every sharp call or, on Vercel, `ERR_DLOPEN_FAILED` on the first
+request that touches sharp — with a green build either way. `npm ls sharp`
+must show exactly one non-deduped entry; `/api/dev-check` asserts it. See the
+comment in `next.config.ts` for the full history.
 
 ### Env vars
 

@@ -29,19 +29,16 @@ One route per step, all under `/projects/[id]/`:
 | --- | --- | --- |
 | 1 | `/floor-plan` | Yes/No — do you have a floor plan image to upload |
 | 2 | `/upload` | Upload the plan; one Gemini vision call detects rooms, walls, doors/windows; shown as an overlay with layer toggles |
-| 3 | `/review` | Room Confirmation — rename, retype, resize, edit door/window counts, delete rooms, or add rooms manually (detection misses land here) |
-| 4 | `/furnish` | Furnish gallery, one card per room. Renders a "greybox" 3D reference image per room and lets you optionally place furniture in a per-room 3D editor (`/furnish/[roomId]`). Skippable per room — generation works fine from an openings-only greybox |
-| 5 | `/design` | Pick style/luxury/colour, optionally upload a design-reference photo (`POST /api/design-reference`) whose look gets folded into planning, and write one global "Additional Requirements" note |
-| 6 | (server) | `POST /api/design-plan` — one Gemini structured-output call produces per-room design guidance, cached on the project |
-| 7 | `/generate` | Room Generation Gallery — `POST /api/generate-room-image` per room, horizontally-scrollable strip of generations, oldest→newest, "Generate More" with its own note |
-| 8 | `/generate/[roomId]` | View & Edit — up to 2 numbered lasso regions, `POST /api/edit-room-image` |
-| 9 | `/approve` | Final Image Selection per room; from here, `POST /api/enhance-room-image` can do a one-shot whole-image quality/finishing pass on an approved photo |
-| 10 | `/walkthrough` | `POST /api/generate-walkthrough` — one ~3s cinematic clip per approved room image, concatenated |
+| 3 | `/plan` | Plan Editor — draw/adjust each room rectangle and drag its doors and windows onto the walls. This is where the geometry the greybox renders actually comes from; `planConfirmedAt` is stamped here |
+| 4 | `/review` | Room Confirmation — rename, retype, resize, edit door/window counts, delete rooms, or add rooms manually (detection misses land here) |
+| 5 | `/furnish` | Furnish gallery, one card per room. Renders a "greybox" 3D reference image per room and lets you optionally place furniture in a per-room 3D editor (`/furnish/[roomId]`). Skippable per room — generation works fine from an openings-only greybox |
+| 6 | `/design` | Pick style/luxury/colour, optionally upload a design-reference photo (`POST /api/design-reference`) whose look gets folded into planning, and write one global "Additional Requirements" note |
+| 7 | (server) | `POST /api/design-plan` — one Gemini structured-output call produces per-room design guidance, cached on the project |
+| 8 | `/generate` | Room Generation Gallery — `POST /api/generate-room-image` per room, horizontally-scrollable strip of generations, oldest→newest, "Generate More" with its own note |
+| 9 | `/generate/[roomId]` | View & Edit — up to 2 numbered lasso regions, `POST /api/edit-room-image` |
+| 10 | `/approve` | Final Image Selection per room; from here, `POST /api/enhance-room-image` can do a one-shot whole-image quality/finishing pass on an approved photo |
+| 11 | `/walkthrough` | `POST /api/generate-walkthrough` — one ~3s cinematic clip per approved room image, concatenated |
 | — | `/api/export-pdf`, `/api/share-link` | Export the finished project to PDF; mint an unauthenticated share link (`/s/[token]`) for a client to view the walkthrough |
-
-`src/app/projects/[id]/sketch/page.tsx` (a draw-boundary/calibrate tool) is
-disabled and unlinked by product decision — left in the codebase, not
-deleted, pending a future call on reviving it.
 
 ## Subsystems and their entry points
 
@@ -54,7 +51,7 @@ deleted, pending a future call on reviving it.
 | Rendering (image/video) | `src/lib/render/` | `gemini-image.ts` (Gemini/Nano Banana), `veo-client.ts` (Veo video), `runware-client.ts` (Runware — FLUX.2, Nano Banana Pro/2), `ffmpeg.ts` (clip trim/concat) |
 | Data layer | `src/lib/supabase/` | `server.ts` (service-role, bypasses RLS), `server-client.ts` (cookie-aware, per-request), `browser.ts` (anon key, Realtime only). Supabase is optional everywhere — the app works, degraded, without it |
 | Auth | `src/lib/auth/session.ts`, `src/proxy.ts` | `getCurrentUser`/`requireUser`/`requireRole` is the real (non-optimistic) check — call it in every protected page/route. `proxy.ts` is only a cookie-presence redirect, not a security boundary |
-| API guard | `src/lib/api-guard.ts` | `assertAllowed` centralizes auth + CSRF (same-origin) + per-user rate limit + admin-set spend cap (`checkUsage: true`) for every route that needs it. All 14 routes under `src/app/api/*` use it except `/api/dev-check` (404s outside development) and the public share-asset proxy, which is scoped by its own token allow-list instead |
+| API guard | `src/lib/api-guard.ts` | `assertAllowed` centralizes auth + CSRF (same-origin) + per-user rate limit + admin-set spend cap (`checkUsage: true`) for every route that needs it. All 15 routes under `src/app/api/*` use it except `/api/dev-check` (404s outside development) and the public share-asset proxy, which is scoped by its own token allow-list instead |
 
 ## How to run it
 
@@ -76,6 +73,13 @@ budget/clamp logic, room-type alias resolution, and furniture-catalogue
 mesh generation. Run it after touching prompt text, greybox geometry, or the
 furniture catalogue; a failing route means a check failed, not a network
 error.
+
+It now also covers the Gemini request budget, the quota classifier, and a
+guard that there is exactly one `sharp` install (see the two rules on those
+below). As of 2026-08-24 it reports **189 passed / 0 failed**. Treat any drop
+in that number as a regression, not as flakiness — every check is a pure
+function or a filesystem read, and none of them touch the network or spend
+money.
 
 ## Non-obvious rules a newcomer will otherwise break
 
@@ -108,6 +112,28 @@ for the full rulebook behind the first two:
   lookup. It's an explicit table specifically because substring matching
   would make "Store Room" match "Room" and furnish a room that must stay
   empty.
+- **Every Gemini call is bounded by a wall clock, and nothing may make one
+  without a budget.** The model ladder (5 attempts on the primary, then two
+  each on three fallbacks) has no natural end: one spell of `fetch failed`
+  once cost 11 requests and about 20 seconds of pure backoff PER CALL, twice
+  per extraction, which blew past the route's `maxDuration` and came back to
+  the browser as a gateway 504 while the server carried on retrying a request
+  nobody was waiting for. `gemini-client.ts` now owns a per-call deadline
+  (`DEFAULT_DEADLINE_MS`), a per-attempt abort sized as a share of what is
+  left, and backoffs clamped to the remaining time. Running out of budget
+  produces a graceful "not readable" result, never a 504. The budget lives in
+  the client rather than being passed in per route deliberately — there are
+  six call sites across four routes, and bounded-by-construction beats
+  bounded-by-convention.
+- **There must be exactly one `sharp` install.** Next declares `sharp` in its
+  own `optionalDependencies`; the moment `package.json` stops satisfying that
+  range, npm installs a second copy under `next/node_modules` with its own
+  native libvips. Two libvips in one process produce either a
+  `GLib-GObject-CRITICAL ... VipsInterpretation` warning on every call, or on
+  Vercel an outright `ERR_DLOPEN_FAILED` on the first request that touches
+  sharp — with a perfectly green build either way. Both have happened here.
+  After ANY `next` upgrade, run `npm ls sharp` and confirm one non-deduped
+  entry; `/api/dev-check` asserts it too.
 - **Prompt template wording is data, not code** — it lives in the
   `prompt_templates` table (versioned, `published`-gated), with hardcoded
   fallbacks in `templates.ts` only for when Supabase is unconfigured. Don't
@@ -141,6 +167,109 @@ Three call families, routed differently:
 See `src/lib/render/runware-client.ts`'s header comment and `CLAUDE.md`'s
 "AI provider layer" for the exact env-var fallback chain.
 
+## What the user sees when something fails
+
+Errors are categorised (`src/lib/ai/errors.ts`), and the category — not the
+message text — decides what reaches the browser. This matters because upstream
+error strings routinely carry account ids, absolute server paths and provider
+names, none of which is a customer's business.
+
+| Category | Status | What the user sees |
+| --- | --- | --- |
+| `ValidationError` | 400 | the real message — it describes what was wrong with their own request |
+| `QuotaError` | 429 | the fixed sentence `Quota limit hit. Contact Vastos Admin` |
+| everything else | 502 / 500 | a generic `<context> failed`; the real detail goes to the server log only |
+
+`QuotaError` is the newest and the one worth understanding. It means a
+provider account is out of credit or a daily API quota is spent, and it is
+handled specially in three places:
+
+- It is **not retryable**. Every retry and every fallback tier bills the same
+  two accounts, so retrying an empty balance only fails slower.
+- `runChain` **prefers it over the last error**. Once one tier reports no
+  credit the later tiers usually fail too, for their own unrelated reasons,
+  and reporting only the last one threw away the single actionable diagnosis.
+- The message is a **constant**, never the upstream text, so no provider name
+  or account detail crosses into the browser on a failure path.
+
+Detection is text-matching (`looksLikeQuotaExhaustion`) because neither
+provider gives a stable machine-readable marker everywhere: Runware reports a
+spent balance as a task-level error inside an HTTP **200**, Google as a
+`RESOURCE_EXHAUSTED` status inside a 429. The matcher is deliberately narrow —
+"rate limit" and "too many requests" are excluded, because a per-minute limit
+clears on its own and must stay retryable. `/api/dev-check` asserts both
+directions, and the negative direction is the important one.
+
+Progress state for a room lives in the store, not in a page's `useState`
+(`generatingRoomIds` for generation, `roomOps` for edit/enhance, `roomErrors`
+for the last failure). A local flag disappeared the moment you navigated away,
+so leaving mid-Enhance and returning made the screen look idle even though the
+request was still running — the work itself was never lost, because the
+completion path writes through a store action that does not care whether the
+component is still mounted. `roomOps` and `generatingRoomIds` are cleared on
+rehydrate (a page reload destroys both the request and the only code that
+would clear the flag); `roomErrors` is deliberately kept, because a failure is
+a fact about what happened, not a request still in flight.
+
+## What the AI actually costs
+
+Two providers, and you have very different visibility into each.
+
+**Runware** (all image and video generation) is prepaid and metered per
+generation — that balance is the one that runs out in practice, and running it
+out is what produces the `QuotaError` above.
+
+**Google AI Studio / Gemini** handles every text-and-vision-to-text call, and
+is billed per token. There are **three Gemini calls per project**:
+
+| # | Call | Shape |
+| --- | --- | --- |
+| 1 | floor-plan extraction | one ~1280px JPEG + a short prompt, structured JSON out |
+| 2 | opening geometry | the same image again + a prompt, structured JSON out |
+| 3 | design planning | text only, structured JSON out |
+
+Rough order of magnitude at posted rates, on stated assumptions (roughly 4k
+input and 11k output tokens across all three calls, output dominating because
+thinking tokens bill at the output rate):
+
+| Landing model | Per project | Per 1,000 projects |
+| --- | --- | --- |
+| `gemini-2.5-flash` / `gemini-3.5-flash-lite` ($0.30 / $2.50 per 1M) | ~$0.03 | ~$29 |
+| `gemini-3.5-flash` ($1.50 / $9.00 per 1M) | ~$0.10 | ~$105 |
+
+Treat these as order-of-magnitude. Google does not itemise how many tokens a
+1280px image costs, so the input side rests on an assumption; the output side,
+which dominates, is firmer.
+
+Three things about this are genuinely uncertain and should be checked against
+the live account rather than trusted from any document:
+
+- **Free-tier request limits are no longer published.** Google moved per-model
+  RPM/RPD/TPM off its public rate-limits page onto the authenticated
+  dashboard at `aistudio.google.com/rate-limit`. Any RPD number you find in a
+  blog post is unverifiable. So "how many projects per day fit in the free
+  tier" cannot be answered from documentation — read it off that dashboard
+  with the real key.
+- **`gemini-flash-latest` is an alias whose target Google can move without
+  telling you.** It was repointed to `gemini-3.5-flash` in May 2026; whether
+  the August 2026 `gemini-3.7-flash` release moved it again is not stated
+  anywhere official. Since the alias is billed at whatever it resolves to, the
+  price of a call can change under a deploy that changed nothing. **Pinning
+  `GEMINI_MODEL` to an explicit version is the recommended change before
+  taking real customers** — it costs the same but stops the bill and the
+  behaviour moving on their own. Worth noting the fallback ladder in
+  `gemini-client.ts` lists `gemini-flash-latest` first and `gemini-3.5-flash`
+  second: if the alias currently resolves to 3.5-flash, the first two tiers
+  are the same model and the ladder is one tier shorter than it looks.
+- **Billing has no hard spend cap.** Google Cloud budgets raise *alerts*, they
+  do not stop the meter. The app's own per-user cap (`profiles.usage_limit_usd`,
+  enforced by `assertAllowed({ checkUsage: true })`) is the only actual
+  ceiling, and it is per user, not per account.
+
+Before taking paying customers: enable billing on the Google project (the free
+tier's undocumented daily caps are not something to run a product on), pin the
+model version, and set a budget alert even though it will not stop anything.
+
 ## Known gaps and deliberate decisions
 
 - **Two design-planning implementations exist; only one is live.**
@@ -161,3 +290,30 @@ See `src/lib/render/runware-client.ts`'s header comment and `CLAUDE.md`'s
   before deploying anywhere without a persistent filesystem.
 - **No cost/usage figures are ever shown to a `user`** — that surface exists
   only at `/console` (`master` role).
+- **`DEBUG_PROMPTS=1` is currently ON in `.env.local`** (enabled 2026-08-24 at
+  the owner's request, to read assembled prompts in the terminal). It prints
+  every prompt the app sends, including users' free-text notes, to the server
+  console, and it is read once at module load — changing it needs a dev-server
+  restart. **Remove it before production.**
+
+## Where this stands
+
+Last verified 2026-08-24, on `main`, nothing pushed to origin:
+
+- `tsc` clean, `npm run lint` clean, production build clean,
+  `/api/dev-check` 189 passed / 0 failed.
+- `npm audit --omit=dev` reports 0 vulnerabilities.
+- Next 16.3.2, sharp 0.35.3 (single install, libvips 8.18.3), Node 24 local.
+
+Owner actions still outstanding, none of them code:
+
+1. Run `supabase/schema.sql` in the Supabase SQL editor. Until it runs, an
+   older database may still carry a permissive `project_snapshots` read
+   policy, which would let any holder of the publishable key — a key that
+   ships in the browser bundle by design — read every user's project data.
+   Read the cautions in `README.md` first; two `drop column` statements in
+   that file destroy data if those columns are still populated.
+2. Decide the Gemini billing and model-pinning questions in "What the AI
+   actually costs" above.
+3. Unset `DEBUG_PROMPTS` before going live.
+4. `git push origin main`.
