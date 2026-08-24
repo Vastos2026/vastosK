@@ -55,7 +55,19 @@ import type {
 import { assertGenerationAspect } from "@/lib/render/runware-client";
 // runChain is pure fallback-chain control flow (stub steps below make no
 // network call); ProviderError is the plain error class it inspects.
-import { runChain, type ChainStep, buildEnhancePrompt } from "@/lib/ai/provider";
+import { runChain, type ChainStep, buildEnhancePrompt, extractOpeningGeometry } from "@/lib/ai/provider";
+// The Gemini ladder's wall-clock budget arithmetic. Pure functions and plain
+// constants — importing them makes no network call and needs no API key.
+import {
+  ATTEMPT_SHARE,
+  DEFAULT_DEADLINE_MS,
+  MIN_ATTEMPT_MS,
+  attemptCapMs,
+  retryBackoffMs,
+} from "@/lib/pipeline/gemini-client";
+import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ProviderError } from "@/lib/ai/errors";
 // planCropEdit is pure crop/pad/prompt-assembly work (sharp only) — no
 // network call, safe to exercise here like the other pure functions above.
@@ -3137,6 +3149,126 @@ export async function GET() {
   } catch (e) {
     geminiPromptPreview = `preview failed: ${e instanceof Error ? e.message : String(e)}`;
   }
+
+  // ---- Gemini request budget (the "Extraction returned 504" fix) ----
+  // The ladder is 5 attempts on the primary model plus 2 on each of three
+  // fallbacks. Left unbounded that is 11 requests and ~19.5s of pure backoff
+  // per call, twice per extraction, which overran the route's maxDuration and
+  // came back to the browser as a gateway 504 while the server kept retrying
+  // a request nobody was waiting for. These assert the bound actually holds.
+  check("no attempt may outlive the budget it was given", () => {
+    for (const budget of [3_000, 10_000, 45_000, 100_000]) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const cap = attemptCapMs(budget, attempt, 5);
+        assert(cap <= budget, `cap ${cap} exceeded budget ${budget} at attempt ${attempt}`);
+        assert(cap > 0, `cap must be positive, got ${cap}`);
+      }
+    }
+  });
+
+  check("the final attempt gets the whole remainder", () => {
+    eq(attemptCapMs(40_000, 5, 5), 40_000, "last attempt is not capped below the remainder");
+    eq(attemptCapMs(40_000, 2, 5), Math.floor(40_000 * ATTEMPT_SHARE), "earlier attempt takes its share");
+  });
+
+  check("an early attempt always leaves room for a retry", () => {
+    // The whole point of capping below the remainder: one hung socket must
+    // not consume every attempt the ladder had.
+    const budget = 60_000;
+    const cap = attemptCapMs(budget, 1, 5);
+    assert(cap < budget, "first attempt must not be allowed to spend the entire budget");
+    assert(budget - cap >= MIN_ATTEMPT_MS, "what is left after a hung first attempt is unusable");
+  });
+
+  check("backoff never sleeps past the deadline", () => {
+    for (const remaining of [0, 1_000, MIN_ATTEMPT_MS, 4_000, 20_000]) {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const wait = retryBackoffMs(remaining, attempt, 5);
+        assert(wait >= 0, `negative backoff ${wait}`);
+        assert(
+          wait === 0 || wait <= remaining - MIN_ATTEMPT_MS,
+          `backoff ${wait} leaves under ${MIN_ATTEMPT_MS}ms of ${remaining}ms for the attempt it precedes`,
+        );
+      }
+    }
+  });
+
+  check("backoff is refused outright when the time is already gone", () => {
+    eq(retryBackoffMs(MIN_ATTEMPT_MS, 1, 5), 0, "slept with nothing left for the attempt");
+    eq(retryBackoffMs(0, 1, 5), 0, "slept with no budget at all");
+    eq(retryBackoffMs(60_000, 5, 5), 0, "retried after the final attempt");
+  });
+
+  check("the default budget fits inside the shortest route that uses it", () => {
+    // Every route calling generateJson declares maxDuration >= 60s. A default
+    // budget at or above that would let a call outrun its own route, which is
+    // the bug this whole section exists to prevent.
+    assert(
+      DEFAULT_DEADLINE_MS < 60_000,
+      `DEFAULT_DEADLINE_MS ${DEFAULT_DEADLINE_MS} does not fit inside a 60s route`,
+    );
+    assert(MIN_ATTEMPT_MS < DEFAULT_DEADLINE_MS, "minimum attempt exceeds the whole default budget");
+    assert(ATTEMPT_SHARE > 0 && ATTEMPT_SHARE < 1, "attempt share must leave something for a retry");
+  });
+
+  await checkAsync("opening geometry is skipped, not defaulted, when no budget is left", async () => {
+    // The SECOND Gemini call of an extraction runs on whatever the first left
+    // behind. A non-positive budget must mean "skip" — treating it as "use
+    // the default" would hand it a fresh 45s and reinstate the overrun.
+    // Returns without a network call, so this is safe with or without a key.
+    for (const budget of [0, -1, -30_000]) {
+      const started = Date.now();
+      const out = await extractOpeningGeometry(Buffer.alloc(0), "image/png", ["Hall"], undefined, budget);
+      eq(out.roomBoxes.length, 0, `budget ${budget} returned room boxes`);
+      eq(out.openings.length, 0, `budget ${budget} returned openings`);
+      assert(Date.now() - started < 1_000, `budget ${budget} did work instead of skipping`);
+    }
+  });
+
+  // ---- sharp / libvips: exactly one native copy ----
+  check("only one sharp install, so only one libvips loads", () => {
+    // Next declares sharp in its OWN optionalDependencies. The moment
+    // package.json's range stops satisfying Next's, npm installs a SECOND
+    // copy under next/node_modules with its own native libvips — and two
+    // libvips in one process produce either a GLib-GObject-CRITICAL
+    // "VipsInterpretation" warning on every sharp call, or on Vercel an
+    // outright ERR_DLOPEN_FAILED on the first request that touches sharp.
+    // Both have happened in this repo. Checked two ways: the artefact that
+    // actually breaks things (a nested install), and the declaration drift
+    // that causes it, so a `next` upgrade that moves the range fails here
+    // rather than in production.
+    const req = createRequire(import.meta.url);
+    const root = process.cwd();
+    for (const nested of [
+      join(root, "node_modules", "next", "node_modules", "sharp"),
+      join(root, "node_modules", "next", "node_modules", "@img"),
+    ]) {
+      // Includes npm's dot-prefixed staging directories: on Windows npm
+      // regularly fails to clean those up (the DLL is still open in a running
+      // process) and leaves a whole second libvips behind under a name plain
+      // `ls` hides. Found exactly that way while fixing this.
+      assert(
+        !existsSync(nested),
+        `a second sharp/libvips lives at ${nested} — delete it, and if it comes back, align package.json's ` +
+          "sharp range with next's and re-run npm install",
+      );
+    }
+    const nextPkg = req("next/package.json") as {
+      version: string;
+      optionalDependencies?: Record<string, string>;
+    };
+    const wanted = nextPkg.optionalDependencies?.sharp;
+    assert(!!wanted, "next no longer declares sharp in optionalDependencies — this check needs updating");
+    const ours = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    }).dependencies.sharp;
+    eq(
+      ours,
+      wanted,
+      `package.json pins sharp "${ours}" but next ${nextPkg.version} declares "${wanted}" — ` +
+        "npm will stop deduping and install two native libvips builds",
+    );
+  });
 
   const failed = results.filter((r) => !r.ok);
   return Response.json(

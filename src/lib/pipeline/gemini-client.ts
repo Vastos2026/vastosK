@@ -23,6 +23,79 @@ const DEFAULT_MODEL = "gemini-flash-latest";
 // for any project/key that still has access ahead of its shutdown date.
 const FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
 
+/**
+ * Wall-clock budget for ONE generateJson call — the whole ladder, across
+ * every model and every retry.
+ *
+ * Without it the ladder is unbounded: the primary model gets 5 attempts with
+ * 1.5+3+4.5+6 = 15s of backoff, then three fallback models get 2 attempts
+ * each, so a single sustained transport fault ("fetch failed") costs 11
+ * requests and ~19.5s of pure sleeping BEFORE counting the attempts, per
+ * call. `runPlanExtraction` makes two such calls back to back, so one bad
+ * network minute ran the route well past its `maxDuration` and the platform
+ * killed it mid-flight — that is the "Extraction returned 504" the user
+ * sees, and the reason the server log keeps printing retries for a request
+ * nobody is waiting on any more. `toErrorResponse` cannot produce a 504; it
+ * only ever emits 400/500/502, so a 504 is always the gateway, never us.
+ *
+ * The budget lives HERE rather than being threaded in from each route
+ * because there are six call sites across four API routes and nothing stops
+ * a seventh being added without one. Bounded by construction beats bounded
+ * by convention. Routes may still pass a tighter `deadlineMs`.
+ */
+export const DEFAULT_DEADLINE_MS = 45_000;
+
+/**
+ * Share of the remaining budget one attempt may take while retries are still
+ * on the table. A dead socket does not fail fast — undici sits on a stalled
+ * connection far longer than any request deadline — so without a per-attempt
+ * abort a single hung attempt eats the whole budget and the retry ladder
+ * never runs at all.
+ *
+ * Expressed as a FRACTION rather than a fixed number of seconds on purpose.
+ * A fixed ceiling has to be guessed, and guessing low silently kills calls
+ * that are legitimately slow (a dense plan really is a 20-40s vision read),
+ * which would be a worse bug than the one this file is fixing. A fraction
+ * cannot be wrong that way: it always adapts to whatever budget the route
+ * actually gave, and the last attempt gets the remainder outright.
+ */
+export const ATTEMPT_SHARE = 0.6;
+
+/** Don't START an attempt (or a backoff sleep) that can't plausibly finish. */
+export const MIN_ATTEMPT_MS = 3_000;
+
+const msLeft = (deadline: number) => deadline - Date.now();
+
+/**
+ * How long one attempt may take. A share of what's LEFT while retries remain,
+ * and the whole remainder on the final attempt, so no attempt can outlive the
+ * ladder it belongs to while an early hang still leaves something for a retry.
+ * Pure so /api/dev-check can assert it directly — it is the one piece of
+ * arithmetic in the ladder that can silently go wrong.
+ */
+export function attemptCapMs(budget: number, attempt: number, maxAttempts: number): number {
+  if (attempt >= maxAttempts) return budget;
+  return Math.max(MIN_ATTEMPT_MS, Math.floor(budget * ATTEMPT_SHARE));
+}
+
+/**
+ * How long to wait before the next attempt, given the time ACTUALLY left once
+ * this one has failed (not the budget it started with — a capped-out attempt
+ * has already spent most of it, and planning the sleep against the stale
+ * figure is how a backoff outlives its own deadline).
+ *
+ * Returns 0 to mean "don't retry": either this was the last attempt, or
+ * waiting would leave too little time for the attempt it precedes. Sleeping
+ * into a deadline already lost is precisely how the old unbounded ladder
+ * burned a minute on a request nobody was waiting for any more.
+ */
+export function retryBackoffMs(remaining: number, attempt: number, maxAttempts: number): number {
+  if (attempt >= maxAttempts) return 0;
+  const room = remaining - MIN_ATTEMPT_MS;
+  if (room <= 0) return 0;
+  return Math.min(attempt * 1500, room);
+}
+
 export type GeminiPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } };
@@ -64,6 +137,13 @@ export interface GenerateOptions {
    */
   responseSchema?: object;
   signal?: AbortSignal;
+  /**
+   * Wall-clock budget for this whole call (every model, every retry).
+   * Defaults to DEFAULT_DEADLINE_MS. Set it from a route to whatever is
+   * safely under that route's `maxDuration`, leaving room for the work
+   * either side of the call — see /api/parse-plan.
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -85,13 +165,29 @@ export async function generateJson<T>(
   const primary = opts.model || process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
   const models = [primary, ...FALLBACK_MODELS].filter((m, i, a) => a.indexOf(m) === i);
 
+  // One budget for the WHOLE ladder, fixed here so that walking to a fallback
+  // model can never extend it. See DEFAULT_DEADLINE_MS for why this exists.
+  const deadline = Date.now() + Math.max(MIN_ATTEMPT_MS, opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
+
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
+    // Never start a model we have no time to hear back from. Returning null
+    // here routes callers onto their own fallback (for extraction: the manual
+    // room-entry path) instead of letting the request overrun its
+    // maxDuration and come back to the browser as a gateway 504.
+    if (msLeft(deadline) < MIN_ATTEMPT_MS) {
+      console.warn(`[gemini] budget exhausted before ${model}; giving up with ${models.length - mi} model(s) untried`);
+      return null;
+    }
     // The user's chosen model gets the most retries; fallbacks fewer (fail over
     // quickly rather than stack long backoffs three times).
-    const r = await callModel<T>(model, parts, opts, key, mi === 0 ? 5 : 2);
+    const r = await callModel<T>(model, parts, opts, key, mi === 0 ? 5 : 2, deadline);
     if (r.status === "ok") return r.value;
     if (r.status === "error") return null; // bad key / 400 / bad JSON — same on every model
+    if (r.status === "expired") {
+      console.warn(`[gemini] budget exhausted on ${model}; giving up rather than overrunning the request`);
+      return null;
+    }
     // "overloaded" (429/503/network) OR "unavailable" (404 retired model):
     // try the next model instead of aborting the whole read.
     if (mi < models.length - 1) {
@@ -105,6 +201,9 @@ type ModelResult<T> =
   | { status: "ok"; value: T }
   | { status: "overloaded" }
   | { status: "unavailable" }
+  /** Ran out of wall-clock budget — distinct from "overloaded" because no
+   *  other model can help either; the time is simply gone. */
+  | { status: "expired" }
   | { status: "error" };
 
 /** One model attempt with its own retry loop. Distinguishes a retryable overload
@@ -115,6 +214,7 @@ async function callModel<T>(
   opts: GenerateOptions,
   key: string,
   maxAttempts: number,
+  deadline: number,
 ): Promise<ModelResult<T>> {
   const url = `${API_BASE}/${model}:generateContent`;
 
@@ -158,20 +258,41 @@ async function callModel<T>(
 
   let res: Response | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const budget = msLeft(deadline);
+    if (budget < MIN_ATTEMPT_MS) return { status: "expired" };
+    // Two independent reasons to abort: the caller's own signal, and our own
+    // per-attempt cap. The cap is a share of what's LEFT, so the last attempt
+    // gets the remainder and none can outlive the ladder it belongs to —
+    // while an earlier one still leaves something for a retry.
+    const attemptTimeout = AbortSignal.timeout(attemptCapMs(budget, attempt, maxAttempts));
+    const signal = opts.signal ? AbortSignal.any([opts.signal, attemptTimeout]) : attemptTimeout;
     try {
       res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: opts.signal,
+        signal,
         body,
       });
     } catch (e) {
-      console.warn(`[gemini] ${model} request failed (attempt ${attempt}/${maxAttempts}):`, (e as Error).message);
-      if (attempt < maxAttempts) {
-        await sleep(attempt * 1500);
+      // Distinguish "the caller gave up" from "we hit our own cap" from a
+      // plain transport error: only the last two are ours to retry, and a
+      // caller abort must not be retried at all.
+      if (opts.signal?.aborted) return { status: "error" };
+      const timedOut = attemptTimeout.aborted;
+      console.warn(
+        `[gemini] ${model} request ${timedOut ? "timed out" : "failed"} ` +
+          `(attempt ${attempt}/${maxAttempts}, ${Math.round(msLeft(deadline) / 1000)}s budget left):`,
+        (e as Error).message,
+      );
+      const backoff = retryBackoffMs(msLeft(deadline), attempt, maxAttempts);
+      if (backoff > 0) {
+        await sleep(backoff);
         continue;
       }
-      return { status: "overloaded" }; // network blip — let the caller try another model
+      // Transport failure, not a model verdict. Reported as "overloaded" so
+      // the caller still walks its fallback ladder (a blip may clear on the
+      // next request); the budget above is what bounds that, not this.
+      return msLeft(deadline) < MIN_ATTEMPT_MS ? { status: "expired" } : { status: "overloaded" };
     }
     if (res.ok) break;
 
@@ -184,7 +305,16 @@ async function callModel<T>(
       return { status: "overloaded" };
     }
     if ((res.status === 429 || res.status === 503) && attempt < maxAttempts) {
-      const delayMs = Math.min(retryDelayMs(errText) ?? attempt * 3000, 20000);
+      // Server-suggested delay, but never longer than the budget left for the
+      // attempt it precedes — Gemini's RetryInfo routinely asks for more time
+      // than a 60s route has, and honouring that verbatim guaranteed the
+      // overrun this deadline exists to prevent.
+      const room = msLeft(deadline) - MIN_ATTEMPT_MS;
+      const delayMs = Math.min(retryDelayMs(errText) ?? attempt * 3000, 20_000, room);
+      if (delayMs <= 0) {
+        console.warn(`[gemini] ${model} → ${res.status}; no budget left to retry`);
+        return { status: "expired" };
+      }
       console.warn(
         `[gemini] ${model} → ${res.status}; retrying in ${Math.round(delayMs / 1000)}s ` +
           `(attempt ${attempt}/${maxAttempts})`,
@@ -203,8 +333,16 @@ async function callModel<T>(
 
   let payload: GeminiResponse;
   try {
+    // The per-attempt signal above is still attached to this response's body
+    // stream, so a reply whose headers arrive fast but whose body stalls is
+    // bounded too — otherwise the one place the cap doesn't reach is the
+    // place a truncated 65k-token JSON read is most likely to hang.
     payload = (await res.json()) as GeminiResponse;
-  } catch {
+  } catch (e) {
+    if ((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError") {
+      console.warn(`[gemini] ${model} response body aborted before it finished`);
+      return msLeft(deadline) < MIN_ATTEMPT_MS ? { status: "expired" } : { status: "overloaded" };
+    }
     return { status: "error" };
   }
 

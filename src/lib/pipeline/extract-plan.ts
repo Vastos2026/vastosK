@@ -31,6 +31,13 @@ export interface ExtractPlanInput {
   /** the active project category's room-type list, e.g. from getProjectTypeConfig(category).roomTypes */
   roomTypeHints: string[];
   ctx?: CallContext;
+  /**
+   * Wall-clock budget for the WHOLE extraction — both Gemini calls together.
+   * Set by the route from its own `maxDuration`, minus the sharp/storage work
+   * either side. Omitted falls back to each call's own default, which is only
+   * right for a caller that isn't inside an HTTP request.
+   */
+  deadlineMs?: number;
 }
 
 export interface ExtractPlanResult {
@@ -45,7 +52,22 @@ const GRID_GAP_FT = 2;
 const GRID_COLS = 4;
 
 export async function runPlanExtraction(input: ExtractPlanInput): Promise<ExtractPlanResult> {
-  const raw = await extractFloorPlan(input.bytes, input.mimeType, input.roomTypeHints, input.ctx);
+  // Both Gemini calls below share ONE budget, tracked as an absolute instant
+  // so the second call gets what the first actually left rather than a fresh
+  // allowance of its own. Split 2:1 in favour of extraction: rooms are the
+  // load-bearing output (without them there is nothing to place), whereas
+  // geometry is best-effort and degrades to the manual "Place" flow.
+  const started = Date.now();
+  const budget = input.deadlineMs;
+  const spent = () => Date.now() - started;
+
+  const raw = await extractFloorPlan(
+    input.bytes,
+    input.mimeType,
+    input.roomTypeHints,
+    input.ctx,
+    budget === undefined ? undefined : Math.round(budget * 0.65),
+  );
 
   if (!raw.readable || raw.rooms.length === 0) {
     return {
@@ -66,6 +88,7 @@ export async function runPlanExtraction(input: ExtractPlanInput): Promise<Extrac
     input.mimeType,
     raw.rooms.map((r) => r.name),
     input.ctx,
+    budget === undefined ? undefined : budget - spent(),
   );
   const roomsWithGeometry = mergeGeometry(raw.rooms, geometry);
 

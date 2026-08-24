@@ -20,6 +20,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
+/**
+ * Budget for the one Design Planning call, inside `maxDuration` above with
+ * room to spare for input validation and the response. Set explicitly rather
+ * than left on gemini-client's 45s default, because this call is the slowest
+ * structured read in the app (a whole project's per-room guidance in one
+ * reply) and capping it at the default could kill a legitimately slow plan.
+ */
+const PLANNING_BUDGET_MS = 100_000;
+
 interface Body {
   projectId?: string;
   category?: string;
@@ -91,7 +100,7 @@ export async function POST(request: Request) {
     // in the pipeline (prompt-builder's project-type/room-type naming, the
     // 300-char brief budget, the furniture-seeding fix) is identical between
     // the two worktrees — this is the one line that differs.
-    const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id });
+    const designSpec = await runDesignPlanning(universalInput, { projectId, userId: guard.id }, PLANNING_BUDGET_MS);
     return Response.json({ universalInput, designSpec });
   } catch (e) {
     const { status, body } = toErrorResponse(e, "Design planning");

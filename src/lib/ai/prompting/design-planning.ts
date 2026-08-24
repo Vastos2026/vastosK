@@ -91,6 +91,12 @@ const DESIGN_SPEC_SCHEMA = {
 export async function runDesignPlanning(
   input: UniversalInput,
   ctx?: CallContext,
+  /**
+   * Wall-clock budget for the Gemini call below, so the route's own
+   * `maxDuration` — not the provider's retry ladder — decides when this
+   * gives up. See gemini-client's DEFAULT_DEADLINE_MS.
+   */
+  deadlineMs?: number,
 ): Promise<DesignSpecification> {
   const planning = await getPlanningTemplate(input.project.category);
 
@@ -169,7 +175,7 @@ in this room is fixed by a reference image and an invented piece would land on t
 a window. No sentence, no adjectives about style, just the objects.`;
 
   const prompt = await withSystemPreamble(body);
-  const spec = await generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx);
+  const spec = await generateStructured<DesignSpecification>(prompt, DESIGN_SPEC_SCHEMA, ctx, deadlineMs);
   // The prompt asks for these limits; a hard clamp is what guarantees them.
   // buildRoomPrompt's 1800-char assert throws and fails the job, so an
   // overlong brief must not be able to reach it.

@@ -8,7 +8,28 @@ import { requireOwnedProject } from "@/lib/supabase/projects";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Extraction is TWO Gemini vision calls back to back (rooms, then opening
+// geometry). At 60s a dense plan could not fit both even on a healthy
+// network — the second call was routinely what pushed the request over and
+// produced the gateway 504 — so the ceiling is raised and the calls are given
+// an explicit budget inside it (below) rather than being left unbounded.
+export const maxDuration = 120;
+
+/**
+ * How long extraction's two Gemini calls may take between them, leaving
+ * headroom inside `maxDuration` for the work either side (form parse, sharp
+ * normalise, putObject, recordGeneration) plus the platform's own overhead.
+ *
+ * This is what stops a bad network minute becoming a gateway 504: the Gemini
+ * ladder is otherwise unbounded (see gemini-client's DEFAULT_DEADLINE_MS),
+ * so it would happily still be retrying long after the platform had killed
+ * the request and shown the user "Extraction returned 504". Running out of
+ * budget now produces `readable: false` instead, which the upload page
+ * already handles — it routes to manual room entry.
+ *
+ * Keep it in step with `maxDuration` above if that ever changes.
+ */
+const EXTRACTION_BUDGET_MS = 100_000;
 
 const MIN_LONG_SIDE = 1400;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -121,6 +142,7 @@ export async function POST(request: Request) {
       fileName: file.name,
       roomTypeHints,
       ctx: { userId: guard.id },
+      deadlineMs: EXTRACTION_BUDGET_MS,
     });
 
     // Thread the original upload's storage key onto the plan so a later PDF

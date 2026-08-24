@@ -367,6 +367,8 @@ export async function extractFloorPlan(
   mimeType: string,
   roomTypeHints: string[],
   ctx?: CallContext,
+  /** Wall-clock budget for this call's whole model ladder — see gemini-client's DEFAULT_DEADLINE_MS. */
+  deadlineMs?: number,
 ): Promise<RawExtraction> {
   if (!geminiConfigured()) {
     throw new ProviderError("ValidationError", "GEMINI_API_KEY is not configured");
@@ -403,6 +405,7 @@ Report only what you can actually see. Never fabricate a room, dimension, or ope
     const raw = await generateJson<RawExtractionResponse>(parts, {
       temperature: 0.1,
       thinkingBudget: 0,
+      deadlineMs,
       // Dense plans (many rooms, each with a full opening list) were hitting
       // MAX_TOKENS and getting truncated/salvaged instead of returning every
       // room. Extraction correctness matters more than output-token cost —
@@ -541,9 +544,22 @@ export async function extractOpeningGeometry(
   mimeType: string,
   roomNames: string[],
   ctx?: CallContext,
+  /**
+   * Wall-clock budget for this call's whole model ladder. This is the SECOND
+   * Gemini call of an extraction, so it runs on whatever the first one left
+   * behind; a non-positive budget means "no time, skip it" rather than "use
+   * the default", which would reintroduce the overrun this guards against.
+   * Skipping is already a supported outcome — geometry is best-effort and
+   * its absence just routes rooms to the manual "Place" flow.
+   */
+  deadlineMs?: number,
 ): Promise<RawGeometry> {
   const empty: RawGeometry = { roomBoxes: [], openings: [] };
   if (!geminiConfigured() || roomNames.length === 0) return empty;
+  if (deadlineMs !== undefined && deadlineMs <= 0) {
+    console.warn("[extract] no budget left for opening geometry; rooms will need manual placement");
+    return empty;
+  }
 
   try {
     const img = await downscaleForGemini(bytes);
@@ -579,6 +595,7 @@ Be conservative — omit an entry rather than guess if you're not confident.`;
         temperature: 0.1,
         maxOutputTokens: 65536,
         responseSchema: GEOMETRY_SCHEMA,
+        deadlineMs,
       });
       if (!raw) return empty;
 
@@ -1042,6 +1059,8 @@ export async function generateStructured<T>(
   prompt: string,
   schema: object,
   ctx?: CallContext,
+  /** Wall-clock budget for this call's whole model ladder — see gemini-client's DEFAULT_DEADLINE_MS. */
+  deadlineMs?: number,
 ): Promise<T> {
   if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
@@ -1053,6 +1072,7 @@ export async function generateStructured<T>(
   return instrumented("planning", model, ctx, async () => {
     const parts: GeminiPart[] = [{ text: prompt }];
     const out = await generateJson<T>(parts, {
+      deadlineMs,
       temperature: 0.4,
       thinkingBudget: 0,
       maxOutputTokens: 8192,
