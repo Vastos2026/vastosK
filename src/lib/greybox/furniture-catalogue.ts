@@ -143,7 +143,7 @@ function buildLeggedSlab(
  * rendered as a wide square slab rather than a bed and read wrong in the
  * reference image. Now a real king: 6.3ft across by 6.8ft head to foot.
  */
-const BED_W = 6.3;
+const BED_W = 5.0;
 // Trimmed 6.8 -> 6.5 (81.6in -> 78in). 6.8ft was slightly over a real
 // mattress run and the bed was eating more floor than it should in the
 // small-to-average rooms most plans actually have. NOTE it is still nearly
@@ -159,7 +159,7 @@ const BED_LEN = 6.5;
  * offered as an opt-in alongside the double bed above rather than seeded by
  * default (see its promptPriority for why).
  */
-const SINGLE_BED_W = 3.5;
+const SINGLE_BED_W = 3.0;
 const SINGLE_BED_LEN = 6.5;
 
 /**
@@ -220,7 +220,7 @@ function buildNightstand(): THREE.Group {
  * a double-door wardrobe rather than an unmarked box the same size as a
  * fridge or a bookshelf.
  */
-const WARDROBE_W = 5;
+const WARDROBE_W = 4;
 const WARDROBE_D = 2;
 const WARDROBE_H = 6.8;
 
@@ -292,7 +292,7 @@ function buildCoffeeTable(): THREE.Group {
  * proud of the front face so the unit reads as "console + mounted screen"
  * rather than one undifferentiated block.
  */
-const TV_UNIT_W = 5.5;
+const TV_UNIT_W = 4.5;
 const TV_UNIT_D = 1.4;
 
 function buildTvUnit(): THREE.Group {
@@ -339,7 +339,7 @@ function buildDiningChair(): THREE.Group {
  * two vertical door seams instead of horizontal drawer lines, so it reads as
  * a longer, lower cabinet with doors rather than a stack of drawers.
  */
-const SIDEBOARD_W = 5.5;
+const SIDEBOARD_W = 4.5;
 const SIDEBOARD_D = 1.6;
 
 function buildSideboard(): THREE.Group {

@@ -28,6 +28,7 @@ import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { checkOcclusion, footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildGreyboxScene } from "@/lib/greybox/build-scene";
 import { roomSpecFor } from "@/lib/greybox/room-spec";
+import { GREYBOX_ROOM_SCALE } from "@/lib/greybox/room-scale";
 import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import * as THREE from "three";
 import { FURNITURE_CATALOGUE, furnitureForRoomType } from "@/lib/greybox/furniture-catalogue";
@@ -3314,6 +3315,72 @@ export async function GET() {
     }
     assert(caught instanceof ProviderError, "runChain did not throw a ProviderError");
     eq((caught as ProviderError).category, "QuotaError", "the quota diagnosis was lost behind a later tier");
+  });
+
+  // ---- greybox room scale ----
+  // A 10x12 room could not fit a wardrobe once a bed was placed: measured at
+  // 0.0 sq ft of legal positions, because the camera's fixed clearance disk
+  // ate 46% of the floor. Scaling the room shrinks that disk as a SHARE of
+  // the room. These pin the properties that make it safe.
+  check("the room scale reaches the greybox, and nothing else", () => {
+    const room = { id: "r1", name: "Bedroom", width: 10, height: 12, openings: [] } as unknown as Room;
+    const spec = roomSpecFor(room);
+    assert(Math.abs(spec.width - 10 * GREYBOX_ROOM_SCALE) < 1e-9, `width was not scaled: ${spec.width}`);
+    assert(Math.abs(spec.depth - 12 * GREYBOX_ROOM_SCALE) < 1e-9, `depth was not scaled: ${spec.depth}`);
+    // The room object itself must be untouched: its true size is what the UI
+    // shows and what formatRoomSize puts in the prompt.
+    eq(room.width, 10, "roomSpecFor mutated the room's true width");
+    eq(room.height, 12, "roomSpecFor mutated the room's true height");
+  });
+
+  check("scaling preserves the room's aspect, so the camera choice cannot move", () => {
+    // greyboxCamera picks by projecting openings; a similarity transform
+    // changes no angle, so a scaled room must select the same viewpoint.
+    for (const [w, d] of [[10, 12], [14, 11], [8, 8], [20, 9]]) {
+      const spec = roomSpecFor({ id: "r", name: "R", width: w, height: d, openings: [] } as unknown as Room);
+      const before = w / d;
+      const after = spec.width / spec.depth;
+      assert(Math.abs(before - after) < 1e-9, `aspect moved for ${w}x${d}: ${before} -> ${after}`);
+    }
+  });
+
+  check("openings and furniture keep their exact relative positions", () => {
+    // Both are stored as fractions of the room (PlacedOpening.t,
+    // PlacedFurniture.x/.z), which is the whole reason this scale needs no
+    // data migration. If either ever becomes absolute feet, this breaks and
+    // this check is where that surfaces.
+    const placed: PlacedOpening[] = [
+      { id: "o1", type: "door", wall: "north", t: 0.25, widthFt: 3 },
+      { id: "o2", type: "window", wall: "east", t: 0.7, widthFt: 4 },
+    ];
+    const spec = roomSpecFor({
+      id: "r", name: "R", width: 10, height: 12, openings: [], placedOpenings: placed,
+    } as unknown as Room);
+    eq(spec.openings[0].t, 0.25, "opening t was altered by the scale");
+    eq(spec.openings[1].t, 0.7, "opening t was altered by the scale");
+    eq(spec.openings[0].widthFt, 3, "opening width must stay true feet");
+  });
+
+  check("the scale actually makes a 10x12 furnishable", () => {
+    // The regression that motivated this. Bed against the far wall, then ask
+    // whether a wardrobe has anywhere legal to go.
+    const spec = roomSpecFor({ id: "r", name: "R", width: 10, height: 12, openings: [] } as unknown as Room);
+    const room = { width: spec.width, depth: spec.depth };
+    const cam = greyboxCamera({ ...spec, furniture: [] } as unknown as GreyboxRoomSpec, GREYBOX_ASPECT);
+    const bed = { kind: "bed", x: 0, z: spec.depth / 2 - 3.5, rotation: 0 };
+    let legal = 0;
+    const N = 60;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        const x = -room.width / 2 + ((i + 0.5) * room.width) / N;
+        const z = -room.depth / 2 + ((j + 0.5) * room.depth) / N;
+        const got = resolvePlacement({
+          kind: "wardrobe", x, z, fromX: x, fromZ: z, rotation: 0,
+        }, [bed], room, { x: cam.position.x, z: cam.position.z });
+        if (Math.abs(got.x - x) < 1e-6 && Math.abs(got.z - z) < 1e-6) legal++;
+      }
+    }
+    assert(legal > 0, "a wardrobe still has nowhere legal to go after a bed — the scale did not help");
   });
 
   // ---- Gemini model selection ----

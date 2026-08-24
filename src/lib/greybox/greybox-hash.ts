@@ -21,8 +21,15 @@ import type { Room } from "@/lib/types";
  * when a room's data changes.
  *
  * 2 — 2026-08-03: section 3 value ladder, level camera, supersampled render.
+ * 3 — 2026-08-25: GREYBOX_ROOM_SCALE. The hash is built from the room's TRUE
+ *     size (layoutSize), which the scale deliberately does not change, so
+ *     without this bump every cached greybox would keep its old unscaled
+ *     image while the server rebuilt a scaled camera to describe it — every
+ *     furniture position phrase in the prompt would then point at the wrong
+ *     box. This is exactly the failure roomSpecFor's own doc comment warns
+ *     about, and exactly what this version key exists to prevent.
  */
-export const GREYBOX_RENDER_VERSION = 2;
+export const GREYBOX_RENDER_VERSION = 3;
 
 function round(n: number, dp: number): number {
   const f = 10 ** dp;

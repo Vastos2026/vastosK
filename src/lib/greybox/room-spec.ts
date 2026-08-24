@@ -1,4 +1,5 @@
 import { seedPlacedOpenings } from "@/lib/plan-editor/geometry";
+import { GREYBOX_ROOM_SCALE } from "./room-scale";
 import { layoutSize } from "@/lib/pipeline/empty-plan";
 import type { GreyboxCameraView } from "./types";
 import type { PlacedOpening, Room } from "@/lib/types";
@@ -42,12 +43,22 @@ export interface RoomSpecPayload {
  *  - Sizes come from `layoutSize`, not from `room.width`/`room.height`
  *    directly, since those are undefined for a room whose dimensions were
  *    never legible on the plan.
+ *
+ * The returned width/depth are the room's true size multiplied by
+ * `GREYBOX_ROOM_SCALE` — greybox world units, NOT the dimensions to show a
+ * user or put in a prompt. Read `room.width`/`room.height` for those.
  */
 export function roomSpecFor(room: Room): RoomSpecPayload {
   const { width, height } = layoutSize(room);
+  // The ONE place the greybox room scale is applied. Every caller — the
+  // editor, the renderer, the server's camera rebuild — goes through this
+  // function, so applying it here is what guarantees it is applied exactly
+  // once and identically everywhere. See room-scale.ts for why it exists and
+  // why nothing else has to move: openings and furniture are both stored as
+  // fractions of the room, so they scale with it for free.
   return {
-    width,
-    depth: height,
+    width: width * GREYBOX_ROOM_SCALE,
+    depth: height * GREYBOX_ROOM_SCALE,
     openings: room.placedOpenings?.length ? room.placedOpenings : seedPlacedOpenings(room.openings ?? []),
     cameraView: room.cameraView,
   };
