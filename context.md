@@ -76,7 +76,7 @@ error.
 
 It now also covers the Gemini request budget, the quota classifier, and a
 guard that there is exactly one `sharp` install (see the two rules on those
-below). As of 2026-08-24 it reports **189 passed / 0 failed**. Treat any drop
+below). As of 2026-08-25 it reports **205 passed / 0 failed**. Treat any drop
 in that number as a regression, not as flakiness — every check is a pure
 function or a filesystem read, and none of them touch the network or spend
 money.
@@ -125,6 +125,32 @@ for the full rulebook behind the first two:
   the client rather than being passed in per route deliberately — there are
   six call sites across four routes, and bounded-by-construction beats
   bounded-by-convention.
+- **The greybox renders a room LARGER than it really is, on purpose.**
+  `roomSpecFor` multiplies width and depth by `GREYBOX_ROOM_SCALE` (1.3), so
+  the width it returns is greybox world units, NOT a size to show a user or
+  put in a prompt — read `room.width`/`room.height` for those. The reason is
+  measured: the camera stands inside the room and furniture must clear a fixed
+  2.6 ft disk around it, which in a 10x12 ft room (the commonest Indian plan
+  shape) blocked 46% of the floor. A wardrobe had **0.0 sq ft** of legal
+  positions once a bed was placed — literally zero, which is why the editor
+  refused a second piece. Scaling works because the disk is a fixed world size
+  and so covers proportionally less of a bigger room: 0.0 -> 30.9 sq ft.
+  Nothing else had to move, because `PlacedOpening.t` and
+  `PlacedFurniture.x`/`.z` are all stored as FRACTIONS of the room and scale
+  with it for free; if either ever becomes absolute feet, this breaks. Scaling
+  the room rather than shrinking the furniture is deliberate — matching 1.3x
+  by shrinking would need a 3.85 ft "queen" bed, and FLUX reproduces
+  undersized furniture faithfully. Ceiling height is deliberately NOT scaled.
+- **Prompt text never names an opening kind the room does not have.** The
+  sentences that tell the model how to read the greybox ("A framed recessed
+  panel is a closed door", "A bright panel is a window") and the clearance
+  order at the end are each gated on the ledger. Both used to be
+  unconditional, so a room with a door and no window still told the model what
+  a window looks like — an invitation to read any bright patch in the render
+  as one — and a room with no openings defined both and then said neither
+  existed. `/api/dev-check`'s `legendPreview` field prints the contract for
+  all four door/window combinations so this stays reviewable without building
+  a room that has none.
 - **There must be exactly one `sharp` install.** Next declares `sharp` in its
   own `optionalDependencies`; the moment `package.json` stops satisfying that
   range, npm installs a second copy under `next/node_modules` with its own
@@ -150,22 +176,61 @@ for the full rulebook behind the first two:
 
 Three call families, routed differently:
 
-- **Text/vision-to-text** (floor-plan extraction, design planning, design-reference
-  analysis) always goes direct to Google AI Studio (Gemini). This is not
-  affected by the Runware toggle below.
+- **Text/vision-to-text** (floor-plan extraction, opening geometry, design
+  planning, design-reference analysis) always goes direct to Google AI Studio.
+  Never affected by the Runware toggle below.
 - **Image generation/editing/enhance** goes to Runware whenever
   `RUNWARE_API_KEY` is set and `IMAGE_PROVIDER` is not `"gemini"`: FLUX.2
   [pro] (`bfl:5@1`) for generation, Nano Banana Pro (`google:4@2`) for the
   View & Edit lasso, Nano Banana 2 (`google:4@3`) for Enhance and as the
-  Runware-side fallback tier. Nano Banana 2 is the same underlying model as
-  Gemini 3.1 Flash Image. With no `RUNWARE_API_KEY` (or `IMAGE_PROVIDER=gemini`),
-  everything falls back to direct Gemini image calls — the emergency,
-  last-resort tier when Runware itself fails.
-- **Video** follows the equivalent `VIDEO_PROVIDER` toggle (Wan 2.7 via
-  Runware, or Veo direct).
+  Runware-side fallback. Nano Banana 2 is the same underlying model as Gemini
+  3.1 Flash Image. With no `RUNWARE_API_KEY`, everything falls back to direct
+  Gemini image calls — the emergency tier.
+- **Video** follows the equivalent `VIDEO_PROVIDER` toggle: Wan 2.7 via
+  Runware, or Veo direct.
 
-See `src/lib/render/runware-client.ts`'s header comment and `CLAUDE.md`'s
-"AI provider layer" for the exact env-var fallback chain.
+Which Gemini model serves which call is pinned per purpose in
+`src/lib/ai/gemini-models.ts`, overridable per call by
+`GEMINI_EXTRACTION_MODEL` / `GEMINI_PLANNING_MODEL` / `GEMINI_GEOMETRY_MODEL`:
+
+| Call | Model |
+| --- | --- |
+| extraction, design planning, reference read | `gemini-3.5-flash-lite` |
+| opening geometry | `gemini-3.5-flash` — deliberately stronger |
+
+Geometry keeps the strong model on purpose: it returns bounding boxes, spatial
+precision is the first thing to go on a cheap model, and its output feeds the
+greybox and therefore every render — a regression there damages images
+silently instead of failing loudly.
+
+Two rules hold the model tables together, both asserted in `/api/dev-check`:
+
+- **No `-latest` alias, ever.** Google repoints aliases without notice and
+  they bill at whatever they currently resolve to, so a call's price and
+  behaviour can change under a deploy that changed nothing.
+- **Ladders are cost-capped.** No fallback may cost more per output token than
+  the primary it backs up — otherwise a cheap primary makes every *failure*
+  dearer than the success it replaced.
+
+**Availability is per-account, and this one is already constrained.** Tested
+live on the production key (2026-08-24), `gemini-flash-latest` and
+`gemini-3.7-flash` return **429, no quota**, and `gemini-2.5-flash` and
+`gemini-2.5-flash-lite` return **404, no longer available to new users**. The
+first was the default primary for all three calls, so every call was spending
+a round-trip being refused; the third was sitting in the fallback list as a
+dead tier. The pipeline works today only because the remaining models answer.
+Being listed on Google's pricing page does NOT mean a key can call it — re-test
+with a real key before adding any model.
+
+Enabling billing on the Google project is the fix, and it is a pre-launch
+action, not a code change. Note that Google Cloud budgets only *alert*; the
+app's own per-user cap (`profiles.usage_limit_usd`, enforced by
+`assertAllowed({ checkUsage: true })`) is the only real ceiling.
+
+Per-generation costs, token maths and the full prompt-by-prompt breakdown live
+in two standalone documents, the **Vastos AI Ledger** and the **Vastos Prompt
+Book** — deliberately not repeated here, because they are commercial detail
+rather than what you need to work on the code.
 
 ## What the user sees when something fails
 
@@ -211,104 +276,6 @@ rehydrate (a page reload destroys both the request and the only code that
 would clear the flag); `roomErrors` is deliberately kept, because a failure is
 a fact about what happened, not a request still in flight.
 
-## What the AI actually costs
-
-Two providers, and you have very different visibility into each.
-
-**Runware** (all image and video generation) is prepaid and metered per
-generation — that balance is the one that runs out in practice, and running it
-out is what produces the `QuotaError` above.
-
-**Google AI Studio / Gemini** handles every text-and-vision-to-text call, and
-is billed per token. There are **three Gemini calls per project**:
-
-| # | Call | Shape |
-| --- | --- | --- |
-| 1 | floor-plan extraction | one ~1280px JPEG + a short prompt, structured JSON out |
-| 2 | opening geometry | the same image again + a prompt, structured JSON out |
-| 3 | design planning | text only, structured JSON out |
-
-Rough order of magnitude at posted rates, on stated assumptions (roughly 4k
-input and 11k output tokens across all three calls, output dominating because
-thinking tokens bill at the output rate):
-
-| Landing model | Per project | Per 1,000 projects |
-| --- | --- | --- |
-| `gemini-2.5-flash` / `gemini-3.5-flash-lite` ($0.30 / $2.50 per 1M) | ~$0.03 | ~$29 |
-| `gemini-3.5-flash` ($1.50 / $9.00 per 1M) | ~$0.10 | ~$105 |
-
-Treat these as order-of-magnitude. Google does not itemise how many tokens a
-1280px image costs, so the input side rests on an assumption; the output side,
-which dominates, is firmer.
-
-**Which model each call runs on** is pinned per purpose in
-`src/lib/ai/gemini-models.ts`, overridable by `GEMINI_EXTRACTION_MODEL` /
-`GEMINI_PLANNING_MODEL` / `GEMINI_GEOMETRY_MODEL`:
-
-| Call | Model | Output rate / 1M |
-| --- | --- | --- |
-| extraction | `gemini-3.5-flash-lite` | $2.50 |
-| design planning | `gemini-3.5-flash-lite` | $2.50 |
-| opening geometry | `gemini-3.5-flash` | $9.00 |
-
-Geometry keeps the strong model on purpose: it returns bounding boxes, spatial
-precision is the first thing to go on a cheap model, and its output feeds the
-greybox and therefore every render — a regression there damages images
-silently instead of failing loudly.
-
-Ladders are **cost-capped**: no fallback may cost more per output token than
-the primary it backs up, or making a primary cheap would make every *failure*
-more expensive than the success it replaced. `/api/dev-check` asserts it.
-
-Verified live against this project's key on 2026-08-24 — and worth
-re-verifying with your own key, because availability is per-account and
-being listed on the pricing page does NOT mean your key can call it:
-
-| Model | Result | Latency |
-| --- | --- | --- |
-| `gemini-3.5-flash-lite` | 200 | 1.3s |
-| `gemini-3.1-flash-lite` | 200 | 1.7s |
-| `gemini-3.5-flash` | 200 | 10.4s |
-| `gemini-3.6-flash` | 200 | 12.9s |
-| `gemini-flash-latest` | **429, no quota** | — |
-| `gemini-3.7-flash` | **429, no quota** | — |
-| `gemini-2.5-flash` | **404, retired** | — |
-| `gemini-2.5-flash-lite` | **404, retired** | — |
-
-Two of those matter a lot. `gemini-flash-latest` was the default primary for
-all three calls and it 429s, so every call was already spending a round-trip
-being told no before falling through to `gemini-3.5-flash` — which is why
-pinning geometry to that model changes nothing about what actually executes.
-And `gemini-2.5-flash` was in the fallback list while being retired: a dead
-tier nobody had noticed.
-
-Three things remain genuinely uncertain and should be checked against the
-live account rather than trusted from any document:
-
-- **Free-tier request limits are no longer published.** Google moved per-model
-  RPM/RPD/TPM off its public rate-limits page onto the authenticated
-  dashboard at `aistudio.google.com/rate-limit`. Any RPD number you find in a
-  blog post is unverifiable. So "how many projects per day fit in the free
-  tier" cannot be answered from documentation — read it off that dashboard
-  with the real key.
-- **`gemini-flash-latest` is an alias whose target Google can move without
-  telling you.** It was repointed to `gemini-3.5-flash` in May 2026; whether
-  the August 2026 `gemini-3.7-flash` release moved it again is not stated
-  anywhere official. Since the alias is billed at whatever it resolves to, the
-  price of a call can change under a deploy that changed nothing. **This is
-  now fixed** — no alias appears anywhere in the codebase, and dev-check fails
-  if one reappears. Left here because it is the reason the pinned table above
-  exists, and the same trap applies to any model anyone adds later.
-- **Billing has no hard spend cap.** Google Cloud budgets raise *alerts*, they
-  do not stop the meter. The app's own per-user cap (`profiles.usage_limit_usd`,
-  enforced by `assertAllowed({ checkUsage: true })`) is the only actual
-  ceiling, and it is per user, not per account.
-
-Before taking paying customers: enable billing on the Google project. The 429s
-above are not a rate limit that clears — they are the free tier saying no for
-those models — and the app currently works only because two other models still
-answer. Also set a budget alert, remembering it alerts and never caps.
-
 ## Known gaps and deliberate decisions
 
 - **Two design-planning implementations exist; only one is live.**
@@ -337,14 +304,14 @@ answer. Also set a budget alert, remembering it alerts and never caps.
 
 ## Where this stands
 
-Last verified 2026-08-24, on `main`, nothing pushed to origin:
+Last verified 2026-08-25, on `main`, nothing pushed to origin:
 
 - `tsc` clean, `npm run lint` clean, production build clean,
-  `/api/dev-check` 189 passed / 0 failed.
+  `/api/dev-check` 205 passed / 0 failed.
 - `npm audit --omit=dev` reports 0 vulnerabilities.
 - Next 16.3.2, sharp 0.35.3 (single install, libvips 8.18.3), Node 24 local.
 
-Owner actions still outstanding, none of them code:
+Owner actions still outstanding:
 
 1. Run `supabase/schema.sql` in the Supabase SQL editor. Until it runs, an
    older database may still carry a permissive `project_snapshots` read
@@ -352,7 +319,13 @@ Owner actions still outstanding, none of them code:
    ships in the browser bundle by design — read every user's project data.
    Read the cautions in `README.md` first; two `drop column` statements in
    that file destroy data if those columns are still populated.
-2. Decide the Gemini billing and model-pinning questions in "What the AI
-   actually costs" above.
-3. Unset `DEBUG_PROMPTS` before going live.
-4. `git push origin main`.
+2. Enable billing on the Google AI Studio project. Model pinning is done;
+   billing is not, and four models already refuse this key — see "Model
+   routing" above.
+3. Regenerate one 10x12 bedroom and judge `GREYBOX_ROOM_SCALE`. 1.3x was
+   derived from placement legality, not from how the render looks — if rooms
+   now read too empty, or furniture too small against the walls, it is a
+   one-line change in `greybox/room-scale.ts`, as are the catalogue
+   footprints.
+4. Unset `DEBUG_PROMPTS` before going live.
+5. `git push origin main`.
