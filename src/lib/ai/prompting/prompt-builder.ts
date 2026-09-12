@@ -696,6 +696,168 @@ function geminiFurnitureEntry(
  * channel on either model family, so this never states what should NOT
  * appear, only what does.
  */
+/** Blank line between Muse's labelled blocks — the separator that makes them read as separate constraints rather than one paragraph. */
+const BLOCK_SEPARATOR = "\n\n";
+
+/** This room's VERBOSE planner guidance. FLUX reads `compactGuidance` because
+ * of the 1,800-char cap; Muse has no such cap and reads the full field. Same
+ * object, same planning call — see buildMusePrompt's header. */
+function verboseGuidanceFor(spec: DesignSpecification, room: UniversalInputRoom): string {
+  const g = spec.roomGuidelines.find((x) => x.room === room.name);
+  return (g?.guidance?.trim() || g?.compactGuidance?.trim()) ?? "";
+}
+
+/**
+ * Muse Image prompt — the third flavour, beside the FLUX prose flow and the
+ * Gemini JSON flow.
+ *
+ * **It consumes exactly the same `DesignSpecification` as the FLUX flow.** No
+ * second planning call, no extra schema, no separate cache. That is deliberate
+ * and is what makes the two interchangeable: `/api/design-plan` runs
+ * `runDesignPlanning` ONCE, and whichever image model ends up serving the
+ * request reads the same cached object. The only difference is WHICH fields
+ * each reads — FLUX is forced onto `compactBrief`/`compactGuidance` by its
+ * 1,800-character cliff, and Muse, having no meaningful cap, reads the verbose
+ * `materialPalette` / `lightingStrategy` / `designLanguage` /
+ * `furnitureLanguage` / `colourStrategy` / `guidance` fields that the planner
+ * already writes and FLUX has to throw away. Nothing here asks the planner for
+ * anything new, so falling back from Muse to FLUX needs no re-planning.
+ *
+ * Structured as an explicit labelled checklist rather than prose because Muse
+ * is a planner-plus-diffuser: it reasons over the prompt before rendering, so
+ * a flat paragraph gets weighted loosely while numbered, labelled blocks get
+ * treated as constraints to satisfy.
+ *
+ * **The [DO NOT] block is a deliberate exception to this repo's own rule** that
+ * exclusions never go in a positive prompt (docs/PROMPTING-RULES.md; the rule
+ * exists because bfl:* models have no negation channel, so naming a thing makes
+ * it MORE likely). Muse plans before it renders, which is a different mechanism
+ * — but that is reasoning, not measurement. If Muse output starts showing the
+ * very things this block forbids, delete the block first: it is the single most
+ * likely cause and the cheapest thing to remove.
+ */
+function buildMusePrompt(
+  input: UniversalInput,
+  room: UniversalInputRoom,
+  spec: DesignSpecification,
+  opts: {
+    ledger?: GreyboxLedger;
+    furniture?: PlacedFurniture[];
+    hasGreybox: boolean;
+    roomSpec?: CameraRoomSpec;
+  },
+): string {
+  const furniture = opts.furniture ?? [];
+  const labels = labelsFor(input);
+  const roomLabel = roomLabelFor(room);
+  const openingSplit = opts.hasGreybox ? openingCounts(opts.ledger) : roomOpeningCounts(room);
+
+  // LAYER 1 — geometry lock. Same facts the FLUX contract states, re-cast as a
+  // checklist. `structuralContract` already gates the opening legend on the
+  // ledger, so a room never has a window defined to it that it does not have.
+  // Only the label is added. `structuralContract` already opens with "Image 1
+  // is an untextured grey massing render..." and closes with "Change only
+  // surfaces, materials, lighting and furnishing", so restating either here
+  // duplicated them verbatim in the assembled prompt — caught by reading the
+  // real output, not by types. Reusing the contract whole is also what keeps
+  // the ledger gating (no window legend for a door-only room) identical across
+  // all three prompt flavours.
+  const lock = opts.hasGreybox
+    ? ["[GEOMETRY LOCK - VERIFY BEFORE AND AFTER]", structuralContract(furniture.length > 0, opts.ledger, room)]
+        .filter(Boolean)
+        .join(" ")
+    : [
+        "[GEOMETRY LOCK]",
+        "Straight walls, level camera, eye level.",
+        noGreyboxOpeningCensus(room),
+        roomSizeClause(room),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+  // Geometric prohibitions only. Deliberately says nothing about materials,
+  // style or quality: those have positive channels above and naming them here
+  // would be the exact failure mode PROMPTING-RULES warns about.
+  const doNot = [
+    "[DO NOT]",
+    "Do not move the camera.",
+    "Do not resize or reposition any door or window.",
+    "Do not add a door or a window.",
+    "Do not place any object in front of a door or a window.",
+    "Do not change the position or footprint of any furniture volume.",
+  ].join(" ");
+
+  // LAYER 2 — deterministic. Identical inputs to the FLUX flow.
+  // Building type is derived exactly as the FLUX `medium` line derives it,
+  // article included — `subcategory` is free text, so "in a Independent House"
+  // and "in a Office" are both reachable and both read as broken English to an
+  // instruction-tuned encoder. Same reasoning, same result, so the two flows
+  // cannot describe the same project differently.
+  const roomSubject = room.type?.trim() ? prosaicRoomType(room.type) : "";
+  const place = labels.subcategory || "home";
+  const article = /^[aeiou]/i.test(place) ? "an" : "a";
+  const roomBlock = [
+    "[ROOM]",
+    `Photorealistic photograph of a real, ordinary ${roomSubject ? `${roomSubject} in ${article} ${place}` : place}, wide angle, eye level.`,
+    "Real camera: natural depth of field, uneven daylight, slight variation across surfaces.",
+    `${cap(roomLabel)}. A ${input.design.luxury_level.toLowerCase()} "${labels.style}" ${labels.subcategory}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const serviceContents = serviceContentsFor(room);
+  const mapped = opts.roomSpec ? mappedFurnitureFor(opts.roomSpec, furniture, spec.materialTokens) : "";
+  const furnitureBody = furniture.length
+    ? mapped || buildFurnitureMaterials(furniture, spec.materialTokens, Number.MAX_SAFE_INTEGER)
+    : (serviceContents ?? "");
+  const furnitureBlock = furnitureBody ? `[FURNITURE - LOCKED POSITIONS] ${furnitureBody}` : "";
+
+  // LAYER 3 — planner-written. The verbose fields, which is the whole point of
+  // having no character cap.
+  const wall = spec.wallColour?.trim();
+  const accents = spec.accentColours?.trim();
+  const materialBlock = [
+    "[MATERIAL LIBRARY]",
+    wall ? `Walls: ordinary smooth matte painted plaster in ${wall}, flat and light-absorbing.` : "",
+    accents ? `Palette beyond the walls: ${accents}.` : "",
+    spec.materialPalette?.trim() ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const lightingBlock = spec.lightingStrategy?.trim()
+    ? `[LIGHTING STACK] ${spec.lightingStrategy.trim()}`
+    : "";
+
+  const finishingBlock = [
+    "[FINISHING LAYER]",
+    furnishFullyFor(room, furniture.length > 0 && !!furnitureBody, openingSplit, dressingFor(spec, room)),
+    verboseGuidanceFor(spec, room),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const styleBlock = [
+    "[STYLE]",
+    spec.designLanguage?.trim() ?? "",
+    spec.furnitureLanguage?.trim() ?? "",
+    spec.colourStrategy?.trim() ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const notes = room.additional_notes?.trim();
+  const notesBlock = notes ? `[ADDITIONAL REQUIREMENTS] ${notes}` : "";
+
+  // No overflow ladder. Muse accepts far more than this will ever produce, so
+  // there is nothing to trim and therefore no priority order to get wrong —
+  // the single largest source of complexity in the FLUX path simply does not
+  // apply here.
+  return [lock, doNot, roomBlock, furnitureBlock, materialBlock, lightingBlock, finishingBlock, styleBlock, notesBlock]
+    .filter(Boolean)
+    .join(BLOCK_SEPARATOR);
+}
+
 function buildGeminiPrompt(
   input: UniversalInput,
   room: UniversalInputRoom,
@@ -942,6 +1104,13 @@ export async function buildRoomPrompt(
   const provider = opts.provider ?? (await getProviderPrimary("image_gen"));
   if (provider === "gemini") {
     return buildGeminiPrompt(input, room, spec, opts);
+  }
+  // Muse. Note this returns WITHOUT passing through the 1,800-char overflow
+  // ladder below — deliberately, since Muse has no meaningful cap. That is
+  // exactly why a caller must never hand a Muse prompt to FLUX on a fallback:
+  // see PromptSet in provider.ts, which is what stops that happening.
+  if (provider === "meta") {
+    return buildMusePrompt(input, room, spec, opts);
   }
 
   const furniture = opts.furniture ?? [];

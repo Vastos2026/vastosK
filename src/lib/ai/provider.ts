@@ -742,8 +742,42 @@ async function generateImageWithGemini(
  * hosts the same Gemini model. Each tier only runs if the previous one
  * throws — see `runChain`.
  */
+/**
+ * One prompt per model family, because the families do not accept each other's
+ * prompts.
+ *
+ * A generation can traverse several tiers in one call (Muse, then FLUX, then
+ * Nano Banana), and the Muse prompt is a long labelled checklist built with NO
+ * character cap while FLUX's is prose trimmed to fit a hard 1,800-character
+ * ceiling. Handing the first to the second is not a degraded result, it is the
+ * specific failure this codebase already learned the hard way: FLUX's encoder
+ * truncates silently, which once dropped the entire room-geometry clause from
+ * every image for weeks with no error anywhere (see prompt-builder.ts).
+ *
+ * So the caller builds every variant up front and the chain picks per tier.
+ * That costs nothing: `buildRoomPrompt` is deterministic and makes no AI call —
+ * the single planning call already happened and its `DesignSpecification` is
+ * cached on the project, so both variants are assembled from the same object.
+ * A Muse failure therefore falls through to FLUX with FLUX's own
+ * budget-checked prompt, with no re-planning and no second LLM round trip.
+ *
+ * `gemini` is intentionally absent: the Nano Banana tiers already receive the
+ * `runware` prose today, and changing that is a separate behaviour change from
+ * the Muse work.
+ */
+export interface PromptSet {
+  /** FLUX.2 prose, built against the 1,800-char budget. The universal fallback. */
+  runware: string;
+  /** Muse's layered checklist. Absent when Muse is not the primary. */
+  meta?: string;
+}
+
+function promptFor(prompts: PromptSet, provider: "google" | "runware" | "meta"): string {
+  return provider === "meta" ? (prompts.meta ?? prompts.runware) : prompts.runware;
+}
+
 export async function generateImage(
-  prompt: string,
+  prompt: string | PromptSet,
   ctx?: CallContext,
   opts?: {
     referenceImages?: string[];
@@ -762,7 +796,8 @@ export async function generateImage(
     height?: number;
   },
 ): Promise<GeneratedImage> {
-  if (!prompt.trim()) throw new ProviderError("ValidationError", "prompt is empty");
+  const prompts: PromptSet = typeof prompt === "string" ? { runware: prompt } : prompt;
+  if (!prompts.runware.trim()) throw new ProviderError("ValidationError", "prompt is empty");
   const primary = await resolveProvider("image_gen", process.env.IMAGE_PROVIDER);
   const runwareAvailable = runwareConfigured();
   const slugs = currentModelSlugs();
@@ -771,7 +806,7 @@ export async function generateImage(
     primary === "runware" ? slugs.imageGen.runware : runwareAvailable ? fallbackModel : IMAGE_MODEL;
 
   debugLogPrompt("3/4. Room image generation (generateImage — first generation, Generate More, or Furnish's Generate all call this)", {
-    prompt,
+    prompt: promptFor(prompts, primary === "meta" ? "meta" : "runware"),
     chain:
       primary === "runware"
         ? `Runware ${slugs.imageGen.runware} → Runware ${fallbackModel} → Gemini ${IMAGE_MODEL} (direct)`
@@ -793,7 +828,7 @@ export async function generateImage(
         model: fallbackModel,
         provider: "runware",
         run: async () => {
-          const out = await generateImageWithRunwareGemini(prompt, refs);
+          const out = await generateImageWithRunwareGemini(promptFor(prompts, "runware"), refs);
           setCost(out.costUsd);
           return out;
         },
@@ -815,7 +850,7 @@ export async function generateImage(
         model: slugs.imageGen.runware,
         provider: "runware",
         run: async () => {
-          const out = await generateImageWithRunware(prompt, refs, opts?.width, opts?.height);
+          const out = await generateImageWithRunware(promptFor(prompts, "runware"), refs, opts?.width, opts?.height);
           setCost(out.costUsd);
           return out;
         },
@@ -843,7 +878,7 @@ export async function generateImage(
           run: async () => {
             if (attempt === 2 && museFatal) throw museFatal;
             try {
-              const out = await generateImageWithMuse(prompt, refs, opts?.width, opts?.height);
+              const out = await generateImageWithMuse(promptFor(prompts, "meta"), refs, opts?.width, opts?.height);
               setCost(out.costUsd);
               return out;
             } catch (e) {
@@ -868,7 +903,7 @@ export async function generateImage(
       steps.push({
         model: IMAGE_MODEL,
         provider: "google",
-        run: () => generateImageWithGemini(prompt, refs),
+        run: () => generateImageWithGemini(promptFor(prompts, "google"), refs),
       });
       return runChain(steps, setUsed);
     },

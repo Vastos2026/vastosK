@@ -169,14 +169,41 @@ export async function POST(request: Request) {
     const provider = await getProviderPrimary("image_gen");
     const useNumbered = provider === "gemini" && !!greyboxAnnotatedKey;
 
-    const prompt = await buildRoomPrompt(universalInput, room, designSpec, {
+    // BOTH prompt variants are built, always — not just the primary's.
+    //
+    // One generation can traverse several tiers (Muse, then FLUX, then Nano
+    // Banana), and those families do not accept each other's prompts: Muse's
+    // is a long labelled checklist with no character cap, FLUX's is prose
+    // trimmed to a hard 1,800-character ceiling that its encoder truncates
+    // SILENTLY when exceeded. Building only the primary's variant meant a Muse
+    // failure would hand FLUX a prompt it cannot take.
+    //
+    // This costs nothing. buildRoomPrompt is deterministic and makes no AI
+    // call — the one planning call already happened and its DesignSpecification
+    // is cached on the project, so both variants are assembled from the SAME
+    // object. Falling back therefore needs no re-planning and no second LLM
+    // round trip. Built unconditionally rather than gated on `provider`,
+    // because provider.ts resolves the primary itself (env override included)
+    // and can legitimately reach a different answer than this line did.
+    const promptInputs = {
       hasGreybox: !!greyboxKey,
       ledger,
       furniture,
       roomSpec,
-      provider,
-      numberedFurniture: useNumbered,
-    });
+    };
+    const prompts = {
+      // The universal fallback slot. When the primary is Muse this must hold
+      // FLUX prose, NOT the Muse checklist — hence the explicit override.
+      runware: await buildRoomPrompt(universalInput, room, designSpec, {
+        ...promptInputs,
+        provider: provider === "meta" ? "runware" : provider,
+        numberedFurniture: useNumbered,
+      }),
+      meta: await buildRoomPrompt(universalInput, room, designSpec, {
+        ...promptInputs,
+        provider: "meta",
+      }),
+    };
     // The annotated copy goes SECOND so "Image 1" in the prompt keeps meaning
     // the clean conditioning render, which every geometry instruction refers
     // to. Order here is part of the prompt's contract, not a detail.
@@ -193,7 +220,7 @@ export async function POST(request: Request) {
         ]
       : undefined;
     const image = await generateImage(
-      prompt,
+      prompts,
       { projectId, userId: guard.id },
       {
         referenceImages,

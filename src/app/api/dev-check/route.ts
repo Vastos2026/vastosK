@@ -3080,6 +3080,7 @@ export async function GET() {
   // text that would reach the image model can be read without spending a
   // paid generation. Dev-only, same as everything else in this route.
   let promptPreview: string;
+  let musePromptPreview = "";
   try {
     const previewSpec: GreyboxRoomSpec = {
       width: 14,
@@ -3092,6 +3093,15 @@ export async function GET() {
     };
     promptPreview = await buildRoomPrompt(uiInput, uiRoom, dspec, {
       provider: "runware",
+      hasGreybox: true,
+      ledger: { doors: 1, windows: 1 },
+      furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
+      roomSpec: previewSpec,
+    });
+    // Same fixture, same DesignSpecification, Muse flavour — so the two can be
+    // read side by side and the interchangeability checked by eye.
+    musePromptPreview = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      provider: "meta",
       hasGreybox: true,
       ledger: { doors: 1, windows: 1 },
       furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
@@ -3733,6 +3743,99 @@ export async function GET() {
     }
   }
 
+  // ==========================================================================
+  // Muse prompt flavour (prompt-builder.ts's buildMusePrompt)
+  //
+  // The rule these guard: one generation can traverse Muse then FLUX, and the
+  // two do not accept each other's prompts. FLUX's encoder truncates silently
+  // past 1,800 chars, which is how the room-geometry clause once vanished from
+  // every image for weeks with no error.
+  // ==========================================================================
+
+  const museFixtureSpec: GreyboxRoomSpec = {
+    width: 14,
+    depth: 11,
+    cameraView: "auto",
+    openings: [
+      { id: "d1", type: "door", wall: "south", t: 0.3, widthFt: 3 },
+      { id: "w1", type: "window", wall: "east", t: 0.5, widthFt: 4 },
+    ],
+    furniture: [],
+  };
+  const museOpts = {
+    hasGreybox: true as const,
+    ledger: { doors: 1, windows: 1 },
+    furniture: [f("p1", "sofa"), f("p2", "tv-unit"), f("p3", "coffee-table")],
+    roomSpec: museFixtureSpec,
+  };
+
+  await checkAsync("the FLUX fallback prompt stays under budget even when Muse is primary", async () => {
+    // THE fallback guarantee, asserted directly. Whatever Muse produces, the
+    // runware flavour built from the same inputs must still be a legal FLUX
+    // prompt — that is what provider.ts's PromptSet hands the FLUX tier.
+    const fluxPrompt = await buildRoomPrompt(uiInput, uiRoom, dspec, { ...museOpts, provider: "runware" });
+    assert(
+      fluxPrompt.length <= 1800,
+      `the FLUX fallback prompt must fit FLUX's hard cap, got ${fluxPrompt.length} chars`,
+    );
+  });
+
+  await checkAsync("Muse and FLUX prompts come from the SAME DesignSpecification", async () => {
+    // Interchangeability, asserted rather than asserted-in-a-comment. Muse
+    // reads the verbose planner fields; FLUX reads the compacted ones. Both
+    // off one object, so a fallback needs no re-planning.
+    const musePrompt = await buildRoomPrompt(uiInput, uiRoom, dspec, { ...museOpts, provider: "meta" });
+    const fluxPrompt = await buildRoomPrompt(uiInput, uiRoom, dspec, { ...museOpts, provider: "runware" });
+    assert(fluxPrompt.includes(dspec.compactBrief), "FLUX prompt should carry the compact brief");
+    assert(
+      musePrompt.includes(dspec.materialPalette) && musePrompt.includes(dspec.lightingStrategy),
+      "Muse prompt should carry the verbose planner fields FLUX has to drop",
+    );
+    const wall = dspec.wallColour ?? "";
+    assert(
+      !wall || (musePrompt.includes(wall) && fluxPrompt.includes(wall)),
+      "both flavours must state the same wall colour",
+    );
+  });
+
+  await checkAsync("the Muse prompt carries every labelled block", async () => {
+    const musePrompt = await buildRoomPrompt(uiInput, uiRoom, dspec, { ...museOpts, provider: "meta" });
+    for (const label of ["[GEOMETRY LOCK", "[DO NOT]", "[ROOM]", "[FURNITURE", "[MATERIAL LIBRARY]", "[LIGHTING STACK]", "[FINISHING LAYER]"]) {
+      assert(musePrompt.includes(label), `Muse prompt is missing ${label}`);
+    }
+  });
+
+  await checkAsync("the Muse prompt repeats no sentence", async () => {
+    // Caught a real duplication: the geometry-lock block restated two
+    // sentences structuralContract already contains, so the assembled prompt
+    // told the model the same thing twice. Types cannot catch that — only
+    // reading the output can, so this reads it.
+    const musePrompt = await buildRoomPrompt(uiInput, uiRoom, dspec, { ...museOpts, provider: "meta" });
+    const sentences = musePrompt
+      .split(/(?<=\.)\s+/)
+      .map((x) => x.trim())
+      .filter((x) => x.length > 25);
+    const seen = new Set<string>();
+    for (const sentence of sentences) {
+      assert(!seen.has(sentence), `sentence appears twice in the Muse prompt: "${sentence.slice(0, 80)}..."`);
+      seen.add(sentence);
+    }
+  });
+
+  await checkAsync("the Muse prompt never names an opening kind the room does not have", async () => {
+    // The same ledger-gating rule the FLUX and Gemini flavours follow. A
+    // door-only room must not be told what a window looks like.
+    const doorOnly = await buildRoomPrompt(uiInput, uiRoom, dspec, {
+      ...museOpts,
+      ledger: { doors: 1, windows: 0 },
+      provider: "meta",
+    });
+    assert(
+      !/bright panel is a window/i.test(doorOnly),
+      "a door-only room must not be given the window legend",
+    );
+  });
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     {
@@ -3743,6 +3846,8 @@ export async function GET() {
       descriptorPreview,
       legendPreview,
       walkthroughMovePreview,
+      musePromptPreview,
+      musePromptPreviewChars: musePromptPreview.length,
       geminiPromptPreview,
       geminiPromptPreviewChars: geminiPromptPreview.length,
       results,
