@@ -21,6 +21,7 @@ export function currentModelSlugs() {
   return {
     imageGen: {
       runware: process.env.RUNWARE_IMAGE_MODEL?.trim() || "bfl:5@1",
+      meta: process.env.META_MUSE_MODEL?.trim() || "muse-image-1.0",
       gemini: geminiImageModel,
     },
     imageEdit: {

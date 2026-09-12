@@ -36,7 +36,8 @@ import {
   enhanceImageWithRunware,
   generateVideoWithRunware,
 } from "@/lib/render/runware-client";
-import { getProviderPrimary, type ProviderCapability } from "@/lib/settings/provider-settings";
+import { getProviderPrimary, type ProviderCapability, type ProviderChoice } from "@/lib/settings/provider-settings";
+import { generateImageWithMuse, museConfigured } from "@/lib/render/meta-muse-client";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
 import { geminiModelFor, geminiFallbacksFor } from "@/lib/ai/gemini-models";
 import { debugLogPrompt } from "@/lib/ai/debug-log";
@@ -64,12 +65,32 @@ const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-
  * still forces Gemini regardless of the stored/env choice, so a
  * half-configured Runware setup never silently breaks generation.
  */
-async function resolveProvider(capability: ProviderCapability, envValue: string | undefined): Promise<"gemini" | "runware"> {
-  if (!runwareConfigured()) return "gemini";
+async function resolveProvider(
+  capability: ProviderCapability,
+  envValue: string | undefined,
+): Promise<ProviderChoice> {
   const envOverride = envValue?.trim().toLowerCase();
+
+  // Muse is checked before the Runware gate below, because it is an
+  // independent provider: a Meta key with no Runware key is a perfectly valid
+  // setup, and the old `if (!runwareConfigured()) return "gemini"` would have
+  // forced that configuration onto Gemini. Generation only — Muse has no mask
+  // parameter, so it can never serve image_edit (see provider-types.ts).
+  const museUsable = capability === "image_gen" && museConfigured();
+  if (envOverride === "meta" && museUsable) return "meta";
+
   if (envOverride === "gemini") return "gemini";
-  if (envOverride === "runware") return "runware";
-  return getProviderPrimary(capability);
+  if (envOverride === "runware" && runwareConfigured()) return "runware";
+  if (!runwareConfigured() && !museUsable) return "gemini";
+
+  const stored = await getProviderPrimary(capability);
+  // A stored choice whose provider isn't actually usable must degrade rather
+  // than break generation — the same guarantee the original Runware gate gave,
+  // now applied to all three. Preserves "a half-configured provider never
+  // silently breaks generation".
+  if (stored === "meta" && !museUsable) return runwareConfigured() ? "runware" : "gemini";
+  if (stored === "runware" && !runwareConfigured()) return "gemini";
+  return stored;
 }
 
 /**
@@ -123,9 +144,9 @@ async function instrumented<T>(
   ctx: CallContext | undefined,
   fn: (
     setCost: (costUsd: number | null | undefined) => void,
-    setUsed: (model: string, provider: "google" | "runware") => void,
+    setUsed: (model: string, provider: "google" | "runware" | "meta") => void,
   ) => Promise<T>,
-  provider?: "google" | "runware",
+  provider?: "google" | "runware" | "meta",
 ): Promise<T> {
   const started = Date.now();
   let costUsd: number | null | undefined;
@@ -134,7 +155,7 @@ async function instrumented<T>(
   const setCost = (c: number | null | undefined) => {
     costUsd = c;
   };
-  const setUsed = (m: string, p: "google" | "runware") => {
+  const setUsed = (m: string, p: "google" | "runware" | "meta") => {
     usedModel = m;
     usedProvider = p;
   };
@@ -170,7 +191,7 @@ async function instrumented<T>(
 
 export interface ChainStep<T> {
   model: string;
-  provider: "google" | "runware";
+  provider: "google" | "runware" | "meta";
   run: () => Promise<T>;
 }
 
@@ -194,7 +215,7 @@ export interface ChainStep<T> {
  */
 export async function runChain<T>(
   steps: ChainStep<T>[],
-  setUsed: (model: string, provider: "google" | "runware") => void,
+  setUsed: (model: string, provider: "google" | "runware" | "meta") => void,
 ): Promise<T> {
   let lastErr: unknown;
   let quotaErr: ProviderError | undefined;
@@ -790,16 +811,54 @@ export async function generateImage(
       // reference-image support, that tier's own 400 just falls through to
       // the next step in this chain like any other failure — no special
       // casing needed here.
-      if (primary === "runware") {
-        steps.push({
-          model: slugs.imageGen.runware,
-          provider: "runware",
+      const fluxStep: ChainStep<GeneratedImage> = {
+        model: slugs.imageGen.runware,
+        provider: "runware",
+        run: async () => {
+          const out = await generateImageWithRunware(prompt, refs, opts?.width, opts?.height);
+          setCost(out.costUsd);
+          return out;
+        },
+      };
+
+      if (primary === "meta") {
+        // Muse, then Muse again, then the FLUX ladder.
+        //
+        // `runChain` runs each step exactly once, so a retry has to be a second
+        // step — it is not double-retrying on top of built-in retries. The
+        // retry is worth having because Muse is agentic: it makes its own web
+        // and tool calls inside a single generation, which gives it more
+        // transient failure surface than a plain diffusion call.
+        //
+        // But only for TRANSIENT failures. A 400 is our own malformed request
+        // and a QuotaError is an empty wallet; re-sending an identical body in
+        // either case buys nothing and, for the 400, wastes the wall-clock the
+        // route has left. `museFatal` carries that decision from the first
+        // attempt to the second, since runChain deliberately exposes no state
+        // between steps.
+        let museFatal: ProviderError | undefined;
+        const museStep = (attempt: 1 | 2): ChainStep<GeneratedImage> => ({
+          model: slugs.imageGen.meta,
+          provider: "meta",
           run: async () => {
-            const out = await generateImageWithRunware(prompt, refs, opts?.width, opts?.height);
-            setCost(out.costUsd);
-            return out;
+            if (attempt === 2 && museFatal) throw museFatal;
+            try {
+              const out = await generateImageWithMuse(prompt, refs, opts?.width, opts?.height);
+              setCost(out.costUsd);
+              return out;
+            } catch (e) {
+              const err = classify(e);
+              if (err.category === "ValidationError" || err.category === "QuotaError") museFatal = err;
+              throw err;
+            }
           },
         });
+        steps.push(museStep(1), museStep(2));
+        if (runwareAvailable) {
+          steps.push(fluxStep, runwareGeminiStep);
+        }
+      } else if (primary === "runware") {
+        steps.push(fluxStep);
         steps.push(runwareGeminiStep);
       } else if (runwareAvailable) {
         // Admin picked "Gemini" — use Runware's own Gemini-hosted model

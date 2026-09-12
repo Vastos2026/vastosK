@@ -11,12 +11,15 @@
  * version — safer to just not import it, even for types).
  */
 export interface ModelSlugs {
-  imageGen: { runware: string; gemini: string };
+  // `meta` is generation-only — Muse has no mask parameter, so it never
+  // appears under imageEdit (see settings/provider-types.ts).
+  imageGen: { runware: string; gemini: string; meta: string };
   imageEdit: { runware: string; gemini: string };
   video: { runware: string };
 }
 
 const KNOWN_LABELS: Record<string, string> = {
+  "muse-image-1.0": "Muse Image",
   "bfl:5@1": "FLUX.2 Pro",
   "runware:400@1": "FLUX.2",
   "google:4@2": "Nano Banana Pro",

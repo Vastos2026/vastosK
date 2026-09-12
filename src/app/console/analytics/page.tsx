@@ -5,6 +5,7 @@ import { listAllAuthUsers } from "@/lib/console/auth-users";
 import { fetchConsoleUsageLogRows, buildConsoleUsageAnalytics } from "@/lib/console/usage-analytics";
 import { getProviderPrimary } from "@/lib/settings/provider-settings";
 import { currentModelSlugs } from "@/lib/ai/model-labels";
+import { museConfigured } from "@/lib/render/meta-muse-client";
 import { AnalyticsDashboard } from "./analytics-dashboard-lazy";
 import { ModelSwitcher } from "./model-switcher";
 
@@ -54,6 +55,7 @@ export default async function ConsoleAnalyticsPage() {
           imageGenPrimary={imageGenPrimary}
           imageEditPrimary={imageEditPrimary}
           slugs={slugs}
+          museAvailable={museConfigured()}
         />
       </section>
 

@@ -868,7 +868,7 @@ alter table feature_flags enable row level security;
 -- ============================================================================
 create table if not exists provider_settings (
   id                  text primary key default 'default',
-  image_gen_primary   text not null default 'runware',  -- 'runware' | 'gemini'
+  image_gen_primary   text not null default 'runware',  -- 'meta' (generation only), 'runware' or 'gemini'
   image_edit_primary  text not null default 'runware',
   updated_at          timestamptz not null default now(),
   updated_by          uuid references auth.users (id) on delete set null

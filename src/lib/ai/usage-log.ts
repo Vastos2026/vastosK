@@ -13,7 +13,7 @@ export interface UsageLogEntry {
   /** Real USD cost of the call, when the provider reports one (currently only Runware's `includeCost`). */
   estimatedCost?: number | null;
   /** Which provider actually served this call — defaults to "google" for the calls that are always Gemini (extractFloorPlan, generateStructured). Callers that can route to Runware (generateImage/editImage/generateVideo) must pass the actually-resolved provider, not assume Google. */
-  provider?: "google" | "runware";
+  provider?: "google" | "runware" | "meta";
 }
 
 /** Best-effort write to ai_usage_logs — never throws, never blocks the caller. */

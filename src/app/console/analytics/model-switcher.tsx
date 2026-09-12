@@ -14,8 +14,14 @@ interface ModelOption {
 }
 
 /** Built from the SAME live env-derived slugs provider.ts actually uses (see currentModelSlugs) — never a hardcoded guess, so this can't silently drift from what a generation call really runs. */
-function optionsFor(runwareSlug: string, geminiSlug: string): ModelOption[] {
+function optionsFor(runwareSlug: string, geminiSlug: string, metaSlug?: string): ModelOption[] {
   return [
+    // Generation only, and only when a Meta key is actually present — the
+    // caller passes `metaSlug` undefined otherwise. Offering an option that
+    // `resolveProvider` would silently degrade away from would show an admin a
+    // setting that never takes effect. Muse has no mask parameter, so it is
+    // never offered for Image Editing (see settings/provider-types.ts).
+    ...(metaSlug ? [{ value: "meta" as const, label: friendlyModelLabel(metaSlug), sub: `Meta · ${metaSlug}` }] : []),
     { value: "runware", label: friendlyModelLabel(runwareSlug), sub: `Runware · ${runwareSlug}` },
     { value: "gemini", label: friendlyModelLabel(geminiSlug), sub: `Google · ${geminiSlug}` },
   ];
@@ -135,10 +141,13 @@ export function ModelSwitcher({
   imageGenPrimary,
   imageEditPrimary,
   slugs,
+  museAvailable,
 }: {
   imageGenPrimary: ProviderChoice;
   imageEditPrimary: ProviderChoice;
   slugs: ModelSlugs;
+  /** Whether a Meta key is configured. Server-supplied: this is a client component and cannot read env. */
+  museAvailable?: boolean;
 }) {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -146,7 +155,7 @@ export function ModelSwitcher({
         title="Image Generation"
         capability="image_gen"
         primary={imageGenPrimary}
-        options={optionsFor(slugs.imageGen.runware, slugs.imageGen.gemini)}
+        options={optionsFor(slugs.imageGen.runware, slugs.imageGen.gemini, museAvailable ? slugs.imageGen.meta : undefined)}
       />
       <CapabilityCard
         title="Image Editing"
