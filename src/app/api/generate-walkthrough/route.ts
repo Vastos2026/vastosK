@@ -1,14 +1,18 @@
 /**
  * Walkthrough generation — simplified per the 2026-07-26 alignment review
- * (revamp Workstream 8.5, flow step 11). One short Veo clip per approved room
- * image, a single cinematic-zoom-in camera move only (no pan, no invented
- * motion, no orbit/consistency-check machinery), concatenated in the
- * confirmed room order.
+ * (revamp Workstream 8.5, flow step 11). One short clip per approved room
+ * image, concatenated in the confirmed room order, with no orbit or
+ * consistency-check machinery.
  *
- * Every clip is exactly 3 seconds. Veo's shortest supported duration is 4s
- * (no 3s option) — each clip is generated at 4s and trimmed to 3s with
- * ffmpeg before concatenation, so the on-screen requirement is exact
- * regardless of what the model itself supports.
+ * The camera move is now chosen PER ROOM rather than being one fixed zoom for
+ * every clip — a push-in, a pan, or a tilt, picked from that room's own
+ * geometry by `render/walkthrough-camera.ts`. Read that file before changing
+ * anything here: a clip is generated from a single still image, so a move
+ * that swings unrendered area into frame is asking the model to invent
+ * geometry, and the selection rules exist to decide when a room can afford
+ * one. A room whose geometry is unavailable always gets the safe push-in.
+ *
+ * Every clip is 4 seconds — the shortest duration either model sells.
  *
  *   POST /api/generate-walkthrough  { projectId, rooms: [{ id, name, imageKey }] }
  *     → { videoUrl, key }
@@ -29,19 +33,26 @@ import { recordGeneration } from "@/lib/supabase/generations";
 import { assertAllowed } from "@/lib/api-guard";
 import { requireOwnedProject } from "@/lib/supabase/projects";
 import { allowedProjectStorageKeys } from "@/lib/projects/approved-rooms";
+import { selectWalkthroughMove, walkthroughPrompt } from "@/lib/render/walkthrough-camera";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const CLIP_SECONDS = 3;
-// Veo 3.1 only accepts 4 | 6 | 8 — 4 is the closest to 3 and the cheapest.
+/**
+ * The whole generated clip is kept now. 4s is already the shortest either
+ * model will sell (Veo accepts 4 | 6 | 8; Wan 2.7 is asked for the same), so
+ * trimming to 3s was throwing away a quarter of every clip that had already
+ * been paid for — and a pan or tilt needs the extra second to read as
+ * deliberate rather than clipped. `trimVideo` still runs: it is what
+ * normalises each clip to libx264/yuv420p before concat.
+ *
+ * Note concatVideos then plays every clip at 1.25x (see ffmpeg.ts), so 4s of
+ * generated motion reaches the viewer as 3.2s.
+ */
+const CLIP_SECONDS = 4;
+// Veo 3.1 only accepts 4 | 6 | 8 — 4 is the shortest and the cheapest.
 const VEO_REQUEST_SECONDS = 4;
-
-const ZOOM_PROMPT =
-  "A slow, subtle cinematic zoom into the room shown. No panning, no camera rotation, " +
-  "no new furniture, people, or objects invented — the room must stay exactly as shown, " +
-  "only the camera slowly moves closer.";
 
 interface RoomInput {
   id?: string;
@@ -119,13 +130,25 @@ export async function POST(request: Request) {
     // time, since Veo generation is by far the slowest step and each room's
     // request doesn't depend on any other's. Order is preserved (Promise.all
     // resolves in input order) so concatVideos still joins rooms correctly.
+    // Geometry for the per-room camera move. Only available when Supabase is
+    // configured — `requireOwnedProject` returns null otherwise — so every
+    // clip falls back to the always-safe push-in without it, matching this
+    // app's "works, degraded, without Supabase" contract rather than failing.
+    const roomGeometry = new Map((owned?.floorPlan?.rooms ?? []).map((r) => [r.id, r]));
+
     const clips = await Promise.all(
-      rooms.map(async (room) => {
+      rooms.map(async (room, index) => {
+        // Chosen server-side from the room's own geometry, never sent by the
+        // client: which way a camera may safely move is a fact about what the
+        // greybox actually rendered, the same reasoning that makes the server
+        // re-derive the opening ledger instead of trusting a client count.
+        const geometry = room.id ? roomGeometry.get(room.id) : undefined;
+        const move = geometry ? selectWalkthroughMove(geometry, index).move : "push_in";
         const imageBytes = await getObject(room.imageKey!);
         const imageDataUri = `data:image/png;base64,${imageBytes.toString("base64")}`;
         const video = await generateVideo(
           imageDataUri,
-          ZOOM_PROMPT,
+          walkthroughPrompt(move),
           { durationSeconds: VEO_REQUEST_SECONDS, aspectRatio: "16:9" },
           { projectId, userId: guard.id },
         );

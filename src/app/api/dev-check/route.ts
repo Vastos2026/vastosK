@@ -28,6 +28,7 @@ import { validateOpenings } from "@/lib/greybox/validate-openings";
 import { checkOcclusion, footprintAabb, resolvePlacement } from "@/lib/greybox/validate-furniture";
 import { buildGreyboxScene } from "@/lib/greybox/build-scene";
 import { roomSpecFor } from "@/lib/greybox/room-spec";
+import { selectWalkthroughMove, walkthroughPrompt } from "@/lib/render/walkthrough-camera";
 import { GREYBOX_ROOM_SCALE } from "@/lib/greybox/room-scale";
 import { buildFurnitureMaterials, toWorldFurniture } from "@/lib/greybox/furniture-layout";
 import * as THREE from "three";
@@ -3600,6 +3601,138 @@ export async function GET() {
     }
   }
 
+  // ==========================================================================
+  // Walkthrough camera moves (render/walkthrough-camera.ts)
+  //
+  // Every clip is generated from ONE still image, so a move that swings
+  // unrendered area into frame invents geometry. These checks guard the rules
+  // that keep that from happening — not the exact move a given room picks,
+  // which is free to change as the thresholds are tuned.
+  // ==========================================================================
+
+  const walkRoom = (over: Partial<Room> = {}): Room => ({
+    id: "wr1",
+    name: "Living",
+    type: "living",
+    width: 16,
+    height: 10,
+    x: 0,
+    y: 0,
+    color: "#ccc",
+    placedOpenings: [
+      { id: "d1", type: "door", wall: "north", t: 0.25, widthFt: 3 },
+      { id: "w1", type: "window", wall: "north", t: 0.75, widthFt: 4 },
+      { id: "w2", type: "window", wall: "east", t: 0.5, widthFt: 4 },
+    ],
+    ...over,
+  });
+
+  check("walkthrough move is deterministic for the same room", () => {
+    const room = walkRoom();
+    const first = selectWalkthroughMove(room, 0).move;
+    for (let i = 0; i < 5; i++) {
+      assert(
+        selectWalkthroughMove(walkRoom(), 0).move === first,
+        `move changed between identical calls: ${first} then ${selectWalkthroughMove(walkRoom(), 0).move}`,
+      );
+    }
+  });
+
+  check("a deliberately unfurnished room type never gets a pan or tilt", () => {
+    // Bathrooms/store rooms are in NO_FURNITURE_ROOM_TYPES — nothing to sweep
+    // across, and they are usually small enough that any pan hits bare wall.
+    for (const type of ["bathroom", "toilet", "store room"]) {
+      const { move } = selectWalkthroughMove(walkRoom({ type }), 0);
+      assert(move === "push_in", `${type} should stay on push_in, got ${move}`);
+    }
+  });
+
+  check("a room with no openings falls back to the safe push-in", () => {
+    const { move } = selectWalkthroughMove(walkRoom({ placedOpenings: [], openings: [] }), 0);
+    assert(move === "push_in", `expected push_in with no openings, got ${move}`);
+  });
+
+  check("a small square room is never panned", () => {
+    // Below MIN_PAN_AREA_SQFT and under WIDE_RATIO — the camera stands close
+    // to both side walls, so a few degrees of pan is mostly unrendered wall.
+    //
+    // A TILT is still allowed here, deliberately: the area gate exists for
+    // lateral motion specifically. Tilting up reveals upper wall and ceiling,
+    // which the greybox does render, whereas a pan reveals the side wall the
+    // camera is standing closest to and never had in frame at all.
+    const { move } = selectWalkthroughMove(walkRoom({ width: 8, height: 8 }), 0);
+    assert(move !== "pan_left" && move !== "pan_right", `a small square room must not pan, got ${move}`);
+  });
+
+  check("a pan is only ever chosen toward openings that are actually on screen", () => {
+    // The rule that makes pans safe at all. Re-derives the frame the move was
+    // picked from and asserts the direction agrees with where the rendered
+    // openings sit — a pan away from them would be a pan into invented wall.
+    const room = walkRoom();
+    const { move } = selectWalkthroughMove(room, 0);
+    if (move !== "pan_left" && move !== "pan_right") return;
+    const spec = roomSpecFor(room);
+    const onScreen = projectOpenings(spec, greyboxCamera(spec, GREYBOX_ASPECT)).filter((p) => p.px >= 0);
+    const left = onScreen.filter((p) => p.px < GREYBOX_RENDER_W * 0.4).length;
+    const right = onScreen.filter((p) => p.px > GREYBOX_RENDER_W * 0.6).length;
+    assert(onScreen.length > 0, "a pan was chosen with nothing on screen");
+    if (left !== right) {
+      const toward = move === "pan_left" ? left : right;
+      const away = move === "pan_left" ? right : left;
+      assert(toward > away, `${move} chosen away from the openings (left ${left}, right ${right})`);
+    }
+  });
+
+  check("every move keeps the consistency clause verbatim", () => {
+    // The half of the prompt that stops the model redecorating between frames
+    // is load-bearing (AGENTS.md) and must survive on every move, not just the
+    // push-in it was originally written for.
+    for (const move of ["push_in", "pan_left", "pan_right", "tilt_up"] as const) {
+      const prompt = walkthroughPrompt(move);
+      assert(
+        prompt.includes("No new furniture, people, or objects invented"),
+        `${move} lost the invention clause: "${prompt}"`,
+      );
+      assert(
+        prompt.includes("the room must stay exactly as shown"),
+        `${move} lost the "exactly as shown" clause: "${prompt}"`,
+      );
+    }
+  });
+
+  check("each move produces a distinct, non-empty prompt", () => {
+    const moves = ["push_in", "pan_left", "pan_right", "tilt_up"] as const;
+    const prompts = moves.map((m) => walkthroughPrompt(m));
+    for (const p of prompts) assert(p.trim().length > 0, "empty walkthrough prompt");
+    assert(new Set(prompts).size === moves.length, "two moves produced the same prompt");
+  });
+
+  check("no move clause contradicts itself by forbidding its own motion", () => {
+    // The original prompt said "No panning, no camera rotation" — correct for
+    // a push-in, actively wrong once a clip is meant to pan. Guards the copy
+    // from being pasted back across all four moves.
+    assert(!walkthroughPrompt("pan_left").includes("No panning"), "pan prompt forbids panning");
+    assert(!walkthroughPrompt("pan_right").includes("No panning"), "pan prompt forbids panning");
+    assert(!walkthroughPrompt("tilt_up").includes("no camera rotation"), "tilt prompt forbids rotation");
+  });
+
+  // Which move a handful of representative rooms select, so the mapping stays
+  // reviewable without standing up a project — same idea as legendPreview.
+  const walkthroughMovePreview: Record<string, string> = {};
+  for (const [label, over] of [
+    ["wide living room", {}],
+    ["small square bedroom", { type: "bedroom", width: 8, height: 8 }],
+    ["bathroom", { type: "bathroom" }],
+    ["no openings", { placedOpenings: [], openings: [] }],
+  ] as const) {
+    try {
+      const choice = selectWalkthroughMove(walkRoom(over as Partial<Room>), 0);
+      walkthroughMovePreview[label] = `${choice.move} — ${choice.reason}`;
+    } catch (e) {
+      walkthroughMovePreview[label] = `failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
   const failed = results.filter((r) => !r.ok);
   return Response.json(
     {
@@ -3609,6 +3742,7 @@ export async function GET() {
       promptPreviewChars: promptPreview.length,
       descriptorPreview,
       legendPreview,
+      walkthroughMovePreview,
       geminiPromptPreview,
       geminiPromptPreviewChars: geminiPromptPreview.length,
       results,

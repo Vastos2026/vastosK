@@ -76,7 +76,7 @@ error.
 
 It now also covers the Gemini request budget, the quota classifier, and a
 guard that there is exactly one `sharp` install (see the two rules on those
-below). As of 2026-08-25 it reports **205 passed / 0 failed**. Treat any drop
+below). As of 2026-09-08 it reports **213 passed / 0 failed**. Treat any drop
 in that number as a regression, not as flakiness — every check is a pure
 function or a filesystem read, and none of them touch the network or spend
 money.
@@ -307,7 +307,7 @@ a fact about what happened, not a request still in flight.
 Last verified 2026-08-25, on `main`, nothing pushed to origin:
 
 - `tsc` clean, `npm run lint` clean, production build clean,
-  `/api/dev-check` 205 passed / 0 failed.
+  `/api/dev-check` 213 passed / 0 failed.
 - `npm audit --omit=dev` reports 0 vulnerabilities.
 - Next 16.3.2, sharp 0.35.3 (single install, libvips 8.18.3), Node 24 local.
 
