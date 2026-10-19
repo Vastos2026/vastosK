@@ -1,4 +1,4 @@
-# Plan: Vastos Revamp — Foundation + Thin-Slice MVP
+# Plan: Vastos Revamp — Foundation + Thin-Slice MVP commit
 
 ## Context
 Vastos is being repositioned from its current form (floor-plan upload → manual 3D furniture placement) into a B2B SaaS tool that lets construction/interior-design firms generate photorealistic AI room visuals and walkthrough videos to close clients. The user inherited the codebase and is revamping it end-to-end: real auth, a new flow, a new dark premium UI, a separate admin console, and a config-driven AI prompt system, while keeping the parts of the existing app that already work.
